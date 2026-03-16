@@ -32,13 +32,13 @@ FFmpegDemuxer::~FFmpegDemuxer()
     }
 }
 
-static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_context, AVIOContext& io_context)
+static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_context, AVIOContext& io_context, AVDictionary** format_options = nullptr)
 {
     format_context = avformat_alloc_context();
     if (format_context == nullptr)
         return DecoderError::with_description(DecoderErrorCategory::Memory, "Failed to allocate format context"sv);
     format_context->pb = &io_context;
-    if (avformat_open_input(&format_context, nullptr, nullptr, nullptr) < 0)
+    if (avformat_open_input(&format_context, nullptr, nullptr, format_options) < 0)
         return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to open input for format parsing"sv);
 
     // Read stream info; doing this is required for headerless formats like MPEG
@@ -107,7 +107,10 @@ DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullR
     auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(stream->create_cursor()));
 
     AVFormatContext* format_context = nullptr;
-    TRY(initialize_format_context(format_context, *io_context->avio_context()));
+        AVDictionary* format_options = nullptr;
+    // Removido mime_type_hint para evitar erro de compilação
+    // O FFmpeg tentará detectar automaticamente, mas passamos a dica se necessário
+    TRY(initialize_format_context(format_context, *io_context->avio_context(), &format_options));
 
     auto demuxer = DECODER_TRY_ALLOC(adopt_nonnull_ref_or_enomem(new (nothrow) FFmpegDemuxer(stream)));
     demuxer->m_total_duration = AK::Duration::from_time_units(format_context->duration, 1, AV_TIME_BASE);

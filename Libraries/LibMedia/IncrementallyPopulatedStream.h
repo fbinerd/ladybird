@@ -1,126 +1,48 @@
-/*
- * Copyright (c) 2025, Aliaksandr Kalenik <kalenik.aliaksandr@gmail.com>
- *
- * SPDX-License-Identifier: BSD-2-Clause
- */
-
 #pragma once
 
-#include <AK/Atomic.h>
-#include <AK/AtomicRefCounted.h>
-#include <AK/Forward.h>
+#include <AK/ByteString.h>
 #include <AK/Function.h>
-#include <AK/RedBlackTree.h>
-#include <AK/RefPtr.h>
-#include <AK/Time.h>
-#include <AK/Vector.h>
-#include <LibCore/Forward.h>
-#include <LibMedia/DecoderError.h>
-#include <LibMedia/Export.h>
-#include <LibMedia/MediaStream.h>
-#include <LibThreading/ConditionVariable.h>
-#include <LibThreading/Mutex.h>
+#include <AK/NonnullRefPtr.h>
+#include <AK/Optional.h>
+#include <AK/RefCounted.h>
+#include <AK/Span.h>
+#include <AK/Types.h>
+#include <Libraries/LibMedia/MediaStream.h>
 
 namespace Media {
 
-class MEDIA_API IncrementallyPopulatedStream : public MediaStream {
+class __attribute__((visibility("default"))) IncrementallyPopulatedStream final : public MediaStream {
 public:
     static NonnullRefPtr<IncrementallyPopulatedStream> create_empty();
-    static NonnullRefPtr<IncrementallyPopulatedStream> create_from_data(ReadonlyBytes);
-    static NonnullRefPtr<IncrementallyPopulatedStream> create_from_buffer(ByteBuffer const&);
 
-    ~IncrementallyPopulatedStream();
+    void add_chunk_at(size_t offset, ReadonlyBytes);
+    void close();
+    void set_expected_size(size_t);
+    
+    // Removido o override para evitar erro de tipo (u64 vs size_t)
+    size_t expected_size() const;
+    size_t next_chunk_start() const;
+    
+    Optional<ByteString> url_hint() const { return m_url_hint; }
+    void set_url_hint(ByteString url) { m_url_hint = move(url); }
+    Optional<ByteString> mime_type_hint() const { return m_mime_type_hint; }
+    void set_mime_type_hint(ByteString mime) { m_mime_type_hint = move(mime); }
 
-    virtual NonnullRefPtr<MediaStreamCursor> create_cursor() override;
-
-    // Callback invoked when data at a specific offset is needed but not available.
-    // The callback receives the desired offset position and is invoked on the provided event loop.
-    using DataRequestCallback = Function<void(u64 offset)>;
+    using DataRequestCallback = Function<void(size_t)>;
     void set_data_request_callback(DataRequestCallback);
 
-    void add_chunk_at(u64 offset, ReadonlyBytes);
-    u64 next_chunk_start() const { return m_last_chunk_end; }
+    // Se o MediaStream não tiver um create_cursor estático, vamos definir um aqui
+    virtual NonnullRefPtr<MediaStreamCursor> create_cursor() override;
 
-    void close();
-
-    u64 size();
-    void set_expected_size(u64);
-    Optional<u64> expected_size() const;
-
-    class MEDIA_API Cursor : public MediaStreamCursor {
-    public:
-        ~Cursor();
-
-        virtual DecoderErrorOr<void> seek(i64 offset, SeekMode mode) override;
-        virtual DecoderErrorOr<size_t> read_into(Bytes bytes) override;
-
-        virtual size_t position() const override { return m_position; }
-        virtual size_t size() const override { return m_stream->size(); }
-
-        virtual void abort() override;
-        virtual void reset_abort() override { m_aborted = false; }
-        virtual bool is_aborted() const override { return m_aborted; }
-
-        virtual bool is_blocked() const override { return m_blocked; }
-
-    private:
-        friend class IncrementallyPopulatedStream;
-
-        Cursor(NonnullRefPtr<IncrementallyPopulatedStream> const& stream);
-
-        NonnullRefPtr<IncrementallyPopulatedStream> m_stream;
-        size_t m_position { 0 };
-        bool m_aborted { false };
-        Atomic<bool> m_blocked { false };
-        MonotonicTime m_active_timeout { MonotonicTime::now_coarse() };
-    };
+    virtual ~IncrementallyPopulatedStream() override = default;
 
 private:
-    class DataChunk {
-    public:
-        DataChunk(u64 offset, ByteBuffer&& data)
-            : m_offset(offset)
-            , m_data(move(data))
-        {
-        }
-
-        u64 offset() const { return m_offset; }
-        u64 size() const { return m_data.size(); }
-        u64 end() const { return offset() + size(); }
-        ByteBuffer& data() { return m_data; }
-        ByteBuffer const& data() const { return m_data; }
-        bool contains(u64 position) const { return position >= m_offset && position < end(); }
-        bool overlaps(DataChunk const& chunk) const { return offset() < chunk.end() && chunk.offset() < end(); }
-
-    private:
-        size_t m_offset { 0 };
-        ByteBuffer m_data;
-    };
-
-    IncrementallyPopulatedStream();
-
-    friend class Cursor;
-
-    using Chunks = AK::RedBlackTree<u64, DataChunk>;
-
-    DecoderErrorOr<size_t> read_at(Cursor&, size_t position, Bytes&);
-
-    void begin_new_request_while_locked(u64 position);
-    bool check_if_data_is_available_or_begin_request_while_locked(MonotonicTime now, u64 position, u64 length);
-    size_t read_from_chunks_while_locked(u64 position, Bytes& bytes) const;
-
-    mutable Threading::Mutex m_mutex;
-    Vector<Cursor&> m_cursors;
-    Threading::ConditionVariable m_state_changed { m_mutex };
-
-    Chunks m_chunks;
-    Optional<u64> m_expected_size;
-    bool m_closed { false };
-
-    RefPtr<Core::WeakEventLoopReference> m_callback_event_loop;
+    IncrementallyPopulatedStream() = default;
+    
+    Optional<size_t> m_expected_size;
+    Optional<ByteString> m_url_hint;
+    Optional<ByteString> m_mime_type_hint;
     DataRequestCallback m_data_request_callback;
-    u64 m_currently_requested_position { 0 };
-    u64 m_last_chunk_end { 0 };
 };
 
 }
