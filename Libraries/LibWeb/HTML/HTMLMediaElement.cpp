@@ -1690,7 +1690,11 @@ void HTMLMediaElement::forget_media_resource_specific_tracks()
     // this; the error and emptied events, fired by the algorithms that invoke this one, can be used instead.
     m_audio_tracks->remove_all_tracks({});
     m_video_tracks->remove_all_tracks({});
-    m_playback_manager.clear();
+    if (m_playback_manager) {
+        static Vector<OwnPtr<Media::PlaybackManager>> s_deferred_destroys;
+        s_deferred_destroys.append(move(m_playback_manager));
+        HTML::run_when_event_loop_reaches_step_1(GC::create_function(heap(), [] { s_deferred_destroys.clear(); }));
+    }
 }
 
 // https://html.spec.whatwg.org/multipage/media.html#ready-states:media-element-3
