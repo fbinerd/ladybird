@@ -303,7 +303,9 @@ static sk_sp<SkColorSpace> color_space_from_cicp(Media::CodingIndependentCodePoi
         case Media::TransferCharacteristics::SMPTE428:
             return SkNamedTransferFn::kSMPTE_ST_428_1;
         case Media::TransferCharacteristics::HLG:
-            return SkNamedTransferFn::kHLG;
+            // FIXME: This will need to change to use the HLG transfer function when the surface we're painting to
+            //        supports HDR.
+            return SkNamedTransferFn::kSRGB;
         }
         return SkNamedTransferFn::kRec709;
     }();
