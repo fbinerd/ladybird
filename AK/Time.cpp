@@ -231,11 +231,17 @@ i64 Duration::to_time_units(u32 numerator, u32 denominator) const
 
     auto seconds_product = saturating_mul(m_seconds, static_cast<i64>(denominator));
     auto time_units = seconds_product / numerator;
-    auto remainder = seconds_product % numerator;
+    auto seconds_remainder_dividend = seconds_product % numerator;
 
-    auto remainder_in_nanoseconds = remainder * 1'000'000'000;
-    auto rounding_half = static_cast<i64>(numerator) * 500'000'000;
-    time_units = saturating_add(time_units, ((static_cast<i64>(m_nanoseconds) * denominator + remainder_in_nanoseconds + rounding_half) / numerator) / 1'000'000'000);
+    auto seconds_remainder_nanosecond_dividend = seconds_remainder_dividend * 1'000'000'000;
+    auto rounding_half_nanosecond_dividend = static_cast<i64>(numerator) * 500'000'000;
+    auto sub_seconds_nanosecond_dividend = (static_cast<i64>(m_nanoseconds) * denominator) + seconds_remainder_nanosecond_dividend;
+
+    auto sub_seconds_nanosecond_units = sub_seconds_nanosecond_dividend / numerator;
+    auto sub_seconds_units_remainder_nanosecond_dividend = sub_seconds_nanosecond_dividend % numerator;
+    auto rounding_adjustment_nanosecond_units = (rounding_half_nanosecond_dividend + sub_seconds_units_remainder_nanosecond_dividend) / numerator;
+
+    time_units = saturating_add(time_units, (sub_seconds_nanosecond_units + rounding_adjustment_nanosecond_units) / 1'000'000'000);
 
     return time_units;
 }

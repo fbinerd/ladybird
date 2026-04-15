@@ -986,6 +986,8 @@ TEST_CASE(time_units)
     EXPECT_EQ(Duration::from_seconds(2'147'483'649).to_time_units(1, NumericLimits<u32>::max()), NumericLimits<i64>::max());
     EXPECT_EQ(Duration::from_seconds(2'147'483'648).to_time_units(1, NumericLimits<u32>::max()), NumericLimits<i64>::max() - (NumericLimits<u32>::max() / 2));
 
+    EXPECT_EQ((Duration::from_seconds(1) + Duration::from_nanoseconds(999'999'999)).to_time_units(NumericLimits<u32>::max(), NumericLimits<u32>::max() - 1), 2);
+
     EXPECT_DEATH("From time units with zero numerator", (void)Duration::from_time_units(1, 0, 1));
     EXPECT_DEATH("From time units with zero denominator", (void)Duration::from_time_units(1, 1, 0));
 }
