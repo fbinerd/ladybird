@@ -51,12 +51,6 @@ ColorSpace::ColorSpace(NonnullOwnPtr<Details::ColorSpaceImpl>&& color_space)
 
 ErrorOr<ColorSpace> ColorSpace::from_cicp(Media::CodingIndependentCodePoints cicp)
 {
-    if (cicp.matrix_coefficients() != Media::MatrixCoefficients::Identity)
-        return Error::from_string_literal("Unsupported matrix coefficients for CICP");
-
-    if (cicp.video_full_range_flag() != Media::VideoFullRangeFlag::Full)
-        return Error::from_string_literal("Unsupported matrix coefficients for CICP");
-
     auto gamut = TRY([&] -> ErrorOr<skcms_Matrix3x3> {
         if (cicp.color_primaries() == Media::ColorPrimaries::XYZ)
             return SkNamedGamut::kXYZ;
