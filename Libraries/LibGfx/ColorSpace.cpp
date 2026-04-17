@@ -57,8 +57,6 @@ ErrorOr<ColorSpace> ColorSpace::from_cicp(Media::CodingIndependentCodePoints cic
 
         auto primaries = TRY([&] -> ErrorOr<SkColorSpacePrimaries> {
             switch (cicp.color_primaries()) {
-            case Media::ColorPrimaries::Reserved:
-                break;
             case Media::ColorPrimaries::BT709:
             case Media::ColorPrimaries::Unspecified:
                 return SkNamedPrimaries::kRec709;
@@ -92,8 +90,6 @@ ErrorOr<ColorSpace> ColorSpace::from_cicp(Media::CodingIndependentCodePoints cic
 
     auto transfer_function = TRY([&] -> ErrorOr<skcms_TransferFunction> {
         switch (cicp.transfer_characteristics()) {
-        case Media::TransferCharacteristics::Reserved:
-            break;
         case Media::TransferCharacteristics::BT709:
         case Media::TransferCharacteristics::Unspecified:
             return SkNamedTransferFn::kRec709;
