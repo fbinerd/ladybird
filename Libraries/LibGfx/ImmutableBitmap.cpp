@@ -41,20 +41,15 @@ struct ImmutableBitmapImpl {
     SkBitmap sk_bitmap;
     RefPtr<Gfx::Bitmap> bitmap;
     ColorSpace color_space;
-    OwnPtr<YUVData> yuv_data;
 };
 
 int ImmutableBitmap::width() const
 {
-    if (m_impl->yuv_data)
-        return m_impl->yuv_data->size().width();
     return m_impl->sk_image->width();
 }
 
 int ImmutableBitmap::height() const
 {
-    if (m_impl->yuv_data)
-        return m_impl->yuv_data->size().height();
     return m_impl->sk_image->height();
 }
 
@@ -206,22 +201,37 @@ RefPtr<Gfx::Bitmap const> ImmutableBitmap::bitmap() const
     return m_impl->bitmap;
 }
 
-bool ImmutableBitmap::is_yuv_backed() const
-{
-    return m_impl->yuv_data != nullptr;
-}
-
 ErrorOr<NonnullRefPtr<ImmutableBitmap>> ImmutableBitmap::create_from_yuv(NonnullOwnPtr<YUVData> yuv_data)
 {
-    // Hold onto the YUVData to lazily create the SkImage later.
     auto color_space = TRY(ColorSpace::from_cicp(yuv_data->cicp()));
+
+    auto context = SkiaBackendContext::the();
+    auto* gr_context = context ? context->sk_context() : nullptr;
+
+    if (!gr_context)
+        return Error::from_string_literal("GPU context is unavailable");
+
+    if (yuv_data->bit_depth() > 8)
+        yuv_data->expand_samples_to_full_16_bit_range();
+
+    context->lock();
+    auto sk_image = SkImages::TextureFromYUVAPixmaps(
+        gr_context,
+        yuv_data->make_pixmaps(),
+        skgpu::Mipmapped::kNo,
+        false,
+        color_space.color_space<sk_sp<SkColorSpace>>());
+    context->unlock();
+
+    if (!sk_image)
+        return Error::from_string_literal("Failed to upload YUV data");
+
     ImmutableBitmapImpl impl {
-        .context = nullptr,
-        .sk_image = nullptr,
+        .context = context,
+        .sk_image = move(sk_image),
         .sk_bitmap = {},
         .bitmap = nullptr,
-        .color_space = move(color_space),
-        .yuv_data = move(yuv_data),
+        .color_space = {},
     };
     return adopt_ref(*new ImmutableBitmap(make<ImmutableBitmapImpl>(move(impl))));
 }
@@ -240,41 +250,14 @@ bool ImmutableBitmap::ensure_sk_image(SkiaBackendContext& context) const
 
     auto* gr_context = context.sk_context();
 
-    // Bitmap-backed: try to upload raster image to GPU texture
-    if (m_impl->sk_image) {
-        if (!gr_context)
-            return true; // No GPU, but raster image is still usable
-        auto gpu_image = SkImages::TextureFromImage(gr_context, m_impl->sk_image.get(), skgpu::Mipmapped::kNo, skgpu::Budgeted::kYes);
-        if (gpu_image) {
-            m_impl->context = context;
-            m_impl->sk_image = move(gpu_image);
-        }
-        return true;
-    }
-
-    // YUV-backed: GPU is required to decode YUV to RGB
-    VERIFY(m_impl->yuv_data);
-
+    VERIFY(m_impl->sk_image);
     if (!gr_context)
-        return false; // No GPU, cannot create image from YUV data
-
-    if (m_impl->yuv_data->bit_depth() > 8)
-        m_impl->yuv_data->expand_samples_to_full_16_bit_range();
-    auto pixmaps = m_impl->yuv_data->make_pixmaps();
-
-    auto sk_image = SkImages::TextureFromYUVAPixmaps(
-        gr_context,
-        pixmaps,
-        skgpu::Mipmapped::kNo,
-        false,
-        m_impl->color_space.color_space<sk_sp<SkColorSpace>>());
-
-    if (!sk_image)
-        return false;
-
-    m_impl->context = context;
-    m_impl->sk_image = move(sk_image);
-    m_impl->yuv_data = nullptr;
+        return true; // No GPU, but raster image is still usable
+    auto gpu_image = SkImages::TextureFromImage(gr_context, m_impl->sk_image.get(), skgpu::Mipmapped::kNo, skgpu::Budgeted::kYes);
+    if (gpu_image) {
+        m_impl->context = context;
+        m_impl->sk_image = move(gpu_image);
+    }
     return true;
 }
 
@@ -309,7 +292,6 @@ NonnullRefPtr<ImmutableBitmap> ImmutableBitmap::create(NonnullRefPtr<Bitmap> con
         .sk_bitmap = move(sk_bitmap),
         .bitmap = bitmap,
         .color_space = move(color_space),
-        .yuv_data = nullptr,
     };
     return adopt_ref(*new ImmutableBitmap(make<ImmutableBitmapImpl>(move(impl))));
 }
@@ -339,7 +321,6 @@ NonnullRefPtr<ImmutableBitmap> ImmutableBitmap::create_snapshot_from_painting_su
         .sk_bitmap = {},
         .bitmap = nullptr,
         .color_space = {},
-        .yuv_data = nullptr,
     };
     return adopt_ref(*new ImmutableBitmap(make<ImmutableBitmapImpl>(move(impl))));
 }

@@ -56,7 +56,6 @@ public:
 
     ~ImmutableBitmap();
 
-    bool is_yuv_backed() const;
     bool ensure_sk_image(SkiaBackendContext&) const;
 
     int width() const;
@@ -75,8 +74,6 @@ public:
     RefPtr<Bitmap const> bitmap() const;
 
 private:
-    friend class YUVData;
-
     mutable NonnullOwnPtr<ImmutableBitmapImpl> m_impl;
 
     explicit ImmutableBitmap(NonnullOwnPtr<ImmutableBitmapImpl>&&);
