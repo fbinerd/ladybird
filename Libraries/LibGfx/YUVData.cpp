@@ -122,14 +122,22 @@ static SkYUVColorSpace skia_yuv_color_space(Media::CodingIndependentCodePoints c
     bool full_range = cicp.video_full_range_flag() == Media::VideoFullRangeFlag::Full;
 
     switch (cicp.matrix_coefficients()) {
+    case Media::MatrixCoefficients::BT709:
+        return full_range ? kRec709_Full_SkYUVColorSpace : kRec709_Limited_SkYUVColorSpace;
+    case Media::MatrixCoefficients::FCC:
+        return full_range ? kFCC_Full_SkYUVColorSpace : kFCC_Limited_SkYUVColorSpace;
     case Media::MatrixCoefficients::BT470BG:
     case Media::MatrixCoefficients::BT601:
         return full_range ? kJPEG_Full_SkYUVColorSpace : kRec601_Limited_SkYUVColorSpace;
-    case Media::MatrixCoefficients::BT709:
-        return full_range ? kRec709_Full_SkYUVColorSpace : kRec709_Limited_SkYUVColorSpace;
+    case Media::MatrixCoefficients::SMPTE240:
+        return full_range ? kSMPTE240_Full_SkYUVColorSpace : kSMPTE240_Limited_SkYUVColorSpace;
+    case Media::MatrixCoefficients::YCgCo:
+        return full_range ? kYCgCo_16bit_Full_SkYUVColorSpace : kYCgCo_16bit_Limited_SkYUVColorSpace;
     case Media::MatrixCoefficients::BT2020NonConstantLuminance:
     case Media::MatrixCoefficients::BT2020ConstantLuminance:
         return full_range ? kBT2020_16bit_Full_SkYUVColorSpace : kBT2020_16bit_Limited_SkYUVColorSpace;
+    case Media::MatrixCoefficients::SMPTE2085:
+        return full_range ? kYDZDX_Full_SkYUVColorSpace : kYDZDX_Limited_SkYUVColorSpace;
     case Media::MatrixCoefficients::Identity:
         return kIdentity_SkYUVColorSpace;
     default:
