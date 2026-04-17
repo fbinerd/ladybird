@@ -92,13 +92,17 @@ ErrorOr<ColorSpace> ColorSpace::from_cicp(Media::CodingIndependentCodePoints cic
         switch (cicp.transfer_characteristics()) {
         case Media::TransferCharacteristics::BT709:
         case Media::TransferCharacteristics::Unspecified:
-            return SkNamedTransferFn::kRec709;
+        case Media::TransferCharacteristics::BT601:
+        case Media::TransferCharacteristics::BT2020BitDepth10:
+        case Media::TransferCharacteristics::BT2020BitDepth12:
+            // This isn't technically correct, but Chromium has set the precedent that these are treated as sRGB as an
+            // optimization. Using the actual transfer characteristics will produce output inconsistent with other
+            // browsers, so we unfortunately have to follow suit.
+            return SkNamedTransferFn::kSRGB;
         case Media::TransferCharacteristics::BT470M:
             return SkNamedTransferFn::kRec470SystemM;
         case Media::TransferCharacteristics::BT470BG:
             return SkNamedTransferFn::kRec470SystemBG;
-        case Media::TransferCharacteristics::BT601:
-            return SkNamedTransferFn::kRec601;
         case Media::TransferCharacteristics::SMPTE240:
             return SkNamedTransferFn::kSMPTE_ST_240;
         case Media::TransferCharacteristics::Linear:
@@ -112,10 +116,6 @@ ErrorOr<ColorSpace> ColorSpace::from_cicp(Media::CodingIndependentCodePoints cic
             return Error::from_string_literal("BT.1361 transfer characteristics are not supported.");
         case Media::TransferCharacteristics::SRGB:
             return SkNamedTransferFn::kSRGB;
-        case Media::TransferCharacteristics::BT2020BitDepth10:
-            return SkNamedTransferFn::kRec2020_10bit;
-        case Media::TransferCharacteristics::BT2020BitDepth12:
-            return SkNamedTransferFn::kRec2020_12bit;
         case Media::TransferCharacteristics::SMPTE2084:
             return SkNamedTransferFn::kPQ;
         case Media::TransferCharacteristics::SMPTE428:
