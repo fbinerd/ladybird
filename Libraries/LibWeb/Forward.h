@@ -362,7 +362,6 @@ class MediaQueryListEvent;
 class Number;
 class NumberStyleValue;
 class NumericType;
-class OKLCHColorStyleValue;
 class OpenTypeTaggedStyleValue;
 class ParsedFontFace;
 class PendingSubstitutionStyleValue;
