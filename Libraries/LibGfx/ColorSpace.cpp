@@ -35,7 +35,8 @@ ColorSpace::ColorSpace(ColorSpace const& other)
 
 ColorSpace& ColorSpace::operator=(ColorSpace const& other)
 {
-    m_color_space = make<Details::ColorSpaceImpl>(other.m_color_space->color_space);
+    if (this != &other)
+        m_color_space = make<Details::ColorSpaceImpl>(other.m_color_space->color_space);
     return *this;
 }
 
