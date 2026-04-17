@@ -345,7 +345,9 @@ bool ImmutableBitmap::ensure_sk_image(SkiaBackendContext& context) const
     if (!gr_context)
         return false; // No GPU, cannot create image from YUV data
 
-    auto const& pixmaps = m_impl->yuv_data->skia_yuva_pixmaps();
+    if (m_impl->yuv_data->bit_depth() > 8)
+        m_impl->yuv_data->expand_samples_to_full_16_bit_range();
+    auto pixmaps = m_impl->yuv_data->make_pixmaps();
     auto color_space = color_space_from_cicp(m_impl->yuv_data->cicp());
 
     auto sk_image = SkImages::TextureFromYUVAPixmaps(
@@ -360,6 +362,7 @@ bool ImmutableBitmap::ensure_sk_image(SkiaBackendContext& context) const
 
     m_impl->context = context;
     m_impl->sk_image = move(sk_image);
+    m_impl->yuv_data = nullptr;
     return true;
 }
 
