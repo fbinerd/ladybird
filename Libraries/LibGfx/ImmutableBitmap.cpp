@@ -208,8 +208,10 @@ ErrorOr<NonnullRefPtr<ImmutableBitmap>> ImmutableBitmap::create_from_yuv(Nonnull
     auto context = SkiaBackendContext::the();
     auto* gr_context = context ? context->sk_context() : nullptr;
 
-    if (!gr_context)
-        return Error::from_string_literal("GPU context is unavailable");
+    if (!gr_context) {
+        auto bitmap = TRY(yuv_data->to_bitmap());
+        return create(move(bitmap), move(color_space));
+    }
 
     if (yuv_data->bit_depth() > 8)
         yuv_data->expand_samples_to_full_16_bit_range();

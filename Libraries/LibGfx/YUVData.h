@@ -9,6 +9,8 @@
 #include <AK/Error.h>
 #include <AK/FixedArray.h>
 #include <AK/NonnullOwnPtr.h>
+#include <AK/NonnullRefPtr.h>
+#include <LibGfx/Forward.h>
 #include <LibGfx/Size.h>
 #include <LibMedia/Color/CodingIndependentCodePoints.h>
 #include <LibMedia/Subsampling.h>
@@ -41,6 +43,8 @@ public:
     Bytes y_data();
     Bytes u_data();
     Bytes v_data();
+
+    ErrorOr<NonnullRefPtr<Bitmap>> to_bitmap() const;
 
     SkYUVAPixmaps make_pixmaps() const;
 
