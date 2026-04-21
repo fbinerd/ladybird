@@ -42,3 +42,6 @@ target: drop
 Dragstart cancelled:
 source: dragstart
 dragstart (cancelling)
+
+Mousedown cancelled (prevents dragstart):
+source: mousedown (cancelling)

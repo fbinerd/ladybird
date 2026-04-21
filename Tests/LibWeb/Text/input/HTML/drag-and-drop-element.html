@@ -114,6 +114,20 @@
         internals.mouseDown(50, 150);
         internals.mouseMove(50, 125);
         internals.mouseMove(50, 50);
+        internals.mouseMove(55, 50);
+        internals.mouseUp(50, 50);
+
+        println("\nMousedown cancelled (prevents dragstart):");
+        source.addEventListener(
+            "mousedown",
+            e => {
+                println(`source: ${e.type} (cancelling)`);
+                e.preventDefault();
+            },
+            { once: true });
+        internals.mouseDown(50, 150);
+        internals.mouseMove(50, 125);
+        internals.mouseMove(50, 50);
         internals.mouseUp(50, 50);
     });
 </script>
