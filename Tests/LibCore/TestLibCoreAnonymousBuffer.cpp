@@ -42,6 +42,20 @@ TEST_CASE(read_and_write_contents)
     EXPECT_EQ(read_back, payload);
 }
 
+TEST_CASE(create_with_zero_size)
+{
+    auto buffer = MUST(Core::AnonymousBuffer::create_with_size(0));
+    EXPECT(buffer.is_valid());
+    EXPECT_EQ(buffer.size(), 0u);
+    EXPECT(buffer.bytes().is_empty());
+
+    auto fd = MUST(Core::System::dup(buffer.fd()));
+    auto mirror = MUST(Core::AnonymousBuffer::create_from_anon_fd(fd, 0));
+    EXPECT(mirror.is_valid());
+    EXPECT_EQ(mirror.size(), 0u);
+    EXPECT(mirror.bytes().is_empty());
+}
+
 TEST_CASE(reconstruct_from_anon_fd_shares_memory)
 {
     auto original = MUST(Core::AnonymousBuffer::create_with_size(128));
