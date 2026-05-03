@@ -7,6 +7,7 @@
 #include <AK/OwnPtr.h>
 #include <LibGfx/CompositingAndBlendingOperator.h>
 #include <LibGfx/FontCascadeList.h>
+#include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/PainterSkia.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/TextLayout.h>
@@ -145,19 +146,43 @@ void OffscreenCanvasRenderingContext2D::fill(Path2D&, StringView)
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-createimagedata
-WebIDL::ExceptionOr<GC::Ref<ImageData>> OffscreenCanvasRenderingContext2D::create_image_data(int, int, Optional<ImageDataSettings> const&) const
+WebIDL::ExceptionOr<GC::Ref<ImageData>> OffscreenCanvasRenderingContext2D::create_image_data(int width, int height, Optional<ImageDataSettings> const& settings) const
 {
-    return WebIDL::NotSupportedError::create(realm(), "(STUBBED) OffscreenCanvasRenderingContext2D::create_image_data(int, int)"_utf16);
+    if (width == 0 || height == 0)
+        return WebIDL::IndexSizeError::create(realm(), "Width and height must not be zero"_utf16);
+
+    return TRY(ImageData::create(realm(), abs(width), abs(height), settings));
 }
 
-WebIDL::ExceptionOr<GC::Ref<ImageData>> OffscreenCanvasRenderingContext2D::create_image_data(ImageData const&) const
+WebIDL::ExceptionOr<GC::Ref<ImageData>> OffscreenCanvasRenderingContext2D::create_image_data(ImageData const& image_data) const
 {
-    return WebIDL::NotSupportedError::create(realm(), "(STUBBED) OffscreenCanvasRenderingContext2D::create_image_data(ImageData&)"_utf16);
+    return TRY(ImageData::create(realm(), image_data.width(), image_data.height()));
 }
 
-WebIDL::ExceptionOr<GC::Ptr<ImageData>> OffscreenCanvasRenderingContext2D::get_image_data(int, int, int, int, Optional<ImageDataSettings> const&) const
+WebIDL::ExceptionOr<GC::Ptr<ImageData>> OffscreenCanvasRenderingContext2D::get_image_data(int x, int y, int width, int height, Optional<ImageDataSettings> const& settings) const
 {
-    return WebIDL::NotSupportedError::create(realm(), "(STUBBED) OffscreenCanvasRenderingContext2D::get_image_data()"_utf16);
+    if (width == 0 || height == 0)
+        return WebIDL::IndexSizeError::create(realm(), "Width and height must not be zero"_utf16);
+
+    int abs_width = abs(width);
+    int abs_height = abs(height);
+    auto image_data = TRY(ImageData::create(realm(), abs_width, abs_height, settings));
+
+    auto bitmap = canvas_element().bitmap();
+    if (!bitmap)
+        return image_data;
+
+    auto source_rect = Gfx::Rect { x, y, abs_width, abs_height };
+    if (width < 0 || height < 0)
+        source_rect = source_rect.translated(min(width, 0), min(height, 0));
+
+    auto source_bitmap = Gfx::ImmutableBitmap::create(*bitmap, Gfx::AlphaType::Premultiplied);
+    auto source_rect_intersected = source_rect.intersected(source_bitmap->rect());
+
+    auto painter = Gfx::Painter::create(image_data->bitmap());
+    painter->draw_bitmap(image_data->bitmap().rect().to_type<float>(), source_bitmap, source_rect_intersected, Gfx::ScalingMode::NearestNeighbor, {}, 1, Gfx::CompositingAndBlendingOperator::SourceOver);
+
+    return image_data;
 }
 
 WebIDL::ExceptionOr<void> OffscreenCanvasRenderingContext2D::put_image_data(ImageData&, float, float)

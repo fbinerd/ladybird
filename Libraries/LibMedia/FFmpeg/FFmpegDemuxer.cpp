@@ -8,6 +8,7 @@
 #include <AK/Math.h>
 #include <AK/MemoryStream.h>
 #include <AK/Stream.h>
+#include <AK/StringView.h>
 #include <AK/Time.h>
 #include <LibMedia/FFmpeg/FFmpegDemuxer.h>
 #include <LibMedia/FFmpeg/FFmpegHelpers.h>
@@ -32,13 +33,41 @@ FFmpegDemuxer::~FFmpegDemuxer()
     }
 }
 
-static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_context, AVIOContext& io_context)
+static DecoderErrorOr<bool> stream_looks_like_hls(MediaStreamCursor& cursor)
+{
+    Array<u8, 512> probe_buffer;
+
+    if (cursor.seek(0, AK::SeekMode::SetPosition).is_error())
+        return false;
+
+    auto bytes_read_or_error = cursor.read_into(probe_buffer);
+    auto reset_result = cursor.seek(0, AK::SeekMode::SetPosition);
+    if (reset_result.is_error())
+        return reset_result.release_error();
+
+    if (bytes_read_or_error.is_error())
+        return false;
+
+    auto bytes_read = bytes_read_or_error.release_value();
+    auto probe = StringView { reinterpret_cast<char const*>(probe_buffer.data()), bytes_read };
+
+    // HLS playlists often arrive through custom IO without a filename or MIME type,
+    // so libavformat's normal m3u8 probing can miss them unless we provide the demuxer.
+    return probe.starts_with("#EXTM3U"sv) && probe.contains("#EXT-X-"sv);
+}
+
+static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_context, AVIOContext& io_context, bool force_hls_demuxer)
 {
     format_context = avformat_alloc_context();
     if (format_context == nullptr)
         return DecoderError::with_description(DecoderErrorCategory::Memory, "Failed to allocate format context"sv);
     format_context->pb = &io_context;
-    if (avformat_open_input(&format_context, nullptr, nullptr, nullptr) < 0)
+
+    AVInputFormat const* input_format = nullptr;
+    if (force_hls_demuxer)
+        input_format = av_find_input_format("hls");
+
+    if (avformat_open_input(&format_context, nullptr, input_format, nullptr) < 0)
         return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to open input for format parsing"sv);
 
     // Read stream info; doing this is required for headerless formats like MPEG
@@ -121,10 +150,12 @@ static DecoderErrorOr<Track> create_track_from_stream(AVStream const& stream, St
 
 DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullRefPtr<MediaStream> const& stream)
 {
-    auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(stream->create_cursor()));
+    auto cursor = stream->create_cursor();
+    auto force_hls_demuxer = TRY(stream_looks_like_hls(cursor));
+    auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     AVFormatContext* format_context = nullptr;
-    TRY(initialize_format_context(format_context, *io_context->avio_context()));
+    TRY(initialize_format_context(format_context, *io_context->avio_context(), force_hls_demuxer));
 
     auto demuxer = DECODER_TRY_ALLOC(adopt_nonnull_ref_or_enomem(new (nothrow) FFmpegDemuxer(stream)));
     demuxer->m_total_duration = AK::Duration::from_time_units(format_context->duration, 1, AV_TIME_BASE);
@@ -175,12 +206,13 @@ DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullR
 DecoderErrorOr<void> FFmpegDemuxer::create_context_for_track(Track const& track)
 {
     auto cursor = m_stream->create_cursor();
+    auto force_hls_demuxer = TRY(stream_looks_like_hls(cursor));
     auto io_context = MUST(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     auto track_context = make<TrackContext>(move(cursor), move(io_context));
 
     // We've already initialized a format context, so the only way this can fail is OOM.
-    MUST(initialize_format_context(track_context->format_context, *track_context->io_context->avio_context()));
+    MUST(initialize_format_context(track_context->format_context, *track_context->io_context->avio_context(), force_hls_demuxer));
 
     track_context->packet = av_packet_alloc();
     VERIFY(track_context->packet != nullptr);
