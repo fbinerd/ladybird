@@ -6,8 +6,10 @@
 
 #include <AK/OwnPtr.h>
 #include <LibGfx/CompositingAndBlendingOperator.h>
+#include <LibGfx/FontCascadeList.h>
 #include <LibGfx/PainterSkia.h>
 #include <LibGfx/Rect.h>
+#include <LibGfx/TextLayout.h>
 #include <LibUnicode/Segmenter.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/OffscreenCanvasRenderingContext2D.h>
@@ -175,12 +177,96 @@ void OffscreenCanvasRenderingContext2D::reset_to_default_state()
     dbgln("(STUBBED) OffscreenCanvasRenderingContext2D::reset_to_default_state()");
 }
 
-GC::Ref<TextMetrics> OffscreenCanvasRenderingContext2D::measure_text(Utf16String const&)
+GC::Ref<TextMetrics> OffscreenCanvasRenderingContext2D::measure_text(Utf16String const& text)
 {
-    dbgln("(STUBBED) OffscreenCanvasRenderingContext2D::measure_text()");
-
+    auto prepared_text = prepare_text(text);
     auto metrics = TextMetrics::create(realm());
+    auto const& font = font_cascade_list()->first();
+    auto const& font_pixel_metrics = font.pixel_metrics();
+    auto const ascent = font_pixel_metrics.ascent;
+    auto const descent = font_pixel_metrics.descent;
+    auto const hanging_baseline = ascent * 0.8f;
+
+    float baseline_offset = 0;
+    switch (drawing_state().text_baseline) {
+    case Bindings::CanvasTextBaseline::Top:
+        baseline_offset = ascent;
+        break;
+    case Bindings::CanvasTextBaseline::Hanging:
+        baseline_offset = hanging_baseline;
+        break;
+    case Bindings::CanvasTextBaseline::Middle:
+        baseline_offset = (ascent - descent) / 2.0f;
+        break;
+    case Bindings::CanvasTextBaseline::Alphabetic:
+        baseline_offset = 0;
+        break;
+    case Bindings::CanvasTextBaseline::Ideographic:
+    case Bindings::CanvasTextBaseline::Bottom:
+        baseline_offset = -descent;
+        break;
+    }
+
+    metrics->set_width(prepared_text.bounding_box.width());
+    metrics->set_actual_bounding_box_left(-prepared_text.bounding_box.left());
+    metrics->set_actual_bounding_box_right(prepared_text.bounding_box.right());
+    metrics->set_font_bounding_box_ascent(ascent - baseline_offset);
+    metrics->set_font_bounding_box_descent(descent + baseline_offset);
+    metrics->set_actual_bounding_box_ascent(ascent - baseline_offset);
+    metrics->set_actual_bounding_box_descent(descent + baseline_offset);
+    metrics->set_em_height_ascent(ascent - baseline_offset);
+    metrics->set_em_height_descent(descent + baseline_offset);
+    metrics->set_hanging_baseline(hanging_baseline - baseline_offset);
+    metrics->set_alphabetic_baseline(-baseline_offset);
+    metrics->set_ideographic_baseline(-descent - baseline_offset);
+
     return metrics;
+}
+
+RefPtr<Gfx::FontCascadeList const> OffscreenCanvasRenderingContext2D::font_cascade_list()
+{
+    if (!drawing_state().font_style_value)
+        set_font("10px sans-serif"sv);
+
+    if (!drawing_state().current_font_cascade_list) {
+        auto font_list = Gfx::FontCascadeList::create();
+        if (auto default_font = Platform::FontPlugin::the().default_font(8)) {
+            font_list->add(*default_font);
+            font_list->set_last_resort_font(*default_font);
+        }
+        drawing_state().current_font_cascade_list = font_list;
+    }
+
+    return drawing_state().current_font_cascade_list;
+}
+
+static float resolved_offscreen_letter_spacing(CanvasState::DrawingState const& drawing_state, OffscreenCanvas const& canvas)
+{
+    auto computation_context = canvas.canvas_font_computation_context();
+    return static_cast<float>(drawing_state.letter_spacing.to_px(computation_context.length_resolution_context).to_double());
+}
+
+OffscreenCanvasRenderingContext2D::PreparedText OffscreenCanvasRenderingContext2D::prepare_text(Utf16String const& text, float max_width)
+{
+    if (max_width <= 0 || max_width != max_width)
+        return {};
+
+    StringBuilder builder { StringBuilder::Mode::UTF16, text.length_in_code_units() };
+    for (auto c : text)
+        builder.append_code_point(Infra::is_ascii_whitespace(c) ? ' ' : c);
+    auto replaced_text = builder.to_utf16_string();
+
+    auto glyph_runs = Gfx::shape_text({ 0, 0 }, replaced_text.utf16_view(), *font_cascade_list(),
+        resolved_offscreen_letter_spacing(drawing_state(), canvas_element()));
+
+    float height = 0;
+    float width = 0;
+    for (auto const& glyph_run : glyph_runs) {
+        height = max(height, glyph_run->font().pixel_size());
+        width += glyph_run->width();
+    }
+
+    return { move(glyph_runs), Gfx::TextAlignment::CenterLeft, { 0, 0, width, height } };
 }
 
 void OffscreenCanvasRenderingContext2D::clip(StringView)

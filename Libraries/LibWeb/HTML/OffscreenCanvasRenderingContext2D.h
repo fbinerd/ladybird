@@ -142,6 +142,15 @@ private:
     }
     virtual Gfx::Path& path_for_canvas_state() override { return path(); }
 
+    struct PreparedText {
+        Vector<NonnullRefPtr<Gfx::GlyphRun>> glyph_runs;
+        Gfx::TextAlignment physical_alignment;
+        Gfx::FloatRect bounding_box;
+    };
+
+    RefPtr<Gfx::FontCascadeList const> font_cascade_list();
+    PreparedText prepare_text(Utf16String const&, float max_width = INFINITY);
+
     GC::Ref<OffscreenCanvas> m_canvas;
     Gfx::IntSize m_size;
     CanvasRenderingContext2DSettings m_context_attributes;
