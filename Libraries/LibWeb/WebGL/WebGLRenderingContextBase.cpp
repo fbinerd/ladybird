@@ -12,7 +12,6 @@ extern "C" {
 #include <GLES2/gl2ext_angle.h>
 }
 
-#include <LibGfx/Bitmap.h>
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/SkiaUtils.h>
 #include <LibWeb/HTML/EventLoop/Task.h>
@@ -98,111 +97,6 @@ static constexpr Optional<Gfx::ExportFormat> determine_export_format(WebIDL::Uns
 
     dbgln("WebGL: Unsupported format and type combination. format: 0x{:04x}, type: 0x{:04x}", format, type);
     return {};
-}
-
-static ErrorOr<Gfx::BitmapExportResult> export_bitmap_to_byte_buffer(Gfx::Bitmap const& bitmap, Gfx::ExportFormat format, int flags, Optional<int> target_width, Optional<int> target_height)
-{
-    int width = target_width.value_or(bitmap.width());
-    int height = target_height.value_or(bitmap.height());
-    if (width < 0 || height < 0)
-        return Error::from_string_literal("WebGL bitmap export has invalid dimensions");
-
-    Checked<size_t> bytes_per_pixel = 0;
-    switch (format) {
-    case Gfx::ExportFormat::Gray8:
-    case Gfx::ExportFormat::Alpha8:
-        bytes_per_pixel = 1;
-        break;
-    case Gfx::ExportFormat::RGB565:
-    case Gfx::ExportFormat::RGBA5551:
-    case Gfx::ExportFormat::RGBA4444:
-        bytes_per_pixel = 2;
-        break;
-    case Gfx::ExportFormat::RGB888:
-        bytes_per_pixel = 3;
-        break;
-    case Gfx::ExportFormat::RGBA8888:
-        bytes_per_pixel = 4;
-        break;
-    }
-
-    Checked<size_t> buffer_pitch = width;
-    buffer_pitch *= bytes_per_pixel;
-    if (buffer_pitch.has_overflow())
-        return Error::from_string_literal("WebGL bitmap export size overflow");
-
-    if (Checked<size_t>::multiplication_would_overflow(buffer_pitch.value(), height))
-        return Error::from_string_literal("WebGL bitmap export size overflow");
-
-    auto buffer = TRY(ByteBuffer::create_zeroed(buffer_pitch.value() * height));
-    RefPtr<Gfx::Bitmap> scaled_bitmap;
-    auto const* source_bitmap = &bitmap;
-    if ((width != bitmap.width() || height != bitmap.height()) && width > 0 && height > 0) {
-        scaled_bitmap = TRY(bitmap.scaled(width, height, Gfx::ScalingMode::NearestNeighbor));
-        source_bitmap = scaled_bitmap.ptr();
-    }
-
-    auto* raw_buffer = buffer.data();
-    for (int y = 0; y < height; ++y) {
-        auto target_y = flags & Gfx::ExportFlags::FlipY ? height - y - 1 : y;
-        for (int x = 0; x < width; ++x) {
-            auto pixel = source_bitmap->get_pixel(x, y);
-            auto alpha = pixel.alpha();
-            auto red = pixel.red();
-            auto green = pixel.green();
-            auto blue = pixel.blue();
-            if (flags & Gfx::ExportFlags::PremultiplyAlpha) {
-                red = (red * alpha + 127) / 255;
-                green = (green * alpha + 127) / 255;
-                blue = (blue * alpha + 127) / 255;
-            }
-
-            auto buffer_offset = target_y * buffer_pitch.value() + x * bytes_per_pixel.value();
-            switch (format) {
-            case Gfx::ExportFormat::Gray8:
-                raw_buffer[buffer_offset] = (red * 30 + green * 59 + blue * 11) / 100;
-                break;
-            case Gfx::ExportFormat::Alpha8:
-                raw_buffer[buffer_offset] = alpha;
-                break;
-            case Gfx::ExportFormat::RGB565: {
-                u16 packed = ((red >> 3) << 11) | ((green >> 2) << 5) | (blue >> 3);
-                raw_buffer[buffer_offset] = packed & 0xff;
-                raw_buffer[buffer_offset + 1] = packed >> 8;
-                break;
-            }
-            case Gfx::ExportFormat::RGBA5551: {
-                u16 packed = ((red >> 3) << 11) | ((green >> 3) << 6) | ((blue >> 3) << 1) | (alpha >> 7);
-                raw_buffer[buffer_offset] = packed & 0xff;
-                raw_buffer[buffer_offset + 1] = packed >> 8;
-                break;
-            }
-            case Gfx::ExportFormat::RGBA4444: {
-                u16 packed = ((red >> 4) << 12) | ((green >> 4) << 8) | ((blue >> 4) << 4) | (alpha >> 4);
-                raw_buffer[buffer_offset] = packed & 0xff;
-                raw_buffer[buffer_offset + 1] = packed >> 8;
-                break;
-            }
-            case Gfx::ExportFormat::RGB888:
-                raw_buffer[buffer_offset] = red;
-                raw_buffer[buffer_offset + 1] = green;
-                raw_buffer[buffer_offset + 2] = blue;
-                break;
-            case Gfx::ExportFormat::RGBA8888:
-                raw_buffer[buffer_offset] = red;
-                raw_buffer[buffer_offset + 1] = green;
-                raw_buffer[buffer_offset + 2] = blue;
-                raw_buffer[buffer_offset + 3] = alpha;
-                break;
-            }
-        }
-    }
-
-    return Gfx::BitmapExportResult {
-        .buffer = move(buffer),
-        .width = width,
-        .height = height,
-    };
 }
 
 WebGLRenderingContextBase::WebGLRenderingContextBase(JS::Realm& realm)
@@ -413,25 +307,6 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
         export_flags |= Gfx::ExportFlags::FlipY;
     if (m_unpack_premultiply_alpha)
         export_flags |= Gfx::ExportFlags::PremultiplyAlpha;
-
-    auto raw_bitmap = source.visit(
-        [](OneOf<GC::Root<HTML::ImageBitmap>, GC::Root<HTML::OffscreenCanvas>> auto const& source) -> Gfx::Bitmap const* {
-            return source->bitmap();
-        },
-        [](GC::Root<HTML::ImageData> const& source) -> Gfx::Bitmap const* {
-            return &source->bitmap();
-        },
-        [](auto const&) -> Gfx::Bitmap const* {
-            return nullptr;
-        });
-    if (raw_bitmap) {
-        auto result = export_bitmap_to_byte_buffer(*raw_bitmap, export_format.value(), export_flags, destination_width, destination_height);
-        if (result.is_error()) {
-            dbgln("Could not export bitmap: {}", result.release_error());
-            return OptionalNone {};
-        }
-        return result.release_value();
-    }
 
     auto result = bitmap->export_to_byte_buffer(export_format.value(), export_flags, destination_width, destination_height);
     if (result.is_error()) {
