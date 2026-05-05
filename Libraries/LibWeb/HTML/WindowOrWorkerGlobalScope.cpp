@@ -30,6 +30,7 @@
 #include <LibWeb/HTML/EventSource.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/HTML/ImageBitmap.h>
+#include <LibWeb/HTML/OffscreenCanvas.h>
 #include <LibWeb/HTML/Scripting/ClassicScript.h>
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
@@ -444,11 +445,30 @@ GC::Ref<WebIDL::Promise> WindowOrWorkerGlobalScopeMixin::create_image_bitmap_imp
                         WebIDL::resolve_promise(realm, *p, image_bitmap);
                     }));
                 },
-                [&](GC::Root<OffscreenCanvas> const&) {
-                    dbgln("(STUBBED) createImageBitmap() for OffscreenCanvas");
-                    auto const error = JS::Error::create(realm, "Not Implemented: createImageBitmap() for OffscreenCanvas"sv);
-                    TemporaryExecutionContext const context { relevant_realm(p->promise()), TemporaryExecutionContext::CallbacksEnabled::Yes };
-                    WebIDL::reject_promise(realm, *p, error);
+                // -> OffscreenCanvas
+                [&](GC::Root<OffscreenCanvas> const& offscreen_canvas) {
+                    auto source_bitmap = offscreen_canvas->bitmap();
+                    if (!source_bitmap) {
+                        WebIDL::reject_promise(realm, *p, WebIDL::InvalidStateError::create(image_bitmap->realm(), "Image size is invalid"_utf16));
+                        return;
+                    }
+
+                    auto cropped_bitmap_or_error = crop_to_the_source_rectangle_with_formatting(source_bitmap, sx, sy, sw, sh, options);
+                    // AD-HOC: Reject promise with an "InvalidStateError" DOMException on allocation failure
+                    // Spec issue: https://github.com/whatwg/html/issues/3323
+                    if (cropped_bitmap_or_error.is_error()) {
+                        WebIDL::reject_promise(realm, *p, WebIDL::InvalidStateError::create(image_bitmap->realm(), "Image size is invalid"_utf16));
+                        return;
+                    }
+                    image_bitmap->set_bitmap(cropped_bitmap_or_error.release_value());
+
+                    // FIXME: Set the origin-clean flag of imageBitmap's bitmap to the same value as the origin-clean flag of image's bitmap.
+
+                    queue_global_task(Task::Source::BitmapTask, image_bitmap, GC::create_function(realm.heap(), [p, image_bitmap] {
+                        auto& realm = relevant_realm(image_bitmap);
+                        TemporaryExecutionContext const context { realm, TemporaryExecutionContext::CallbacksEnabled::Yes };
+                        WebIDL::resolve_promise(realm, *p, image_bitmap);
+                    }));
                 },
                 // -> video
                 [&](GC::Root<HTMLVideoElement> const&) {

@@ -274,13 +274,19 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
             return Gfx::ImmutableBitmap::create_snapshot_from_painting_surface(*surface);
         },
         [](GC::Root<HTML::OffscreenCanvas> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
-            return Gfx::ImmutableBitmap::create(*source->bitmap());
+            auto bitmap = source->bitmap();
+            if (!bitmap)
+                return {};
+            return Gfx::ImmutableBitmap::create(*bitmap);
         },
         [](GC::Root<HTML::HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             return source->bitmap();
         },
         [](GC::Root<HTML::ImageBitmap> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
-            return Gfx::ImmutableBitmap::create(*source->bitmap());
+            auto* bitmap = source->bitmap();
+            if (!bitmap)
+                return {};
+            return Gfx::ImmutableBitmap::create(*bitmap);
         },
         [](GC::Root<HTML::ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             return Gfx::ImmutableBitmap::create(source->bitmap());
