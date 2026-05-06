@@ -110,7 +110,8 @@ void HTMLMediaElement::initialize(JS::Realm& realm)
     m_document_observer->set_document_became_active([this]() {
         // AD-HOC: Restart the fetch from where the stream last received data so that playback can continue.
         if (m_remote_fetch_data) {
-            VERIFY(!m_remote_fetch_data->fetch_controller);
+            if (m_remote_fetch_data->fetch_controller)
+                return;
             if (m_remote_fetch_data->stream->next_chunk_start() != m_remote_fetch_data->stream->expected_size())
                 load_remote_resource(UntilEnd { m_remote_fetch_data->stream->next_chunk_start() });
         }

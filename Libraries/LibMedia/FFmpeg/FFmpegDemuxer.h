@@ -42,6 +42,7 @@ public:
     virtual DecoderErrorOr<ReadonlyBytes> get_codec_initialization_data_for_track(Track const&) override;
 
     virtual DecoderErrorOr<CodedFrame> get_next_sample_for_track(Track const&) override;
+    virtual bool consume_context_recreated_flag_for_track(Track const&) override;
 
     virtual void set_blocking_reads_aborted_for_track(Track const&) override;
     virtual void reset_blocking_reads_aborted_for_track(Track const&) override;
@@ -75,6 +76,7 @@ private:
         bool peeked_packet_already { false };
         bool force_hls_demuxer { false };
         size_t hls_reopen_count { 0 };
+        bool context_was_recreated { false };
     };
 
     FFmpegDemuxer(NonnullRefPtr<MediaStream> const&);

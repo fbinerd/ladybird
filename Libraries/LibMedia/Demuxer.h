@@ -45,6 +45,8 @@ public:
 
     virtual DecoderErrorOr<CodedFrame> get_next_sample_for_track(Track const&) = 0;
 
+    virtual bool consume_context_recreated_flag_for_track(Track const&) { return false; }
+
     virtual DecoderErrorOr<CodecID> get_codec_id_for_track(Track const&) = 0;
 
     virtual DecoderErrorOr<ReadonlyBytes> get_codec_initialization_data_for_track(Track const&) = 0;

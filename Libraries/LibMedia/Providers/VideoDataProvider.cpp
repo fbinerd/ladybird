@@ -589,6 +589,28 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
         }
     } else {
         auto coded_frame = sample_result.release_value();
+        if (m_demuxer->consume_context_recreated_flag_for_track(m_track)) {
+            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER demuxer_context_recreated track_id={} timestamp={}ms", m_track.identifier(), coded_frame.timestamp().to_milliseconds());
+            auto decoder_result = create_decoder();
+            if (decoder_result.is_error()) {
+                set_error_and_wait_for_seek(decoder_result.release_error());
+                return;
+            }
+
+            if (m_time_provider) {
+                auto playback_time = m_time_provider->current_time();
+                m_frame_timestamp_offset = coded_frame.timestamp() - playback_time;
+                m_has_frame_timestamp_offset = true;
+                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER timestamp_rebased track_id={} offset={}ms playback_time={}ms", m_track.identifier(), m_frame_timestamp_offset.to_milliseconds(), playback_time.to_milliseconds());
+            } else {
+                m_has_frame_timestamp_offset = false;
+            }
+
+            {
+                auto locker = take_lock();
+                m_queue.clear();
+            }
+        }
         m_coded_frame_count++;
         if (m_coded_frame_count <= 8 || m_coded_frame_count % 60 == 0)
             dbgln("MUNDO_MEDIA_VIDEO_PROVIDER coded_frame count={} track_id={} timestamp={}ms duration={}ms size={}", m_coded_frame_count, m_track.identifier(), coded_frame.timestamp().to_milliseconds(), coded_frame.duration().to_milliseconds(), coded_frame.data().size());

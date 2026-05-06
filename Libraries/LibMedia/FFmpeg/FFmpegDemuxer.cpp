@@ -283,8 +283,20 @@ DecoderErrorOr<void> FFmpegDemuxer::recreate_context_for_track(Track const& trac
 
     TRY(initialize_format_context(track_context.format_context, *track_context.io_context->avio_context(), track_context.force_hls_demuxer));
     track_context.hls_reopen_count++;
+    track_context.context_was_recreated = true;
     dbgln("MUNDO_MEDIA_FFMPEG hls_reopen track_id={} count={}", track.identifier(), track_context.hls_reopen_count);
     return {};
+}
+
+bool FFmpegDemuxer::consume_context_recreated_flag_for_track(Track const& track)
+{
+    auto track_context = m_track_contexts.get(track);
+    if (!track_context.has_value())
+        return false;
+    if (!(*track_context)->context_was_recreated)
+        return false;
+    (*track_context)->context_was_recreated = false;
+    return true;
 }
 
 static inline AK::Duration time_units_to_duration(i64 time_units, AVRational const& time_base)

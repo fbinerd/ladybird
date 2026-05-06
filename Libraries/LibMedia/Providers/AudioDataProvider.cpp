@@ -538,6 +538,18 @@ void AudioDataProvider::ThreadData::push_data_and_decode_a_block()
         }
     } else {
         auto sample = sample_result.release_value();
+        if (m_demuxer->consume_context_recreated_flag_for_track(m_track)) {
+            dbgln("MUNDO_MEDIA_AUDIO_PROVIDER demuxer_context_recreated track_id={} timestamp={}ms", m_track.identifier(), sample.timestamp().to_milliseconds());
+            auto decoder_result = create_decoder();
+            if (decoder_result.is_error()) {
+                set_error_and_wait_for_seek(decoder_result.release_error());
+                return;
+            }
+            {
+                auto locker = take_lock();
+                clear_queue();
+            }
+        }
         auto decode_result = m_decoder->receive_coded_data(sample.timestamp(), sample.data());
         if (decode_result.is_error()) {
             set_error_and_wait_for_seek(decode_result.release_error());
