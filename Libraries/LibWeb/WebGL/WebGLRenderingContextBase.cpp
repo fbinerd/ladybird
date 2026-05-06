@@ -12,6 +12,7 @@ extern "C" {
 #include <GLES2/gl2ext_angle.h>
 }
 
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/SkiaUtils.h>
 #include <LibWeb/HTML/EventLoop/Task.h>
@@ -263,32 +264,52 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
     //        ImageBitmap or OffscreenCanvas whose bitmap's origin-clean flag is set to false,
     //        a SECURITY_ERR exception must be thrown. See Origin Restrictions.
     // FIXME: If source is null then an INVALID_VALUE error is generated.
+    auto log_webgl_source = [](StringView source_name, Gfx::Bitmap const* bitmap) {
+        if (!bitmap) {
+            dbgln("MUNDO_WEBGL_TEX_SOURCE type={} bitmap=null", source_name);
+            return;
+        }
+        dbgln("MUNDO_WEBGL_TEX_SOURCE type={} bitmap={} size={}x{} pitch={} data_size={} format={} alpha={}",
+            source_name,
+            static_cast<void const*>(bitmap),
+            bitmap->width(),
+            bitmap->height(),
+            bitmap->pitch(),
+            bitmap->data_size(),
+            Gfx::bitmap_format_name(bitmap->format()),
+            bitmap->alpha_type() == Gfx::AlphaType::Premultiplied ? "premultiplied"sv : "unpremultiplied"sv);
+    };
+
     auto bitmap = source.visit(
-        [](GC::Root<HTML::HTMLImageElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [&](GC::Root<HTML::HTMLImageElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             return source->immutable_bitmap();
         },
-        [](GC::Root<HTML::HTMLCanvasElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [&](GC::Root<HTML::HTMLCanvasElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             auto surface = source->surface();
             if (!surface)
                 return Gfx::ImmutableBitmap::create(*source->get_bitmap_from_surface());
             return Gfx::ImmutableBitmap::create_snapshot_from_painting_surface(*surface);
         },
-        [](GC::Root<HTML::OffscreenCanvas> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [&](GC::Root<HTML::OffscreenCanvas> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             auto bitmap = source->bitmap();
             if (!bitmap)
                 return {};
+            log_webgl_source("OffscreenCanvas"sv, bitmap.ptr());
             return Gfx::ImmutableBitmap::create(*bitmap);
         },
-        [](GC::Root<HTML::HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [&](GC::Root<HTML::HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             return source->bitmap();
         },
-        [](GC::Root<HTML::ImageBitmap> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [&](GC::Root<HTML::ImageBitmap> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             auto* bitmap = source->bitmap();
             if (!bitmap)
                 return {};
-            return Gfx::ImmutableBitmap::create(*bitmap);
+            log_webgl_source("ImageBitmap"sv, bitmap);
+            dbgln("MUNDO_WEBGL_TEX_SOURCE type=ImageBitmap upload skipped");
+            return {};
         },
-        [](GC::Root<HTML::ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+        [&](GC::Root<HTML::ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+            log_webgl_source("ImageData"sv, &source->bitmap());
             return Gfx::ImmutableBitmap::create(source->bitmap());
         });
     if (!bitmap)

@@ -118,9 +118,97 @@ static SkColorType export_format_to_skia_color_type(ExportFormat format)
     }
 }
 
+static u8 premultiply_channel(u8 channel, u8 alpha)
+{
+    return (channel * alpha + 127) / 255;
+}
+
+static u8 unpremultiply_channel(u8 channel, u8 alpha)
+{
+    if (alpha == 0)
+        return 0;
+    return clamp((channel * 255 + alpha / 2) / alpha, 0, 255);
+}
+
+static Color convert_alpha_for_export(Color pixel, AlphaType source_alpha_type, int flags)
+{
+    auto alpha = pixel.alpha();
+    if (alpha == 0 || alpha == 255)
+        return pixel;
+
+    if ((flags & ExportFlags::PremultiplyAlpha) && source_alpha_type == AlphaType::Unpremultiplied) {
+        return Color {
+            premultiply_channel(pixel.red(), alpha),
+            premultiply_channel(pixel.green(), alpha),
+            premultiply_channel(pixel.blue(), alpha),
+            alpha
+        };
+    }
+
+    if (!(flags & ExportFlags::PremultiplyAlpha) && source_alpha_type == AlphaType::Premultiplied) {
+        return Color {
+            unpremultiply_channel(pixel.red(), alpha),
+            unpremultiply_channel(pixel.green(), alpha),
+            unpremultiply_channel(pixel.blue(), alpha),
+            alpha
+        };
+    }
+
+    return pixel;
+}
+
+static bool can_export_raster_bitmap_directly(Bitmap const& bitmap, ExportFormat format, int width, int height)
+{
+    if (width != bitmap.width() || height != bitmap.height())
+        return false;
+
+    return format == ExportFormat::RGB888 || format == ExportFormat::RGBA8888;
+}
+
+static Color color_from_raw_bitmap_bytes(u8 const* pixel, BitmapFormat format)
+{
+    switch (format) {
+    case BitmapFormat::BGRx8888:
+        return Color { pixel[2], pixel[1], pixel[0], 0xff };
+    case BitmapFormat::BGRA8888:
+        return Color { pixel[2], pixel[1], pixel[0], pixel[3] };
+    case BitmapFormat::RGBx8888:
+        return Color { pixel[0], pixel[1], pixel[2], 0xff };
+    case BitmapFormat::RGBA8888:
+        return Color { pixel[0], pixel[1], pixel[2], pixel[3] };
+    case BitmapFormat::Invalid:
+        VERIFY_NOT_REACHED();
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static void export_raster_bitmap_directly(Bitmap const& bitmap, ByteBuffer& buffer, size_t buffer_pitch, ExportFormat format, int flags)
+{
+    auto* raw_buffer = buffer.data();
+    for (auto y = 0; y < bitmap.height(); y++) {
+        auto target_y = flags & ExportFlags::FlipY ? bitmap.height() - y - 1 : y;
+        auto const* source_row = bitmap.scanline_u8(y);
+        for (auto x = 0; x < bitmap.width(); x++) {
+            auto pixel = convert_alpha_for_export(color_from_raw_bitmap_bytes(source_row + x * 4ull, bitmap.format()), bitmap.alpha_type(), flags);
+            if (format == ExportFormat::RGB888) {
+                auto buffer_offset = (target_y * buffer_pitch) + (x * 3ull);
+                raw_buffer[buffer_offset + 0] = pixel.red();
+                raw_buffer[buffer_offset + 1] = pixel.green();
+                raw_buffer[buffer_offset + 2] = pixel.blue();
+            } else {
+                auto buffer_offset = (target_y * buffer_pitch) + (x * 4ull);
+                raw_buffer[buffer_offset + 0] = pixel.red();
+                raw_buffer[buffer_offset + 1] = pixel.green();
+                raw_buffer[buffer_offset + 2] = pixel.blue();
+                raw_buffer[buffer_offset + 3] = pixel.alpha();
+            }
+        }
+    }
+}
+
 ErrorOr<BitmapExportResult> ImmutableBitmap::export_to_byte_buffer(ExportFormat format, int flags, Optional<int> target_width, Optional<int> target_height) const
 {
-    if (SkiaBackendContext::the() && !ensure_sk_image(*SkiaBackendContext::the()))
+    if (!m_impl->bitmap && SkiaBackendContext::the() && !ensure_sk_image(*SkiaBackendContext::the()))
         return Error::from_string_literal("Failed to create a Skia image for this ImmutableBitmap");
 
     int width = target_width.value_or(this->width());
@@ -144,7 +232,9 @@ ErrorOr<BitmapExportResult> ImmutableBitmap::export_to_byte_buffer(ExportFormat 
     auto buffer = MUST(ByteBuffer::create_zeroed(buffer_pitch.value() * height));
 
     if (width > 0 && height > 0) {
-        if (format == ExportFormat::RGB888) {
+        if (m_impl->bitmap && can_export_raster_bitmap_directly(*m_impl->bitmap, format, width, height)) {
+            export_raster_bitmap_directly(*m_impl->bitmap, buffer, buffer_pitch.value(), format, flags);
+        } else if (format == ExportFormat::RGB888) {
             // 24 bit RGB is not supported by Skia, so we need to handle this format ourselves.
             auto* raw_buffer = buffer.data();
             for (auto y = 0; y < height; y++) {
