@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/OwnPtr.h>
 #include <AK/String.h>
 #include <AK/Variant.h>
 #include <LibGfx/AffineTransform.h>
@@ -135,11 +136,7 @@ private:
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
-    virtual Gfx::Painter* painter_for_canvas_state() override
-    {
-        dbgln("(STUBBED) OffscreenCanvasRenderingContext2D::painter_for_canvas_state()");
-        return nullptr;
-    }
+    virtual Gfx::Painter* painter_for_canvas_state() override { return painter(); }
     virtual Gfx::Path& path_for_canvas_state() override { return path(); }
 
     struct PreparedText {
@@ -150,10 +147,17 @@ private:
 
     RefPtr<Gfx::FontCascadeList const> font_cascade_list();
     PreparedText prepare_text(Utf16String const&, float max_width = INFINITY);
+    Gfx::Path text_path(Utf16String const&, float x, float y, Optional<double> max_width);
+    static Gfx::Path rect_path(float x, float y, float width, float height);
+    void fill_internal(Gfx::Path const&, Gfx::WindingRule);
+    void stroke_internal(Gfx::Path const&);
+    void did_draw(Gfx::FloatRect const&);
+    Gfx::Color clear_color() const;
 
     GC::Ref<OffscreenCanvas> m_canvas;
     Gfx::IntSize m_size;
     CanvasRenderingContext2DSettings m_context_attributes;
+    OwnPtr<Gfx::Painter> m_painter;
 };
 
 }

@@ -247,8 +247,15 @@ WebIDL::ExceptionOr<GC::Ref<ImageBitmap>> OffscreenCanvas::transfer_to_image_bit
     }
 
     // 3. Let image be a newly created ImageBitmap object that references the same underlying bitmap data as this OffscreenCanvas object's bitmap.
+    // FIXME: This should share the underlying bitmap data, but create a snapshot for now so consumers do not observe a
+    // bitmap that the OffscreenCanvas machinery may replace or mutate while it is being uploaded to WebGL.
+    if (!m_bitmap)
+        return WebIDL::InvalidStateError::create(realm(), "OffscreenCanvas has no bitmap"_utf16);
+    auto snapshot_or_error = m_bitmap->clone();
+    if (snapshot_or_error.is_error())
+        return WebIDL::InvalidStateError::create(realm(), "Failed to snapshot OffscreenCanvas bitmap"_utf16);
     auto image = ImageBitmap::create(realm());
-    image->set_bitmap(m_bitmap);
+    image->set_bitmap(snapshot_or_error.release_value());
 
     // 4. Set this OffscreenCanvas object's bitmap to reference a newly created bitmap of the same dimensions and color space as the previous bitmap, and with its pixels initialized to transparent black, or opaque black if the rendering context' s alpha is false.
     // FIXME: implement the checking of the alpha from the context
