@@ -393,13 +393,13 @@ DecoderErrorOr<ReadonlyBytes> FFmpegDemuxer::get_codec_initialization_data_for_t
 DecoderErrorOr<CodedFrame> FFmpegDemuxer::get_next_sample_for_track(Track const& track)
 {
     auto& track_context = get_track_context(track);
-    auto& format_context = *track_context.format_context;
     auto& packet = *track_context.packet;
 
-    VERIFY(track.identifier() < format_context.nb_streams);
-    auto& stream = *format_context.streams[track.identifier()];
-
     for (;;) {
+        auto& format_context = *track_context.format_context;
+        VERIFY(track.identifier() < format_context.nb_streams);
+        auto& stream = *format_context.streams[track.identifier()];
+
         auto read_frame_error = av_read_frame(&format_context, &packet);
         if (read_frame_error < 0) {
             if (track_context.cursor->is_aborted())
