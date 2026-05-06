@@ -240,7 +240,7 @@ DecoderErrorOr<void> FFmpegDemuxer::create_context_for_track(Track const& track)
     dbgln("MUNDO_MEDIA_FFMPEG create_context track_id={} type={} force_hls={}", track.identifier(), to_underlying(track.type()), force_hls_demuxer);
     auto io_context = MUST(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
-    auto track_context = make<TrackContext>(move(cursor), move(io_context));
+    auto track_context = make<TrackContext>(move(cursor), move(io_context), force_hls_demuxer);
 
     // We've already initialized a format context, so the only way this can fail is OOM.
     MUST(initialize_format_context(track_context->format_context, *track_context->io_context->avio_context(), force_hls_demuxer));
@@ -261,6 +261,30 @@ FFmpegDemuxer::StreamInfo const& FFmpegDemuxer::get_track_info(Track const& trac
 FFmpegDemuxer::TrackContext& FFmpegDemuxer::get_track_context(Track const& track)
 {
     return *m_track_contexts.get(track).release_value();
+}
+
+DecoderErrorOr<void> FFmpegDemuxer::recreate_context_for_track(Track const& track, TrackContext& track_context)
+{
+    if (track_context.format_context != nullptr)
+        avformat_close_input(&track_context.format_context);
+    if (track_context.packet != nullptr)
+        av_packet_unref(track_context.packet);
+
+    auto cursor = m_stream->create_cursor();
+    auto reset_result = cursor->seek(0, AK::SeekMode::SetPosition);
+    if (reset_result.is_error())
+        return DecoderError::with_description(DecoderErrorCategory::IO, "Failed to reset HLS stream cursor"sv);
+
+    auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(cursor));
+
+    track_context.cursor = move(cursor);
+    track_context.io_context = move(io_context);
+    track_context.is_seekable = true;
+
+    TRY(initialize_format_context(track_context.format_context, *track_context.io_context->avio_context(), track_context.force_hls_demuxer));
+    track_context.hls_reopen_count++;
+    dbgln("MUNDO_MEDIA_FFMPEG hls_reopen track_id={} count={}", track.identifier(), track_context.hls_reopen_count);
+    return {};
 }
 
 static inline AK::Duration time_units_to_duration(i64 time_units, AVRational const& time_base)
@@ -369,8 +393,14 @@ DecoderErrorOr<CodedFrame> FFmpegDemuxer::get_next_sample_for_track(Track const&
             if (track_context.cursor->is_aborted())
                 return DecoderError::format(DecoderErrorCategory::Aborted, "Read aborted");
 
-            if (read_frame_error == AVERROR_EOF)
+            if (read_frame_error == AVERROR_EOF) {
+                if (track_context.force_hls_demuxer && track_context.hls_reopen_count < 8) {
+                    dbgln("MUNDO_MEDIA_FFMPEG hls_eof_reopen track_id={} count={}", track.identifier(), track_context.hls_reopen_count + 1);
+                    TRY(recreate_context_for_track(track, track_context));
+                    continue;
+                }
                 return DecoderError::format(DecoderErrorCategory::EndOfStream, "End of stream");
+            }
 
             return DecoderError::with_description(DecoderErrorCategory::Corrupted, av_error_code_to_string(read_frame_error));
         }

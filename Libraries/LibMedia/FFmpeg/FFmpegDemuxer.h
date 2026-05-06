@@ -58,9 +58,10 @@ private:
     };
 
     struct TrackContext {
-        TrackContext(NonnullRefPtr<MediaStreamCursor>&& cursor, NonnullOwnPtr<FFmpegIOContext>&& io_context)
+        TrackContext(NonnullRefPtr<MediaStreamCursor>&& cursor, NonnullOwnPtr<FFmpegIOContext>&& io_context, bool force_hls_demuxer)
             : cursor(move(cursor))
             , io_context(move(io_context))
+            , force_hls_demuxer(force_hls_demuxer)
         {
         }
         ~TrackContext();
@@ -72,12 +73,15 @@ private:
         AVPacket* packet { nullptr };
         bool is_seekable { true };
         bool peeked_packet_already { false };
+        bool force_hls_demuxer { false };
+        size_t hls_reopen_count { 0 };
     };
 
     FFmpegDemuxer(NonnullRefPtr<MediaStream> const&);
 
     StreamInfo const& get_track_info(Track const&) const;
     TrackContext& get_track_context(Track const&);
+    DecoderErrorOr<void> recreate_context_for_track(Track const&, TrackContext&);
 
     NonnullRefPtr<MediaStream> m_stream;
     AK::Duration m_total_duration;
