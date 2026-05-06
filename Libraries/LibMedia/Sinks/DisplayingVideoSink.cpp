@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Debug.h>
 #include <LibMedia/Demuxer.h>
 #include <LibMedia/Providers/MediaTimeProvider.h>
 #include <LibMedia/Providers/VideoDataProvider.h>
@@ -42,6 +43,7 @@ void DisplayingVideoSink::set_provider(Track const& track, RefPtr<VideoDataProvi
     verify_track(track);
     m_track = track;
     m_provider = provider;
+    dbgln("MUNDO_MEDIA_VIDEO_SINK set_provider track_id={} provider={}", track.identifier(), provider.ptr());
     if (provider != nullptr)
         provider->start();
 }
@@ -54,12 +56,15 @@ RefPtr<VideoDataProvider> DisplayingVideoSink::provider(Track const& track) cons
 
 DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
 {
+    m_update_count++;
     if (m_provider == nullptr)
         return DisplayingVideoSinkUpdateResult::NoChange;
     if (m_pause_updates)
         return DisplayingVideoSinkUpdateResult::NoChange;
 
     auto current_time = m_time_provider->current_time();
+    if (m_update_count <= 8 || m_update_count % 120 == 0)
+        dbgln("MUNDO_MEDIA_VIDEO_SINK update count={} track_id={} current_time={}ms has_next={} has_current={}", m_update_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.is_valid(), m_current_frame.ptr());
     auto result = DisplayingVideoSinkUpdateResult::NoChange;
     if (m_has_new_current_frame) {
         result = DisplayingVideoSinkUpdateResult::NewFrameAvailable;
@@ -70,6 +75,9 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         if (!m_next_frame.is_valid()) {
             m_next_frame = m_provider->retrieve_frame();
             if (!m_next_frame.is_valid()) {
+                m_empty_provider_frame_count++;
+                if (m_empty_provider_frame_count <= 8 || m_empty_provider_frame_count % 120 == 0)
+                    dbgln("MUNDO_MEDIA_VIDEO_SINK provider_empty count={} track_id={} blocked={}", m_empty_provider_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, m_provider->is_blocked());
                 if (m_provider->is_blocked() && m_on_start_buffering)
                     m_on_start_buffering();
                 break;
@@ -78,6 +86,9 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         if (m_next_frame.timestamp() > current_time)
             break;
         m_current_frame = m_next_frame.release_image();
+        m_presented_frame_count++;
+        if (m_presented_frame_count <= 8 || m_presented_frame_count % 60 == 0)
+            dbgln("MUNDO_MEDIA_VIDEO_SINK present_frame count={} track_id={} current_time={}ms size={}x{}", m_presented_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_current_frame->size().width(), m_current_frame->size().height());
         result = DisplayingVideoSinkUpdateResult::NewFrameAvailable;
     }
     return result;

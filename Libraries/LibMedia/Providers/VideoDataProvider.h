@@ -62,6 +62,8 @@ public:
 
 private:
     class ThreadData final : public AtomicRefCounted<ThreadData> {
+        friend class VideoDataProvider;
+
     public:
         ThreadData(NonnullRefPtr<Core::WeakEventLoopReference> const& main_thread_event_loop, NonnullRefPtr<Demuxer> const&, Track const&, AK::Duration, RefPtr<MediaTimeProvider> const&);
         ~ThreadData();
@@ -91,6 +93,7 @@ private:
         void invoke_on_main_thread(Invokee);
         void dispatch_frame_end_time(CodedFrame const&);
         void queue_frame(NonnullOwnPtr<VideoFrame> const&);
+        AK::Duration normalized_frame_timestamp(VideoFrame const&);
         void dispatch_error(DecoderError&&);
         bool handle_seek();
         template<typename Callback>
@@ -128,6 +131,15 @@ private:
 
         size_t m_queue_max_size { 4 };
         ImageQueue m_queue;
+        size_t m_queued_frame_count { 0 };
+        size_t m_retrieved_frame_count { 0 };
+        size_t m_empty_retrieve_count { 0 };
+        size_t m_coded_frame_count { 0 };
+        size_t m_decoded_frame_count { 0 };
+        size_t m_end_of_stream_count { 0 };
+        size_t m_needs_more_input_count { 0 };
+        bool m_has_frame_timestamp_offset { false };
+        AK::Duration m_frame_timestamp_offset { AK::Duration::zero() };
         FrameEndTimeHandler m_duration_change_handler;
         ErrorHandler m_error_handler;
         bool m_is_in_error_state { false };

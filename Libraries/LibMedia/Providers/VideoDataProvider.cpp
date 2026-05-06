@@ -4,8 +4,10 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Debug.h>
 #include <LibCore/EventLoop.h>
 #include <LibGfx/ImmutableBitmap.h>
+#include <LibMedia/CodecID.h>
 #include <LibMedia/Demuxer.h>
 #include <LibMedia/FFmpeg/FFmpegVideoDecoder.h>
 #include <LibMedia/Providers/MediaTimeProvider.h>
@@ -20,10 +22,40 @@ namespace Media {
 
 DecoderErrorOr<NonnullRefPtr<VideoDataProvider>> VideoDataProvider::try_create(NonnullRefPtr<Core::WeakEventLoopReference> const& main_thread_event_loop, NonnullRefPtr<Demuxer> const& demuxer, Track const& track, RefPtr<MediaTimeProvider> const& time_provider)
 {
-    TRY(demuxer->create_context_for_track(track));
-    auto duration = TRY(demuxer->duration_of_track(track));
+    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER start track_id={} size={}x{}", track.identifier(), track.video_data().pixel_width, track.video_data().pixel_height);
+    auto codec_id_or_error = demuxer->get_codec_id_for_track(track);
+    if (codec_id_or_error.is_error()) {
+        auto error = codec_id_or_error.release_error();
+        dbgln("MUNDO_MEDIA_VIDEO_PROVIDER get_codec failed track_id={} category={} error={}", track.identifier(), decoder_error_category_to_string(error.category()), error.description());
+        return error;
+    }
+    auto codec_id = codec_id_or_error.release_value();
+    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER codec track_id={} codec={}", track.identifier(), codec_id);
+
+    auto create_context_result = demuxer->create_context_for_track(track);
+    if (create_context_result.is_error()) {
+        auto error = create_context_result.release_error();
+        dbgln("MUNDO_MEDIA_VIDEO_PROVIDER create_context failed track_id={} category={} error={}", track.identifier(), decoder_error_category_to_string(error.category()), error.description());
+        return error;
+    }
+
+    auto duration_or_error = demuxer->duration_of_track(track);
+    if (duration_or_error.is_error()) {
+        auto error = duration_or_error.release_error();
+        dbgln("MUNDO_MEDIA_VIDEO_PROVIDER duration failed track_id={} category={} error={}", track.identifier(), decoder_error_category_to_string(error.category()), error.description());
+        return error;
+    }
+    auto duration = duration_or_error.release_value();
+    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER duration track_id={} duration={}ms", track.identifier(), duration.to_milliseconds());
+
     auto thread_data = DECODER_TRY_ALLOC(try_make_ref_counted<VideoDataProvider::ThreadData>(main_thread_event_loop, demuxer, track, duration, time_provider));
-    TRY(thread_data->create_decoder());
+    auto create_decoder_result = thread_data->create_decoder();
+    if (create_decoder_result.is_error()) {
+        auto error = create_decoder_result.release_error();
+        dbgln("MUNDO_MEDIA_VIDEO_PROVIDER create_decoder failed track_id={} codec={} category={} error={}", track.identifier(), codec_id, decoder_error_category_to_string(error.category()), error.description());
+        return error;
+    }
+    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decoder ready track_id={} codec={}", track.identifier(), codec_id);
     auto provider = DECODER_TRY_ALLOC(try_make_ref_counted<VideoDataProvider>(thread_data));
 
     auto thread = DECODER_TRY_ALLOC(Threading::Thread::try_create("Video Decoder"sv, [thread_data]() -> int {
@@ -39,6 +71,7 @@ DecoderErrorOr<NonnullRefPtr<VideoDataProvider>> VideoDataProvider::try_create(N
     thread->start();
     thread->detach();
 
+    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER ready track_id={}", track.identifier());
     return provider;
 }
 
@@ -85,9 +118,16 @@ void VideoDataProvider::set_frames_queue_is_full_handler(FramesQueueIsFullHandle
 TimedImage VideoDataProvider::retrieve_frame()
 {
     auto locker = m_thread_data->take_lock();
-    if (m_thread_data->queue().is_empty())
+    if (m_thread_data->queue().is_empty()) {
+        m_thread_data->m_empty_retrieve_count++;
+        if (m_thread_data->m_empty_retrieve_count <= 8 || m_thread_data->m_empty_retrieve_count % 120 == 0)
+            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER retrieve_empty count={} track_id={}", m_thread_data->m_empty_retrieve_count, m_thread_data->m_track.identifier());
         return TimedImage();
+    }
     auto result = m_thread_data->take_frame();
+    m_thread_data->m_retrieved_frame_count++;
+    if (m_thread_data->m_retrieved_frame_count <= 8 || m_thread_data->m_retrieved_frame_count % 60 == 0)
+        dbgln("MUNDO_MEDIA_VIDEO_PROVIDER retrieve_frame count={} track_id={} timestamp={}ms queue_remaining={}", m_thread_data->m_retrieved_frame_count, m_thread_data->m_track.identifier(), result.timestamp().to_milliseconds(), m_thread_data->queue().size());
     m_thread_data->wake();
     return result;
 }
@@ -283,7 +323,25 @@ void VideoDataProvider::ThreadData::dispatch_frame_end_time(CodedFrame const& fr
 
 void VideoDataProvider::ThreadData::queue_frame(NonnullOwnPtr<VideoFrame> const& frame)
 {
-    m_queue.enqueue(TimedImage(frame->timestamp(), frame->immutable_bitmap()));
+    auto timestamp = normalized_frame_timestamp(*frame);
+    m_queued_frame_count++;
+    if (m_queued_frame_count <= 8 || m_queued_frame_count % 60 == 0)
+        dbgln("MUNDO_MEDIA_VIDEO_PROVIDER queue_frame count={} track_id={} timestamp={}ms raw_timestamp={}ms duration={}ms size={}x{} queue_before={}", m_queued_frame_count, m_track.identifier(), timestamp.to_milliseconds(), frame->timestamp().to_milliseconds(), frame->duration().to_milliseconds(), frame->width(), frame->height(), m_queue.size());
+    m_queue.enqueue(TimedImage(timestamp, frame->immutable_bitmap()));
+}
+
+AK::Duration VideoDataProvider::ThreadData::normalized_frame_timestamp(VideoFrame const& frame)
+{
+    if (!m_has_frame_timestamp_offset) {
+        m_frame_timestamp_offset = frame.timestamp();
+        m_has_frame_timestamp_offset = true;
+        if (!m_frame_timestamp_offset.is_zero())
+            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER timestamp_offset track_id={} offset={}ms", m_track.identifier(), m_frame_timestamp_offset.to_milliseconds());
+    }
+
+    if (frame.timestamp() <= m_frame_timestamp_offset)
+        return AK::Duration::zero();
+    return frame.timestamp() - m_frame_timestamp_offset;
 }
 
 void VideoDataProvider::ThreadData::dispatch_error(DecoderError&& error)
@@ -502,13 +560,21 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
     auto sample_result = m_demuxer->get_next_sample_for_track(m_track);
     if (sample_result.is_error()) {
         if (sample_result.error().category() == DecoderErrorCategory::EndOfStream) {
+            m_end_of_stream_count++;
+            if (m_end_of_stream_count <= 8 || m_end_of_stream_count % 60 == 0)
+                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER end_of_stream count={} track_id={}", m_end_of_stream_count, m_track.identifier());
             m_decoder->signal_end_of_stream();
         } else {
-            set_error_and_wait_for_seek(sample_result.release_error());
+            auto error = sample_result.release_error();
+            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER sample_error track_id={} category={} error={}", m_track.identifier(), decoder_error_category_to_string(error.category()), error.description());
+            set_error_and_wait_for_seek(move(error));
             return;
         }
     } else {
         auto coded_frame = sample_result.release_value();
+        m_coded_frame_count++;
+        if (m_coded_frame_count <= 8 || m_coded_frame_count % 60 == 0)
+            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER coded_frame count={} track_id={} timestamp={}ms duration={}ms size={}", m_coded_frame_count, m_track.identifier(), coded_frame.timestamp().to_milliseconds(), coded_frame.duration().to_milliseconds(), coded_frame.data().size());
         dispatch_frame_end_time(coded_frame);
 
         auto decode_result = m_decoder->receive_coded_data(coded_frame.timestamp(), coded_frame.duration(), coded_frame.data());
@@ -521,13 +587,25 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
     while (true) {
         auto frame_result = m_decoder->get_decoded_frame(m_track.video_data().cicp);
         if (frame_result.is_error()) {
-            if (frame_result.error().category() == DecoderErrorCategory::NeedsMoreInput)
+            if (frame_result.error().category() == DecoderErrorCategory::NeedsMoreInput) {
+                m_needs_more_input_count++;
+                if (m_needs_more_input_count <= 8 || m_needs_more_input_count % 120 == 0)
+                    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER needs_more_input count={} track_id={}", m_needs_more_input_count, m_track.identifier());
                 break;
+            }
+            if (frame_result.error().category() == DecoderErrorCategory::EndOfStream) {
+                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decoder_end_of_stream track_id={}", m_track.identifier());
+                break;
+            }
+            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decode_error track_id={} category={} error={}", m_track.identifier(), decoder_error_category_to_string(frame_result.error().category()), frame_result.error().description());
             set_error_and_wait_for_seek(frame_result.release_error());
             break;
         }
 
         auto frame = frame_result.release_value();
+        m_decoded_frame_count++;
+        if (m_decoded_frame_count <= 8 || m_decoded_frame_count % 60 == 0)
+            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decoded_frame count={} track_id={} timestamp={}ms duration={}ms size={}x{}", m_decoded_frame_count, m_track.identifier(), frame->timestamp().to_milliseconds(), frame->duration().to_milliseconds(), frame->width(), frame->height());
 
         {
             auto queue_size = [&] {

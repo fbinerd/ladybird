@@ -7,6 +7,7 @@
 #include <AK/Debug.h>
 #include <LibCore/EventLoop.h>
 #include <LibMedia/Audio/SampleSpecification.h>
+#include <LibMedia/CodecID.h>
 #include <LibMedia/Demuxer.h>
 #include <LibMedia/FFmpeg/FFmpegAudioConverter.h>
 #include <LibMedia/FFmpeg/FFmpegAudioDecoder.h>
@@ -20,12 +21,42 @@ namespace Media {
 
 DecoderErrorOr<NonnullRefPtr<AudioDataProvider>> AudioDataProvider::try_create(NonnullRefPtr<Core::WeakEventLoopReference> const& main_thread_event_loop, NonnullRefPtr<Demuxer> const& demuxer, Track const& track)
 {
+    dbgln("MUNDO_MEDIA_AUDIO_PROVIDER start track_id={} sample_rate={} channels={}", track.identifier(), track.audio_data().sample_specification.sample_rate(), track.audio_data().sample_specification.channel_count());
+    auto codec_id_or_error = demuxer->get_codec_id_for_track(track);
+    if (codec_id_or_error.is_error()) {
+        auto error = codec_id_or_error.release_error();
+        dbgln("MUNDO_MEDIA_AUDIO_PROVIDER get_codec failed track_id={} category={} error={}", track.identifier(), decoder_error_category_to_string(error.category()), error.description());
+        return error;
+    }
+    auto codec_id = codec_id_or_error.release_value();
+    dbgln("MUNDO_MEDIA_AUDIO_PROVIDER codec track_id={} codec={}", track.identifier(), codec_id);
+
     auto converter = DECODER_TRY_ALLOC(FFmpeg::FFmpegAudioConverter::try_create());
 
-    TRY(demuxer->create_context_for_track(track));
-    auto duration = TRY(demuxer->duration_of_track(track));
+    auto create_context_result = demuxer->create_context_for_track(track);
+    if (create_context_result.is_error()) {
+        auto error = create_context_result.release_error();
+        dbgln("MUNDO_MEDIA_AUDIO_PROVIDER create_context failed track_id={} category={} error={}", track.identifier(), decoder_error_category_to_string(error.category()), error.description());
+        return error;
+    }
+
+    auto duration_or_error = demuxer->duration_of_track(track);
+    if (duration_or_error.is_error()) {
+        auto error = duration_or_error.release_error();
+        dbgln("MUNDO_MEDIA_AUDIO_PROVIDER duration failed track_id={} category={} error={}", track.identifier(), decoder_error_category_to_string(error.category()), error.description());
+        return error;
+    }
+    auto duration = duration_or_error.release_value();
+    dbgln("MUNDO_MEDIA_AUDIO_PROVIDER duration track_id={} duration={}ms", track.identifier(), duration.to_milliseconds());
+
     auto thread_data = DECODER_TRY_ALLOC(try_make_ref_counted<AudioDataProvider::ThreadData>(main_thread_event_loop, demuxer, track, duration, move(converter)));
-    TRY(thread_data->create_decoder());
+    auto create_decoder_result = thread_data->create_decoder();
+    if (create_decoder_result.is_error()) {
+        auto error = create_decoder_result.release_error();
+        dbgln("MUNDO_MEDIA_AUDIO_PROVIDER create_decoder failed track_id={} codec={} category={} error={}", track.identifier(), codec_id, decoder_error_category_to_string(error.category()), error.description());
+        return error;
+    }
+    dbgln("MUNDO_MEDIA_AUDIO_PROVIDER decoder ready track_id={} codec={}", track.identifier(), codec_id);
     auto provider = DECODER_TRY_ALLOC(try_make_ref_counted<AudioDataProvider>(thread_data));
 
     auto thread = DECODER_TRY_ALLOC(Threading::Thread::try_create("Audio Decoder"sv, [thread_data]() -> int {
@@ -41,6 +72,7 @@ DecoderErrorOr<NonnullRefPtr<AudioDataProvider>> AudioDataProvider::try_create(N
     thread->start();
     thread->detach();
 
+    dbgln("MUNDO_MEDIA_AUDIO_PROVIDER ready track_id={}", track.identifier());
     return provider;
 }
 

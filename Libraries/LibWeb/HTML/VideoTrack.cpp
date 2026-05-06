@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Debug.h>
 #include <AK/Time.h>
 #include <LibJS/Runtime/Realm.h>
 #include <LibJS/Runtime/VM.h>
@@ -42,6 +43,8 @@ void VideoTrack::visit_edges(Cell::Visitor& visitor)
 // https://html.spec.whatwg.org/multipage/media.html#dom-videotrack-selected
 void VideoTrack::set_selected(bool selected)
 {
+    dbgln("MUNDO_MEDIA_VIDEO_TRACK set_selected track_id={} selected={} was_selected={}", track_in_playback_manager().identifier(), selected, m_selected);
+
     // On setting, it must select the track if the new value is true, and unselect it otherwise.
     if (m_selected == selected)
         return;

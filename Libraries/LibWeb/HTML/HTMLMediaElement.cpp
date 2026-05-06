@@ -178,6 +178,11 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
         // this, even if there are source elements present.)
         if (!value.has_value())
             return;
+        dbgln("MUNDO_MEDIA_ELEMENT src_attribute_changed old={} new={} current_src={}", old_value.value_or(String {}), value.value(), m_current_src);
+        if (value->is_empty() && m_current_src.contains(".m3u8"sv)) {
+            dbgln("MUNDO_MEDIA_ELEMENT ignoring empty HLS src attribute while current_src={} is active", m_current_src);
+            return;
+        }
         load_element().release_value_but_fixme_should_propagate_errors();
     } else if (name == HTML::AttributeNames::crossorigin) {
         m_crossorigin = cors_setting_attribute_from_keyword(value);
@@ -1059,6 +1064,10 @@ void HTMLMediaElement::select_resource()
             // 1. ⌛ If the src attribute's value is the empty string, then end the synchronous section, and jump down to the failed with attribute step below.
             auto source = get_attribute_value(HTML::AttributeNames::src);
             if (source.is_empty()) {
+                if (!m_current_src.is_empty()) {
+                    dbgln("MUNDO_MEDIA_ELEMENT ignoring empty src attribute while current_src={} is active", m_current_src);
+                    return;
+                }
                 failed_with_attribute("The 'src' attribute is empty"_string);
                 return;
             }
@@ -1551,17 +1560,21 @@ void HTMLMediaElement::set_selected_video_track(Badge<VideoTrack>, GC::Ptr<HTML:
 
     m_selected_video_track = video_track;
     if (video_track) {
+        dbgln("MUNDO_MEDIA_ELEMENT selected_video_track id={} src={}", video_track->track_in_playback_manager().identifier(), m_current_src);
         m_selected_video_track_sink = m_playback_manager->get_or_create_the_displaying_video_sink_for_track(video_track->track_in_playback_manager());
         auto sink_update_result = m_selected_video_track_sink->update();
         if (sink_update_result == Media::DisplayingVideoSinkUpdateResult::NewFrameAvailable) {
             ensure_external_content_source().update(m_selected_video_track_sink->current_frame());
+            dbgln("MUNDO_MEDIA_ELEMENT selected_video_track initial_frame id={} src={}", video_track->track_in_playback_manager().identifier(), m_current_src);
             update_intrinsic_video_dimensions();
             set_needs_repaint();
         } else if (auto* video_element = as_if<HTMLVideoElement>(this)) {
             auto const& video_data = video_track->track_in_playback_manager().video_data();
             video_element->set_intrinsic_video_dimensions(Gfx::Size<u32>(video_data.pixel_width, video_data.pixel_height));
+            dbgln("MUNDO_MEDIA_ELEMENT selected_video_track no_initial_frame id={} intrinsic={}x{} src={}", video_track->track_in_playback_manager().identifier(), video_data.pixel_width, video_data.pixel_height, m_current_src);
         }
     } else {
+        dbgln("MUNDO_MEDIA_ELEMENT selected_video_track cleared src={}", m_current_src);
         m_selected_video_track_sink = nullptr;
     }
 
@@ -1578,6 +1591,7 @@ void HTMLMediaElement::update_video_frame_and_timeline()
         auto sink_update_result = m_selected_video_track_sink->update();
         if (sink_update_result == Media::DisplayingVideoSinkUpdateResult::NewFrameAvailable) {
             ensure_external_content_source().update(m_selected_video_track_sink->current_frame());
+            dbgln("MUNDO_MEDIA_ELEMENT video_frame_updated current_time={} ready_state={} src={}", m_current_playback_position, to_underlying(m_ready_state), m_current_src);
             update_intrinsic_video_dimensions();
             set_needs_repaint();
         }
@@ -1787,6 +1801,7 @@ void HTMLMediaElement::set_up_playback_manager_for_remote()
 
     // -> If the media data can be fetched but is found by inspection to be in an unsupported format, or can otherwise not be rendered at all
     m_playback_manager->on_unsupported_format_error = GC::weak_callback(*this, [](auto& self, Media::DecoderError&& error) mutable {
+        dbgln("MUNDO_MEDIA_ELEMENT unsupported current_src={} category={} error={}", self.m_current_src, Media::decoder_error_category_to_string(error.category()), error.description());
         // NB: Queue a task for this so that we don't destroy the PlaybackManager within one of its callbacks when we
         //     call forget_media_resource_specific_tracks().
         self.queue_a_media_element_task([self = GC::Weak(self), error = move(error)] {
@@ -1943,6 +1958,7 @@ void HTMLMediaElement::process_media_data(FetchingStatus fetching_status)
 void HTMLMediaElement::handle_media_source_failure(Span<GC::Ref<WebIDL::Promise>> promises, String error_message)
 {
     auto& realm = this->realm();
+    dbgln("MUNDO_MEDIA_ELEMENT media_source_failure current_src={} message={}", m_current_src, error_message);
 
     // 1. Set the error attribute to the result of creating a MediaError with MEDIA_ERR_SRC_NOT_SUPPORTED.
     m_error = realm.create<MediaError>(realm, MediaError::Code::SrcNotSupported, move(error_message));
@@ -1975,6 +1991,8 @@ void HTMLMediaElement::handle_media_source_failure(Span<GC::Ref<WebIDL::Promise>
 // https://html.spec.whatwg.org/multipage/media.html#forget-the-media-element's-media-resource-specific-tracks
 void HTMLMediaElement::forget_media_resource_specific_tracks()
 {
+    dbgln("MUNDO_MEDIA_ELEMENT forget_tracks src={}", m_current_src);
+
     // When a media element is to forget the media element's media-resource-specific tracks, the user agent must remove from the media element's list
     // of text tracks all the media-resource-specific text tracks, then empty the media element's audioTracks attribute's AudioTrackList object, then
     // empty the media element's videoTracks attribute's VideoTrackList object. No events (in particular, no removetrack events) are fired as part of
@@ -2202,6 +2220,7 @@ void HTMLMediaElement::on_playback_manager_state_change()
 {
     VERIFY(m_playback_manager);
     auto state = m_playback_manager->state();
+    dbgln("MUNDO_MEDIA_ELEMENT playback_state_change state={} ready_state={} paused={} current_time={} src={}", to_underlying(state), to_underlying(m_ready_state), paused(), m_current_playback_position, m_current_src);
     if (seeking() && state != Media::PlaybackState::Seeking)
         finish_seeking_element();
 

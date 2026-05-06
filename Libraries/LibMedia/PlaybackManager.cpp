@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Debug.h>
 #include <LibMedia/Containers/Matroska/MatroskaDemuxer.h>
 #include <LibMedia/Demuxer.h>
 #include <LibMedia/FFmpeg/FFmpegDemuxer.h>
@@ -22,6 +23,21 @@
 
 namespace Media {
 
+static StringView track_type_name(TrackType type)
+{
+    switch (type) {
+    case TrackType::Video:
+        return "video"sv;
+    case TrackType::Audio:
+        return "audio"sv;
+    case TrackType::Subtitles:
+        return "subtitles"sv;
+    case TrackType::Unknown:
+        return "unknown"sv;
+    }
+    VERIFY_NOT_REACHED();
+}
+
 DecoderErrorOr<NonnullRefPtr<Demuxer>> PlaybackManager::create_demuxer_for_stream(NonnullRefPtr<MediaStream> const& stream)
 {
     if (Matroska::Reader::is_matroska_or_webm(stream->create_cursor()))
@@ -33,15 +49,21 @@ DecoderErrorOr<void> PlaybackManager::prepare_playback_from_demuxer(WeakPlayback
 {
     // Create the video tracks and their data providers.
     auto all_video_tracks = TRY(demuxer->get_tracks_for_type(TrackType::Video));
+    dbgln("MUNDO_MEDIA_PLAYBACK demuxer video_tracks={}", all_video_tracks.size());
 
     auto supported_video_tracks = VideoTracks();
     auto supported_video_track_datas = VideoTrackDatas();
     supported_video_tracks.ensure_capacity(all_video_tracks.size());
     supported_video_track_datas.ensure_capacity(all_video_tracks.size());
     for (auto const& track : all_video_tracks) {
+        dbgln("MUNDO_MEDIA_PLAYBACK probing {} track id={}", track_type_name(track.type()), track.identifier());
         auto video_data_provider_result = VideoDataProvider::try_create(main_thread_event_loop_reference, demuxer, track);
-        if (video_data_provider_result.is_error())
+        if (video_data_provider_result.is_error()) {
+            auto error = video_data_provider_result.release_error();
+            dbgln("MUNDO_MEDIA_PLAYBACK rejected video track id={} category={} error={}", track.identifier(), decoder_error_category_to_string(error.category()), error.description());
             continue;
+        }
+        dbgln("MUNDO_MEDIA_PLAYBACK accepted video track id={}", track.identifier());
         supported_video_tracks.append(track);
         supported_video_track_datas.empend(VideoTrackData(track, video_data_provider_result.release_value(), nullptr));
     }
@@ -50,24 +72,33 @@ DecoderErrorOr<void> PlaybackManager::prepare_playback_from_demuxer(WeakPlayback
 
     // Create all the audio tracks, their data providers, and the audio output.
     auto all_audio_tracks = TRY(demuxer->get_tracks_for_type(TrackType::Audio));
+    dbgln("MUNDO_MEDIA_PLAYBACK demuxer audio_tracks={}", all_audio_tracks.size());
 
     auto supported_audio_tracks = AudioTracks();
     auto supported_audio_track_datas = AudioTrackDatas();
     supported_audio_tracks.ensure_capacity(all_audio_tracks.size());
     supported_audio_track_datas.ensure_capacity(all_audio_tracks.size());
     for (auto const& track : all_audio_tracks) {
+        dbgln("MUNDO_MEDIA_PLAYBACK probing {} track id={}", track_type_name(track.type()), track.identifier());
         auto audio_data_provider_result = AudioDataProvider::try_create(main_thread_event_loop_reference, demuxer, track);
-        if (audio_data_provider_result.is_error())
+        if (audio_data_provider_result.is_error()) {
+            auto error = audio_data_provider_result.release_error();
+            dbgln("MUNDO_MEDIA_PLAYBACK rejected audio track id={} category={} error={}", track.identifier(), decoder_error_category_to_string(error.category()), error.description());
             continue;
+        }
         auto audio_data_provider = audio_data_provider_result.release_value();
+        dbgln("MUNDO_MEDIA_PLAYBACK accepted audio track id={}", track.identifier());
         supported_audio_tracks.append(track);
         supported_audio_track_datas.empend(AudioTrackData(track, move(audio_data_provider)));
     }
     supported_audio_tracks.shrink_to_fit();
     supported_audio_track_datas.shrink_to_fit();
 
-    if (supported_video_tracks.is_empty() && supported_audio_tracks.is_empty())
+    dbgln("MUNDO_MEDIA_PLAYBACK supported video_tracks={} audio_tracks={}", supported_video_tracks.size(), supported_audio_tracks.size());
+    if (supported_video_tracks.is_empty() && supported_audio_tracks.is_empty()) {
+        dbgln("MUNDO_MEDIA_PLAYBACK unsupported: no supported tracks");
         return DecoderError::with_description(DecoderErrorCategory::NotImplemented, "No supported video or audio tracks found"sv);
+    }
 
     auto preferred_video_track = demuxer->get_preferred_track_for_type(TrackType::Video).value_or({});
     if (preferred_video_track.has_value() && !supported_video_tracks.contains_slow(*preferred_video_track))
@@ -85,12 +116,14 @@ DecoderErrorOr<void> PlaybackManager::prepare_playback_from_demuxer(WeakPlayback
 
         for (auto const& existing_track : self->m_video_tracks) {
             if (video_tracks.contains_slow(existing_track)) {
+                dbgln("MUNDO_MEDIA_PLAYBACK unsupported: duplicate video track id={}", existing_track.identifier());
                 self->on_unsupported_format_error(DecoderError::with_description(DecoderErrorCategory::Invalid, "Duplicate video track found"sv));
                 return;
             }
         }
         for (auto const& existing_track : self->m_audio_tracks) {
             if (audio_tracks.contains_slow(existing_track)) {
+                dbgln("MUNDO_MEDIA_PLAYBACK unsupported: duplicate audio track id={}", existing_track.identifier());
                 self->on_unsupported_format_error(DecoderError::with_description(DecoderErrorCategory::Invalid, "Duplicate audio track found"sv));
                 return;
             }
@@ -138,6 +171,7 @@ DecoderErrorOr<void> PlaybackManager::prepare_playback_from_demuxer(WeakPlayback
 
         if (self->on_metadata_parsed)
             self->on_metadata_parsed();
+        dbgln("MUNDO_MEDIA_PLAYBACK metadata parsed duration={}ms total_video_tracks={} total_audio_tracks={}", duration.to_milliseconds(), self->m_video_tracks.size(), self->m_audio_tracks.size());
     });
 
     return {};
@@ -261,12 +295,14 @@ void PlaybackManager::set_up_data_providers()
 
 void PlaybackManager::track_started_buffering(Track const& track)
 {
+    dbgln("MUNDO_MEDIA_PLAYBACK track_started_buffering type={} id={} state={}", track_type_name(track.type()), track.identifier(), to_underlying(m_handler->state()));
     m_tracks_still_buffering.set(track);
     m_handler->enter_buffering();
 }
 
 void PlaybackManager::track_stopped_buffering(Track const& track)
 {
+    dbgln("MUNDO_MEDIA_PLAYBACK track_stopped_buffering type={} id={} remaining_before={} state={}", track_type_name(track.type()), track.identifier(), m_tracks_still_buffering.size(), to_underlying(m_handler->state()));
     m_tracks_still_buffering.remove(track);
     if (m_tracks_still_buffering.is_empty())
         m_handler->exit_buffering();
@@ -386,21 +422,25 @@ bool PlaybackManager::track_is_enabled(Track const& track) const
 
 void PlaybackManager::start()
 {
+    dbgln("MUNDO_MEDIA_PLAYBACK start state={}", to_underlying(m_handler->state()));
     m_handler->start();
 }
 
 void PlaybackManager::play()
 {
+    dbgln("MUNDO_MEDIA_PLAYBACK play state={}", to_underlying(m_handler->state()));
     m_handler->play();
 }
 
 void PlaybackManager::pause()
 {
+    dbgln("MUNDO_MEDIA_PLAYBACK pause state={}", to_underlying(m_handler->state()));
     m_handler->pause();
 }
 
 void PlaybackManager::seek(AK::Duration timestamp, SeekMode mode)
 {
+    dbgln("MUNDO_MEDIA_PLAYBACK seek timestamp={}ms mode={} state={}", timestamp.to_milliseconds(), to_underlying(mode), to_underlying(m_handler->state()));
     m_handler->seek(timestamp, mode);
     m_is_in_error_state = false;
 }

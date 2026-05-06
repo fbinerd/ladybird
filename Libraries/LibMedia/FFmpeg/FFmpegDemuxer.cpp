@@ -5,16 +5,19 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/Debug.h>
 #include <AK/Math.h>
 #include <AK/MemoryStream.h>
 #include <AK/Stream.h>
 #include <AK/StringView.h>
 #include <AK/Time.h>
+#include <LibMedia/CodecID.h>
 #include <LibMedia/FFmpeg/FFmpegDemuxer.h>
 #include <LibMedia/FFmpeg/FFmpegHelpers.h>
 #include <LibMedia/MediaStream.h>
 
 extern "C" {
+#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 }
 
@@ -67,12 +70,25 @@ static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_c
     if (force_hls_demuxer)
         input_format = av_find_input_format("hls");
 
-    if (avformat_open_input(&format_context, nullptr, input_format, nullptr) < 0)
+    dbgln("MUNDO_MEDIA_FFMPEG open_input force_hls={}", force_hls_demuxer);
+    auto open_input_result = avformat_open_input(&format_context, nullptr, input_format, nullptr);
+    if (open_input_result < 0) {
+        dbgln("MUNDO_MEDIA_FFMPEG open_input failed error={} force_hls={}", open_input_result, force_hls_demuxer);
         return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to open input for format parsing"sv);
+    }
 
     // Read stream info; doing this is required for headerless formats like MPEG
-    if (avformat_find_stream_info(format_context, nullptr) < 0)
+    auto find_stream_info_result = avformat_find_stream_info(format_context, nullptr);
+    if (find_stream_info_result < 0) {
+        dbgln("MUNDO_MEDIA_FFMPEG find_stream_info failed error={} format={}", find_stream_info_result, format_context->iformat ? format_context->iformat->name : "(null)");
         return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to find stream info"sv);
+    }
+
+    dbgln("MUNDO_MEDIA_FFMPEG stream_info format={} streams={} duration={} force_hls={}",
+        format_context->iformat ? format_context->iformat->name : "(null)",
+        format_context->nb_streams,
+        format_context->duration,
+        force_hls_demuxer);
 
     return {};
 }
@@ -152,6 +168,7 @@ DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullR
 {
     auto cursor = stream->create_cursor();
     auto force_hls_demuxer = TRY(stream_looks_like_hls(cursor));
+    dbgln("MUNDO_MEDIA_FFMPEG from_stream force_hls={}", force_hls_demuxer);
     auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     AVFormatContext* format_context = nullptr;
@@ -169,6 +186,19 @@ DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullR
         auto track = TRY(create_track_from_stream(stream, format_name, seen_types));
         auto codec_id = media_codec_id_from_ffmpeg_codec_id(stream.codecpar->codec_id);
         auto codec_initialization_data = DECODER_TRY_ALLOC(ByteBuffer::copy(stream.codecpar->extradata, stream.codecpar->extradata_size));
+        dbgln("MUNDO_MEDIA_FFMPEG stream index={} type={} codec={} mapped_codec={} width={} height={} sample_rate={} channels={} extradata={} duration={} time_base={}/{}",
+            stream.index,
+            static_cast<int>(stream.codecpar->codec_type),
+            avcodec_get_name(stream.codecpar->codec_id),
+            codec_id,
+            stream.codecpar->width,
+            stream.codecpar->height,
+            stream.codecpar->sample_rate,
+            stream.codecpar->ch_layout.nb_channels,
+            stream.codecpar->extradata_size,
+            stream.duration,
+            stream.time_base.num,
+            stream.time_base.den);
 
         AK::Duration duration;
         if (stream.duration >= 0)
@@ -207,6 +237,7 @@ DecoderErrorOr<void> FFmpegDemuxer::create_context_for_track(Track const& track)
 {
     auto cursor = m_stream->create_cursor();
     auto force_hls_demuxer = TRY(stream_looks_like_hls(cursor));
+    dbgln("MUNDO_MEDIA_FFMPEG create_context track_id={} type={} force_hls={}", track.identifier(), to_underlying(track.type()), force_hls_demuxer);
     auto io_context = MUST(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     auto track_context = make<TrackContext>(move(cursor), move(io_context));

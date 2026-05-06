@@ -57,6 +57,9 @@ private:
 
     TimedImage m_next_frame;
     RefPtr<Gfx::ImmutableBitmap> m_current_frame;
+    size_t m_update_count { 0 };
+    size_t m_empty_provider_frame_count { 0 };
+    size_t m_presented_frame_count { 0 };
     bool m_pause_updates { false };
     bool m_has_new_current_frame { false };
 };
