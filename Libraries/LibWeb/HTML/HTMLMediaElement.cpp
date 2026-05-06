@@ -180,7 +180,7 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
         if (!value.has_value())
             return;
         dbgln("MUNDO_MEDIA_ELEMENT src_attribute_changed old={} new={} current_src={}", old_value.value_or(String {}), value.value(), m_current_src);
-        if (value->is_empty() && m_current_src.contains(".m3u8"sv)) {
+        if (value->bytes_as_string_view().trim_whitespace().is_empty() && m_current_src.contains(".m3u8"sv)) {
             dbgln("MUNDO_MEDIA_ELEMENT ignoring empty HLS src attribute while current_src={} is active", m_current_src);
             return;
         }
@@ -1064,8 +1064,8 @@ void HTMLMediaElement::select_resource()
 
             // 1. ⌛ If the src attribute's value is the empty string, then end the synchronous section, and jump down to the failed with attribute step below.
             auto source = get_attribute_value(HTML::AttributeNames::src);
-            if (source.is_empty()) {
-                if (!m_current_src.is_empty()) {
+            if (source.bytes_as_string_view().trim_whitespace().is_empty()) {
+                if (m_current_src.contains(".m3u8"sv)) {
                     dbgln("MUNDO_MEDIA_ELEMENT ignoring empty src attribute while current_src={} is active", m_current_src);
                     return;
                 }
