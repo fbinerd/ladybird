@@ -95,6 +95,7 @@ private:
         void queue_frame(NonnullOwnPtr<VideoFrame> const&);
         AK::Duration normalized_frame_timestamp(VideoFrame const&);
         void dispatch_error(DecoderError&&);
+        void wait_after_reaching_end_of_stream();
         bool handle_seek();
         template<typename Callback>
         void process_seek_on_main_thread(u32 seek_id, Callback);
@@ -137,7 +138,9 @@ private:
         size_t m_coded_frame_count { 0 };
         size_t m_decoded_frame_count { 0 };
         size_t m_end_of_stream_count { 0 };
+        size_t m_decoder_end_of_stream_count { 0 };
         size_t m_needs_more_input_count { 0 };
+        bool m_reached_end_of_stream { false };
         bool m_has_frame_timestamp_offset { false };
         AK::Duration m_frame_timestamp_offset { AK::Duration::zero() };
         FrameEndTimeHandler m_duration_change_handler;

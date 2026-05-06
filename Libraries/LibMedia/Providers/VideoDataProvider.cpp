@@ -352,6 +352,14 @@ void VideoDataProvider::ThreadData::dispatch_error(DecoderError&& error)
         m_error_handler(move(error));
 }
 
+void VideoDataProvider::ThreadData::wait_after_reaching_end_of_stream()
+{
+    auto locker = take_lock();
+    m_reached_end_of_stream = true;
+    while (m_reached_end_of_stream && !should_thread_exit_while_locked())
+        m_wait_condition.wait();
+}
+
 template<typename Callback>
 void VideoDataProvider::ThreadData::process_seek_on_main_thread(u32 seek_id, Callback callback)
 {
@@ -404,6 +412,7 @@ bool VideoDataProvider::ThreadData::handle_seek()
             timestamp = m_seek_timestamp;
             mode = m_seek_mode;
             m_demuxer->reset_blocking_reads_aborted_for_track(m_track);
+            m_reached_end_of_stream = false;
         }
 
         auto seek_options = mode == SeekMode::Accurate ? DemuxerSeekOptions::None : DemuxerSeekOptions::Force;
@@ -531,6 +540,14 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
 {
     VERIFY(m_decoder);
 
+    {
+        auto locker = take_lock();
+        if (m_reached_end_of_stream) {
+            m_wait_condition.wait();
+            return;
+        }
+    }
+
     // FIXME: Check if the PlaybackManager's current time is ahead of the next keyframe, and seek to it if so.
     //        Demuxers currently can't report the next keyframe in a convenient way, so that will need implementing
     //        before this functionality can exist.
@@ -594,7 +611,10 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
                 break;
             }
             if (frame_result.error().category() == DecoderErrorCategory::EndOfStream) {
-                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decoder_end_of_stream track_id={}", m_track.identifier());
+                m_decoder_end_of_stream_count++;
+                if (m_decoder_end_of_stream_count <= 8 || m_decoder_end_of_stream_count % 60 == 0)
+                    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decoder_end_of_stream count={} track_id={}", m_decoder_end_of_stream_count, m_track.identifier());
+                wait_after_reaching_end_of_stream();
                 break;
             }
             dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decode_error track_id={} category={} error={}", m_track.identifier(), decoder_error_category_to_string(frame_result.error().category()), frame_result.error().description());
