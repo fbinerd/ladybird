@@ -1775,6 +1775,7 @@ void HTMLMediaElement::on_metadata_parsed()
 void HTMLMediaElement::set_up_playback_manager_for_remote()
 {
     m_playback_manager = Media::PlaybackManager::create();
+    auto* playback_manager = m_playback_manager.ptr();
     m_playback_manager->set_audio_output_disabled(document().page().client().is_headless());
 
     m_has_enabled_preferred_audio_track = false;
@@ -1788,7 +1789,9 @@ void HTMLMediaElement::set_up_playback_manager_for_remote()
 
     // -> If the media resource is found to have an audio track
     // -> If the media resource is found to have a video track
-    m_playback_manager->on_track_added = GC::weak_callback(*this, [](auto& self, auto& track) {
+    m_playback_manager->on_track_added = GC::weak_callback(*this, [playback_manager](auto& self, auto& track) {
+        if (self.m_playback_manager.ptr() != playback_manager)
+            return;
         if (track.type() == Media::TrackType::Audio)
             self.on_audio_track_added(track);
         else
@@ -1796,17 +1799,23 @@ void HTMLMediaElement::set_up_playback_manager_for_remote()
     });
 
     // -> Once enough of the media data has been fetched to determine the duration of the media resource, its dimensions, and other metadata
-    m_playback_manager->on_metadata_parsed = GC::weak_callback(*this, [](auto& self) {
+    m_playback_manager->on_metadata_parsed = GC::weak_callback(*this, [playback_manager](auto& self) {
+        if (self.m_playback_manager.ptr() != playback_manager)
+            return;
         self.on_metadata_parsed();
     });
 
     // -> If the media data can be fetched but is found by inspection to be in an unsupported format, or can otherwise not be rendered at all
-    m_playback_manager->on_unsupported_format_error = GC::weak_callback(*this, [](auto& self, Media::DecoderError&& error) mutable {
+    m_playback_manager->on_unsupported_format_error = GC::weak_callback(*this, [playback_manager](auto& self, Media::DecoderError&& error) mutable {
+        if (self.m_playback_manager.ptr() != playback_manager)
+            return;
         dbgln("MUNDO_MEDIA_ELEMENT unsupported current_src={} category={} error={}", self.m_current_src, Media::decoder_error_category_to_string(error.category()), error.description());
         // NB: Queue a task for this so that we don't destroy the PlaybackManager within one of its callbacks when we
         //     call forget_media_resource_specific_tracks().
-        self.queue_a_media_element_task([self = GC::Weak(self), error = move(error)] {
+        self.queue_a_media_element_task([self = GC::Weak(self), playback_manager, error = move(error)] {
             if (!self)
+                return;
+            if (self->m_playback_manager.ptr() != playback_manager)
                 return;
             if (self->m_error)
                 return;
@@ -1822,9 +1831,13 @@ void HTMLMediaElement::set_up_playback_manager_for_remote()
     });
 
     // -> If the media data is corrupted
-    m_playback_manager->on_error = GC::weak_callback(*this, [](auto& self, Media::DecoderError&& error) {
-        self.queue_a_media_element_task([self = GC::Weak(self), error = move(error)] {
+    m_playback_manager->on_error = GC::weak_callback(*this, [playback_manager](auto& self, Media::DecoderError&& error) {
+        if (self.m_playback_manager.ptr() != playback_manager)
+            return;
+        self.queue_a_media_element_task([self = GC::Weak(self), playback_manager, error = move(error)] {
             if (!self)
+                return;
+            if (self->m_playback_manager.ptr() != playback_manager)
                 return;
             self->set_decoder_error(MUST(String::from_utf8(error.description())));
         });
@@ -1832,7 +1845,9 @@ void HTMLMediaElement::set_up_playback_manager_for_remote()
 
     m_playback_manager->add_media_source(*m_remote_fetch_data->stream);
 
-    m_playback_manager->on_playback_state_change = GC::weak_callback(*this, [](auto& self) {
+    m_playback_manager->on_playback_state_change = GC::weak_callback(*this, [playback_manager](auto& self) {
+        if (self.m_playback_manager.ptr() != playback_manager)
+            return;
         self.on_playback_manager_state_change();
     });
 }
@@ -1841,6 +1856,7 @@ void HTMLMediaElement::set_up_playback_manager_for_remote()
 void HTMLMediaElement::set_up_playback_manager_for_local()
 {
     m_playback_manager = Media::PlaybackManager::create();
+    auto* playback_manager = m_playback_manager.ptr();
     m_playback_manager->set_audio_output_disabled(document().page().client().is_headless());
 
     m_has_enabled_preferred_audio_track = false;
@@ -1855,7 +1871,9 @@ void HTMLMediaElement::set_up_playback_manager_for_local()
     // AD-HOC: Enable the tracks in PlaybackManager if MediaSource already enabled them in the DOM.
     //         Note that we do not want to call on_(audio/video)_track_added() here, since the MSE spec takes care
     //         of setting up the tracks.
-    m_playback_manager->on_track_added = GC::weak_callback(*this, [](auto& self, auto& track) {
+    m_playback_manager->on_track_added = GC::weak_callback(*this, [playback_manager](auto& self, auto& track) {
+        if (self.m_playback_manager.ptr() != playback_manager)
+            return;
         if (track.type() == Media::TrackType::Audio) {
             self.m_audio_tracks->for_each_track([&](auto& element_track) {
                 if (!element_track.enabled())
@@ -1881,20 +1899,28 @@ void HTMLMediaElement::set_up_playback_manager_for_local()
     });
 
     // -> Once enough of the media data has been fetched to determine the duration of the media resource, its dimensions, and other metadata
-    m_playback_manager->on_metadata_parsed = GC::weak_callback(*this, [](auto& self) {
+    m_playback_manager->on_metadata_parsed = GC::weak_callback(*this, [playback_manager](auto& self) {
+        if (self.m_playback_manager.ptr() != playback_manager)
+            return;
         self.on_metadata_parsed();
     });
 
     // -> If the media data is corrupted
-    m_playback_manager->on_error = GC::weak_callback(*this, [](auto& self, Media::DecoderError&& error) {
-        self.queue_a_media_element_task([self = GC::Weak(self), error = move(error)] {
+    m_playback_manager->on_error = GC::weak_callback(*this, [playback_manager](auto& self, Media::DecoderError&& error) {
+        if (self.m_playback_manager.ptr() != playback_manager)
+            return;
+        self.queue_a_media_element_task([self = GC::Weak(self), playback_manager, error = move(error)] {
             if (!self)
+                return;
+            if (self->m_playback_manager.ptr() != playback_manager)
                 return;
             self->set_decoder_error(MUST(String::from_utf8(error.description())));
         });
     });
 
-    m_playback_manager->on_playback_state_change = GC::weak_callback(*this, [](auto& self) {
+    m_playback_manager->on_playback_state_change = GC::weak_callback(*this, [playback_manager](auto& self) {
+        if (self.m_playback_manager.ptr() != playback_manager)
+            return;
         self.on_playback_manager_state_change();
     });
 }
