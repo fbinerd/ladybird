@@ -81,7 +81,7 @@ private:
     void create_playback_stream();
     ReadonlySpan<float> write_audio_data_to_playback_stream(Span<float>);
 
-    Core::EventLoop& m_main_thread_event_loop;
+    NonnullRefPtr<Core::WeakEventLoopReference> m_main_thread_event_loop;
     NonnullRefPtr<AudioMixingSinkWeakReference> m_weak_self;
 
     Threading::Mutex m_mutex;

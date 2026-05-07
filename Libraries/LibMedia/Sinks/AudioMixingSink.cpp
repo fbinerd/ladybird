@@ -21,10 +21,13 @@ ErrorOr<NonnullRefPtr<AudioMixingSink>> AudioMixingSink::try_create()
 }
 
 AudioMixingSink::AudioMixingSink(AudioMixingSinkWeakReference& weak_ref)
-    : m_main_thread_event_loop(Core::EventLoop::current())
+    : m_main_thread_event_loop(Core::EventLoop::current_weak())
     , m_weak_self(weak_ref)
 {
-    m_main_thread_event_loop.deferred_invoke([weak_self = m_weak_self] {
+    auto event_loop = m_main_thread_event_loop->take();
+    if (!event_loop)
+        return;
+    event_loop->deferred_invoke([weak_self = m_weak_self] {
         auto self = weak_self->take_strong();
         if (!self)
             return;
@@ -146,7 +149,10 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
                 continue;
             track_data.buffering = true;
 
-            m_main_thread_event_loop.deferred_invoke([weak_self = m_weak_self, track] {
+            auto event_loop = m_main_thread_event_loop->take();
+            if (!event_loop)
+                continue;
+            event_loop->deferred_invoke([weak_self = m_weak_self, track] {
                 auto self = weak_self->take_strong();
                 if (self && self->on_start_buffering)
                     self->on_start_buffering(track);
@@ -271,7 +277,10 @@ void AudioMixingSink::resume()
             if (self->m_playback_stream != &playback_stream)
                 return;
 
-            self->m_main_thread_event_loop.deferred_invoke([self, new_device_time]() {
+            auto event_loop = self->m_main_thread_event_loop->take();
+            if (!event_loop)
+                return;
+            event_loop->deferred_invoke([self, new_device_time]() {
                 self->m_last_stream_time = new_device_time;
             });
         })
@@ -297,7 +306,10 @@ void AudioMixingSink::pause()
             auto new_stream_time = self->m_playback_stream->total_time_played();
             auto new_media_time = AK::Duration::from_time_units(self->m_next_sample_to_write, 1, self->m_sample_specification.sample_rate());
 
-            self->m_main_thread_event_loop.deferred_invoke([self, new_stream_time, new_media_time]() {
+            auto event_loop = self->m_main_thread_event_loop->take();
+            if (!event_loop)
+                return;
+            event_loop->deferred_invoke([self, new_stream_time, new_media_time]() {
                 self->m_last_stream_time = new_stream_time;
                 self->m_last_media_time = new_media_time;
             });
@@ -335,7 +347,10 @@ void AudioMixingSink::set_time(AK::Duration time)
 
             auto new_stream_time = self->m_playback_stream->total_time_played();
 
-            self->m_main_thread_event_loop.deferred_invoke([self, new_stream_time]() {
+            auto event_loop = self->m_main_thread_event_loop->take();
+            if (!event_loop)
+                return;
+            event_loop->deferred_invoke([self, new_stream_time]() {
                 {
                     self->m_last_stream_time = new_stream_time;
                     self->m_last_media_time = self->m_temporary_time.release_value();
