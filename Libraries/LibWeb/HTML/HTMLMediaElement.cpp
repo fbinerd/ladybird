@@ -179,15 +179,15 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
         // this, even if there are source elements present.)
         if (!value.has_value())
             return;
-        dbgln("MUNDO_MEDIA_ELEMENT src_attribute_changed old={} new={} current_src={}", old_value.value_or(String {}), value.value(), m_current_src);
+        dbgln("MUNDO_MEDIA_ELEMENT element={} src_attribute_changed old={} new={} current_src={}", static_cast<void const*>(this), old_value.value_or(String {}), value.value(), m_current_src);
         auto trimmed_value = value->bytes_as_string_view().trim_whitespace();
         if (trimmed_value.is_empty() && m_current_src.contains(".m3u8"sv)) {
-            dbgln("MUNDO_MEDIA_ELEMENT ignoring empty HLS src attribute while current_src={} is active", m_current_src);
+            dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring empty HLS src attribute while current_src={} is active", static_cast<void const*>(this), m_current_src);
             return;
         }
         if (!trimmed_value.is_empty() && m_current_src.contains(".m3u8"sv)) {
             if (auto url_record = document().encoding_parse_url(value.value()); url_record.has_value() && url_record->serialize() == m_current_src) {
-                dbgln("MUNDO_MEDIA_ELEMENT ignoring unchanged HLS src attribute current_src={}", m_current_src);
+                dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring unchanged HLS src attribute current_src={}", static_cast<void const*>(this), m_current_src);
                 return;
             }
         }
@@ -699,11 +699,11 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
         auto source = get_attribute_value(HTML::AttributeNames::src);
         auto trimmed_source = source.bytes_as_string_view().trim_whitespace();
         if (trimmed_source.is_empty()) {
-            dbgln("MUNDO_MEDIA_ELEMENT ignoring load() with empty src while current_src={} is active", m_current_src);
+            dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring load() with empty src while current_src={} is active", static_cast<void const*>(this), m_current_src);
             return {};
         }
         if (auto url_record = document().encoding_parse_url(source); url_record.has_value() && url_record->serialize() == m_current_src) {
-            dbgln("MUNDO_MEDIA_ELEMENT ignoring load() for unchanged HLS current_src={}", m_current_src);
+            dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring load() for unchanged HLS current_src={}", static_cast<void const*>(this), m_current_src);
             return {};
         }
     }
@@ -1086,7 +1086,7 @@ void HTMLMediaElement::select_resource()
             auto source = get_attribute_value(HTML::AttributeNames::src);
             if (source.bytes_as_string_view().trim_whitespace().is_empty()) {
                 if (m_current_src.contains(".m3u8"sv)) {
-                    dbgln("MUNDO_MEDIA_ELEMENT ignoring empty src attribute while current_src={} is active", m_current_src);
+                    dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring empty src attribute while current_src={} is active", static_cast<void const*>(this), m_current_src);
                     return;
                 }
                 failed_with_attribute("The 'src' attribute is empty"_string);
@@ -1109,7 +1109,7 @@ void HTMLMediaElement::select_resource()
             queue_a_media_element_task([this, url_record = move(url_record), failed_with_attribute = move(failed_with_attribute), expected_current_src = move(expected_current_src)]() mutable {
                 if (url_record.has_value()) {
                     if (m_current_src != expected_current_src) {
-                        dbgln("MUNDO_MEDIA_ELEMENT ignoring stale load_url_resource expected={} current_src={}", expected_current_src, m_current_src);
+                        dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring stale load_url_resource expected={} current_src={}", static_cast<void const*>(this), expected_current_src, m_current_src);
                         return;
                     }
                     load_url_resource(*url_record, move(failed_with_attribute));
@@ -1162,7 +1162,7 @@ void HTMLMediaElement::load_url_resource(URL::URL const& url_record, Function<vo
 
     auto serialized_url = url_record.serialize();
     if (m_current_src != serialized_url) {
-        dbgln("MUNDO_MEDIA_ELEMENT ignoring stale remote resource url={} current_src={}", serialized_url, m_current_src);
+        dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring stale remote resource url={} current_src={}", static_cast<void const*>(this), serialized_url, m_current_src);
         return;
     }
 
@@ -1301,7 +1301,7 @@ void HTMLMediaElement::load_remote_resource(ByteRange const& byte_range)
 
         fetch_algorithms_input.process_response = [self = GC::Ref(*this), byte_range = move(byte_range), fetch_generation](auto response) mutable {
             if (fetch_generation != self->m_current_fetch_generation || !self->m_remote_fetch_data) {
-                dbgln("MUNDO_MEDIA_ELEMENT ignoring stale process_response generation={} current_generation={} has_fetch_data={}", fetch_generation, self->m_current_fetch_generation, !!self->m_remote_fetch_data);
+                dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring stale process_response generation={} current_generation={} has_fetch_data={}", static_cast<void const*>(self.ptr()), fetch_generation, self->m_current_fetch_generation, !!self->m_remote_fetch_data);
                 return;
             }
 
@@ -1597,21 +1597,21 @@ void HTMLMediaElement::set_selected_video_track(Badge<VideoTrack>, GC::Ptr<HTML:
 
     m_selected_video_track = video_track;
     if (video_track) {
-        dbgln("MUNDO_MEDIA_ELEMENT selected_video_track id={} src={}", video_track->track_in_playback_manager().identifier(), m_current_src);
+        dbgln("MUNDO_MEDIA_ELEMENT element={} selected_video_track id={} src={}", static_cast<void const*>(this), video_track->track_in_playback_manager().identifier(), m_current_src);
         m_selected_video_track_sink = m_playback_manager->get_or_create_the_displaying_video_sink_for_track(video_track->track_in_playback_manager());
         auto sink_update_result = m_selected_video_track_sink->update();
         if (sink_update_result == Media::DisplayingVideoSinkUpdateResult::NewFrameAvailable) {
             ensure_external_content_source().update(m_selected_video_track_sink->current_frame());
-            dbgln("MUNDO_MEDIA_ELEMENT selected_video_track initial_frame id={} src={}", video_track->track_in_playback_manager().identifier(), m_current_src);
+            dbgln("MUNDO_MEDIA_ELEMENT element={} selected_video_track initial_frame id={} src={}", static_cast<void const*>(this), video_track->track_in_playback_manager().identifier(), m_current_src);
             update_intrinsic_video_dimensions();
             set_needs_repaint();
         } else if (auto* video_element = as_if<HTMLVideoElement>(this)) {
             auto const& video_data = video_track->track_in_playback_manager().video_data();
             video_element->set_intrinsic_video_dimensions(Gfx::Size<u32>(video_data.pixel_width, video_data.pixel_height));
-            dbgln("MUNDO_MEDIA_ELEMENT selected_video_track no_initial_frame id={} intrinsic={}x{} src={}", video_track->track_in_playback_manager().identifier(), video_data.pixel_width, video_data.pixel_height, m_current_src);
+            dbgln("MUNDO_MEDIA_ELEMENT element={} selected_video_track no_initial_frame id={} intrinsic={}x{} src={}", static_cast<void const*>(this), video_track->track_in_playback_manager().identifier(), video_data.pixel_width, video_data.pixel_height, m_current_src);
         }
     } else {
-        dbgln("MUNDO_MEDIA_ELEMENT selected_video_track cleared src={}", m_current_src);
+        dbgln("MUNDO_MEDIA_ELEMENT element={} selected_video_track cleared src={}", static_cast<void const*>(this), m_current_src);
         m_selected_video_track_sink = nullptr;
     }
 
@@ -1632,7 +1632,8 @@ void HTMLMediaElement::update_video_frame_and_timeline()
             m_mundo_video_frame_update_log_count++;
             if (m_mundo_video_frame_update_log_count <= 12 || m_mundo_video_frame_update_log_count % 60 == 0) {
                 auto track_id = m_selected_video_track ? m_selected_video_track->track_in_playback_manager().identifier() : 0;
-                dbgln("MUNDO_MEDIA_ELEMENT video_frame_updated count={} track_id={} current_time={} ready_state={} frame={} size={}x{} src={}",
+                dbgln("MUNDO_MEDIA_ELEMENT element={} video_frame_updated count={} track_id={} current_time={} ready_state={} frame={} size={}x{} src={}",
+                    static_cast<void const*>(this),
                     m_mundo_video_frame_update_log_count,
                     track_id,
                     m_current_playback_position,
@@ -1858,7 +1859,7 @@ void HTMLMediaElement::set_up_playback_manager_for_remote()
     m_playback_manager->on_unsupported_format_error = GC::weak_callback(*this, [playback_manager](auto& self, Media::DecoderError&& error) mutable {
         if (self.m_playback_manager.ptr() != playback_manager)
             return;
-        dbgln("MUNDO_MEDIA_ELEMENT unsupported current_src={} category={} error={}", self.m_current_src, Media::decoder_error_category_to_string(error.category()), error.description());
+        dbgln("MUNDO_MEDIA_ELEMENT element={} unsupported current_src={} category={} error={}", static_cast<void const*>(&self), self.m_current_src, Media::decoder_error_category_to_string(error.category()), error.description());
         // NB: Queue a task for this so that we don't destroy the PlaybackManager within one of its callbacks when we
         //     call forget_media_resource_specific_tracks().
         self.queue_a_media_element_task([self = GC::Weak(self), playback_manager, error = move(error)] {
@@ -2034,7 +2035,7 @@ void HTMLMediaElement::process_media_data(FetchingStatus fetching_status)
 void HTMLMediaElement::handle_media_source_failure(Span<GC::Ref<WebIDL::Promise>> promises, String error_message)
 {
     auto& realm = this->realm();
-    dbgln("MUNDO_MEDIA_ELEMENT media_source_failure current_src={} message={}", m_current_src, error_message);
+    dbgln("MUNDO_MEDIA_ELEMENT element={} media_source_failure current_src={} message={}", static_cast<void const*>(this), m_current_src, error_message);
 
     // 1. Set the error attribute to the result of creating a MediaError with MEDIA_ERR_SRC_NOT_SUPPORTED.
     m_error = realm.create<MediaError>(realm, MediaError::Code::SrcNotSupported, move(error_message));
@@ -2067,7 +2068,7 @@ void HTMLMediaElement::handle_media_source_failure(Span<GC::Ref<WebIDL::Promise>
 // https://html.spec.whatwg.org/multipage/media.html#forget-the-media-element's-media-resource-specific-tracks
 void HTMLMediaElement::forget_media_resource_specific_tracks()
 {
-    dbgln("MUNDO_MEDIA_ELEMENT forget_tracks src={}", m_current_src);
+    dbgln("MUNDO_MEDIA_ELEMENT element={} forget_tracks src={}", static_cast<void const*>(this), m_current_src);
 
     // When a media element is to forget the media element's media-resource-specific tracks, the user agent must remove from the media element's list
     // of text tracks all the media-resource-specific text tracks, then empty the media element's audioTracks attribute's AudioTrackList object, then
@@ -2296,7 +2297,7 @@ void HTMLMediaElement::on_playback_manager_state_change()
 {
     VERIFY(m_playback_manager);
     auto state = m_playback_manager->state();
-    dbgln("MUNDO_MEDIA_ELEMENT playback_state_change state={} ready_state={} paused={} current_time={} src={}", to_underlying(state), to_underlying(m_ready_state), paused(), m_current_playback_position, m_current_src);
+    dbgln("MUNDO_MEDIA_ELEMENT element={} playback_state_change state={} ready_state={} paused={} current_time={} src={}", static_cast<void const*>(this), to_underlying(state), to_underlying(m_ready_state), paused(), m_current_playback_position, m_current_src);
     if (seeking() && state != Media::PlaybackState::Seeking)
         finish_seeking_element();
 
