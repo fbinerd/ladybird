@@ -334,6 +334,10 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
                 dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected empty width={} height={}", texture_source_read_count, source->width(), source->height());
                 return {};
             }
+            if (bitmap->format() == Gfx::BitmapFormat::BGRA8888 && bitmap->width() >= 512 && bitmap->height() >= 512) {
+                dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected unstable BGRA bitmap width={} height={}", texture_source_read_count, source->width(), source->height());
+                return {};
+            }
             return Gfx::ImmutableBitmap::create(*bitmap);
         },
         [&](GC::Root<HTML::ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
