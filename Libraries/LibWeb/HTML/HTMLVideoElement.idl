@@ -11,4 +11,17 @@ interface HTMLVideoElement : HTMLMediaElement {
     [CEReactions, Reflect, URL] attribute USVString poster;
     [CEReactions, Reflect=playsinline] attribute boolean playsInline;
 
+    unsigned long requestVideoFrameCallback(VideoFrameRequestCallback callback);
+    undefined cancelVideoFrameCallback(unsigned long handle);
+};
+
+callback VideoFrameRequestCallback = undefined (DOMHighResTimeStamp now, VideoFrameCallbackMetadata metadata);
+
+dictionary VideoFrameCallbackMetadata {
+    DOMHighResTimeStamp presentationTime;
+    DOMHighResTimeStamp expectedDisplayTime;
+    unsigned long width;
+    unsigned long height;
+    double mediaTime;
+    unsigned long presentedFrames;
 };

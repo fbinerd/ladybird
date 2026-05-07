@@ -1648,6 +1648,8 @@ void HTMLMediaElement::update_video_frame_and_timeline()
                     m_current_src);
             }
             update_intrinsic_video_dimensions();
+            if (auto* video_element = as_if<HTMLVideoElement>(this))
+                video_element->notify_about_new_video_frame();
             set_needs_repaint();
         }
     }

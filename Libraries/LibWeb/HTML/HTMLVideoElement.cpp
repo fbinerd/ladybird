@@ -19,13 +19,16 @@
 #include <LibWeb/Fetch/Infrastructure/FetchController.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Responses.h>
+#include <LibWeb/HighResolutionTime/TimeOrigin.h>
 #include <LibWeb/HTML/AudioTrackList.h>
 #include <LibWeb/HTML/HTMLVideoElement.h>
+#include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/HTML/VideoTrack.h>
 #include <LibWeb/HTML/VideoTrackList.h>
 #include <LibWeb/Layout/VideoBox.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Platform/ImageCodecPlugin.h>
+#include <LibWeb/WebIDL/AbstractOperations.h>
 
 namespace Web::HTML {
 
@@ -54,6 +57,8 @@ void HTMLVideoElement::visit_edges(Cell::Visitor& visitor)
     Base::visit_edges(visitor);
     visitor.visit(m_video_track);
     visitor.visit(m_fetch_controller);
+    for (auto& callback : m_video_frame_callbacks)
+        visitor.visit(callback.callback);
 }
 
 void HTMLVideoElement::attribute_changed(FlyString const& name, Optional<String> const& old_value, Optional<String> const& value, Optional<FlyString> const& namespace_)
@@ -342,6 +347,67 @@ RefPtr<Gfx::ImmutableBitmap> HTMLVideoElement::bitmap() const
     if (sink == nullptr)
         return nullptr;
     return sink->current_frame();
+}
+
+WebIDL::UnsignedLong HTMLVideoElement::request_video_frame_callback(GC::Ref<WebIDL::CallbackType> callback)
+{
+    auto handle = m_next_video_frame_callback_handle++;
+    if (m_next_video_frame_callback_handle == 0)
+        m_next_video_frame_callback_handle = 1;
+
+    m_video_frame_callbacks.append({ handle, callback });
+    dbgln("MUNDO_VIDEO_FRAME_CALLBACK request element={} handle={} pending={} src={}", static_cast<void const*>(this), handle, m_video_frame_callbacks.size(), current_src());
+    return handle;
+}
+
+void HTMLVideoElement::cancel_video_frame_callback(WebIDL::UnsignedLong handle)
+{
+    auto removed = m_video_frame_callbacks.remove_first_matching([handle](auto const& callback) {
+        return callback.handle == handle;
+    });
+    if (removed)
+        dbgln("MUNDO_VIDEO_FRAME_CALLBACK cancel element={} handle={} pending={} src={}", static_cast<void const*>(this), handle, m_video_frame_callbacks.size(), current_src());
+}
+
+void HTMLVideoElement::notify_about_new_video_frame()
+{
+    if (m_video_frame_callbacks.is_empty())
+        return;
+
+    auto callbacks = move(m_video_frame_callbacks);
+    m_video_frame_callbacks.clear();
+
+    auto frame = bitmap();
+    auto width = frame ? frame->size().width() : video_width();
+    auto height = frame ? frame->size().height() : video_height();
+    auto now = HighResolutionTime::current_high_resolution_time(realm().global_object());
+    m_presented_video_frame_count++;
+
+    dbgln("MUNDO_VIDEO_FRAME_CALLBACK fire element={} callbacks={} presented={} media_time={} size={}x{} src={}",
+        static_cast<void const*>(this),
+        callbacks.size(),
+        m_presented_video_frame_count,
+        current_time(),
+        width,
+        height,
+        current_src());
+
+    queue_a_media_element_task([this, callbacks = move(callbacks), now, width, height, media_time = current_time(), presented_frames = m_presented_video_frame_count]() mutable {
+        auto& realm = this->realm();
+        auto metadata = JS::Object::create(realm, realm.intrinsics().object_prototype());
+        MUST(metadata->create_data_property("presentationTime"_utf16_fly_string, JS::Value(now)));
+        MUST(metadata->create_data_property("expectedDisplayTime"_utf16_fly_string, JS::Value(now)));
+        MUST(metadata->create_data_property("width"_utf16_fly_string, JS::Value(width)));
+        MUST(metadata->create_data_property("height"_utf16_fly_string, JS::Value(height)));
+        MUST(metadata->create_data_property("mediaTime"_utf16_fly_string, JS::Value(media_time)));
+        MUST(metadata->create_data_property("presentedFrames"_utf16_fly_string, JS::Value(presented_frames)));
+
+        for (auto const& callback : callbacks) {
+            auto result = WebIDL::invoke_callback(callback.callback, {}, WebIDL::ExceptionBehavior::Report, { { JS::Value(now), metadata } });
+            if (result.is_error())
+                HTML::report_exception(result, realm);
+        }
+    });
 }
 
 }

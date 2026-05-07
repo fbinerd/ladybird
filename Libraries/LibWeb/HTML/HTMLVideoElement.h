@@ -12,7 +12,9 @@
 #include <LibWeb/DOM/DocumentLoadEventDelayer.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/HTML/HTMLMediaElement.h>
+#include <LibWeb/WebIDL/CallbackType.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
+#include <LibWeb/WebIDL/Types.h>
 
 namespace Web::HTML {
 
@@ -62,6 +64,10 @@ public:
     // FIXME: This is a hack for images used as CanvasImageSource. Do something more elegant.
     RefPtr<Gfx::ImmutableBitmap> bitmap() const;
 
+    WebIDL::UnsignedLong request_video_frame_callback(GC::Ref<WebIDL::CallbackType>);
+    void cancel_video_frame_callback(WebIDL::UnsignedLong handle);
+    void notify_about_new_video_frame();
+
 private:
     HTMLVideoElement(DOM::Document&, DOM::QualifiedName);
 
@@ -87,6 +93,15 @@ private:
 
     GC::Ptr<Fetch::Infrastructure::FetchController> m_fetch_controller;
     Optional<DOM::DocumentLoadEventDelayer> m_load_event_delayer;
+
+    struct VideoFrameCallback {
+        WebIDL::UnsignedLong handle { 0 };
+        GC::Ref<WebIDL::CallbackType> callback;
+    };
+
+    Vector<VideoFrameCallback> m_video_frame_callbacks;
+    WebIDL::UnsignedLong m_next_video_frame_callback_handle { 1 };
+    u32 m_presented_video_frame_count { 0 };
 };
 
 }
