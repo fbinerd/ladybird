@@ -368,6 +368,7 @@ private:
     OwnPtr<Media::PlaybackManager> m_playback_manager;
     GC::Ptr<VideoTrack> m_selected_video_track;
     RefPtr<Media::DisplayingVideoSink> m_selected_video_track_sink;
+    size_t m_mundo_video_frame_update_log_count { 0 };
 
     bool m_loop_was_specified_when_reaching_end_of_media_resource { false };
 

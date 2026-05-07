@@ -88,7 +88,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         m_current_frame = m_next_frame.release_image();
         m_presented_frame_count++;
         if (m_presented_frame_count <= 8 || m_presented_frame_count % 60 == 0)
-            dbgln("MUNDO_MEDIA_VIDEO_SINK present_frame count={} track_id={} current_time={}ms size={}x{}", m_presented_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_current_frame->size().width(), m_current_frame->size().height());
+            dbgln("MUNDO_MEDIA_VIDEO_SINK present_frame count={} track_id={} current_time={}ms frame={} size={}x{}", m_presented_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), static_cast<void const*>(m_current_frame.ptr()), m_current_frame->size().width(), m_current_frame->size().height());
         result = DisplayingVideoSinkUpdateResult::NewFrameAvailable;
     }
     return result;

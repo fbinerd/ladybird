@@ -264,12 +264,23 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
     //        ImageBitmap or OffscreenCanvas whose bitmap's origin-clean flag is set to false,
     //        a SECURITY_ERR exception must be thrown. See Origin Restrictions.
     // FIXME: If source is null then an INVALID_VALUE error is generated.
-    auto log_webgl_source = [](StringView source_name, Gfx::Bitmap const* bitmap) {
+    static size_t s_texture_source_read_count { 0 };
+    auto texture_source_read_count = ++s_texture_source_read_count;
+    auto log_webgl_source = [&](StringView source_name, Gfx::Bitmap const* bitmap) {
         if (!bitmap) {
-            dbgln("MUNDO_WEBGL_TEX_SOURCE type={} bitmap=null", source_name);
+            dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type={} bitmap=null format={} type_enum={} dest={}x{} flip_y={} premultiply={}",
+                texture_source_read_count,
+                source_name,
+                format,
+                type,
+                destination_width.value_or(-1),
+                destination_height.value_or(-1),
+                m_unpack_flip_y,
+                m_unpack_premultiply_alpha);
             return;
         }
-        dbgln("MUNDO_WEBGL_TEX_SOURCE type={} bitmap={} size={}x{} pitch={} data_size={} format={} alpha={}",
+        dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type={} bitmap={} size={}x{} pitch={} data_size={} format={} alpha={} format_enum={} type_enum={} dest={}x{} flip_y={} premultiply={}",
+            texture_source_read_count,
             source_name,
             static_cast<void const*>(bitmap),
             bitmap->width(),
@@ -277,7 +288,13 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
             bitmap->pitch(),
             bitmap->data_size(),
             Gfx::bitmap_format_name(bitmap->format()),
-            bitmap->alpha_type() == Gfx::AlphaType::Premultiplied ? "premultiplied"sv : "unpremultiplied"sv);
+            bitmap->alpha_type() == Gfx::AlphaType::Premultiplied ? "premultiplied"sv : "unpremultiplied"sv,
+            format,
+            type,
+            destination_width.value_or(-1),
+            destination_height.value_or(-1),
+            m_unpack_flip_y,
+            m_unpack_premultiply_alpha);
     };
 
     auto bitmap = source.visit(
@@ -298,14 +315,22 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
             return Gfx::ImmutableBitmap::create(*bitmap);
         },
         [&](GC::Root<HTML::HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
-            return source->bitmap();
+            auto bitmap = source->bitmap();
+            dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=HTMLVideoElement current_src={} ready_state={} bitmap={} size={}x{}",
+                texture_source_read_count,
+                source->current_src(),
+                to_underlying(source->ready_state()),
+                static_cast<void const*>(bitmap.ptr()),
+                bitmap ? bitmap->size().width() : 0,
+                bitmap ? bitmap->size().height() : 0);
+            return bitmap;
         },
         [&](GC::Root<HTML::ImageBitmap> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             auto* bitmap = source->bitmap();
             if (!bitmap)
                 return {};
             log_webgl_source("ImageBitmap"sv, bitmap);
-            dbgln("MUNDO_WEBGL_TEX_SOURCE type=ImageBitmap upload skipped");
+            dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload skipped width={} height={}", texture_source_read_count, source->width(), source->height());
             return {};
         },
         [&](GC::Root<HTML::ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {

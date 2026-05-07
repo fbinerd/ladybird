@@ -1611,8 +1611,21 @@ void HTMLMediaElement::update_video_frame_and_timeline()
     if (m_selected_video_track_sink) {
         auto sink_update_result = m_selected_video_track_sink->update();
         if (sink_update_result == Media::DisplayingVideoSinkUpdateResult::NewFrameAvailable) {
-            ensure_external_content_source().update(m_selected_video_track_sink->current_frame());
-            dbgln("MUNDO_MEDIA_ELEMENT video_frame_updated current_time={} ready_state={} src={}", m_current_playback_position, to_underlying(m_ready_state), m_current_src);
+            auto current_frame = m_selected_video_track_sink->current_frame();
+            ensure_external_content_source().update(current_frame);
+            m_mundo_video_frame_update_log_count++;
+            if (m_mundo_video_frame_update_log_count <= 12 || m_mundo_video_frame_update_log_count % 60 == 0) {
+                auto track_id = m_selected_video_track ? m_selected_video_track->track_in_playback_manager().identifier() : 0;
+                dbgln("MUNDO_MEDIA_ELEMENT video_frame_updated count={} track_id={} current_time={} ready_state={} frame={} size={}x{} src={}",
+                    m_mundo_video_frame_update_log_count,
+                    track_id,
+                    m_current_playback_position,
+                    to_underlying(m_ready_state),
+                    static_cast<void const*>(current_frame.ptr()),
+                    current_frame ? current_frame->size().width() : 0,
+                    current_frame ? current_frame->size().height() : 0,
+                    m_current_src);
+            }
             update_intrinsic_video_dimensions();
             set_needs_repaint();
         }
