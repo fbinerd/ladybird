@@ -242,8 +242,7 @@ DecoderErrorOr<void> FFmpegDemuxer::create_context_for_track(Track const& track)
 
     auto track_context = make<TrackContext>(move(cursor), move(io_context), force_hls_demuxer);
 
-    // We've already initialized a format context, so the only way this can fail is OOM.
-    MUST(initialize_format_context(track_context->format_context, *track_context->io_context->avio_context(), force_hls_demuxer));
+    TRY(initialize_format_context(track_context->format_context, *track_context->io_context->avio_context(), force_hls_demuxer));
 
     track_context->packet = av_packet_alloc();
     VERIFY(track_context->packet != nullptr);

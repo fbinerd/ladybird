@@ -180,9 +180,16 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
         if (!value.has_value())
             return;
         dbgln("MUNDO_MEDIA_ELEMENT src_attribute_changed old={} new={} current_src={}", old_value.value_or(String {}), value.value(), m_current_src);
-        if (value->bytes_as_string_view().trim_whitespace().is_empty() && m_current_src.contains(".m3u8"sv)) {
+        auto trimmed_value = value->bytes_as_string_view().trim_whitespace();
+        if (trimmed_value.is_empty() && m_current_src.contains(".m3u8"sv)) {
             dbgln("MUNDO_MEDIA_ELEMENT ignoring empty HLS src attribute while current_src={} is active", m_current_src);
             return;
+        }
+        if (!trimmed_value.is_empty() && m_current_src.contains(".m3u8"sv)) {
+            if (auto url_record = document().encoding_parse_url(value.value()); url_record.has_value() && url_record->serialize() == m_current_src) {
+                dbgln("MUNDO_MEDIA_ELEMENT ignoring unchanged HLS src attribute current_src={}", m_current_src);
+                return;
+            }
         }
         load_element().release_value_but_fixme_should_propagate_errors();
     } else if (name == HTML::AttributeNames::crossorigin) {
