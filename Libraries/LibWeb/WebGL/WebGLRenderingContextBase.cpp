@@ -338,7 +338,24 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
                 dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected unstable BGRA bitmap width={} height={}", texture_source_read_count, source->width(), source->height());
                 return {};
             }
-            return Gfx::ImmutableBitmap::create(*bitmap);
+            auto buffer = ByteBuffer::copy(bitmap->scanline_u8(0), bitmap->data_size());
+            if (buffer.is_error()) {
+                dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected copy failed width={} height={} error={}", texture_source_read_count, source->width(), source->height(), buffer.error());
+                return {};
+            }
+            auto snapshot_buffer = buffer.release_value();
+            auto snapshot = Gfx::Bitmap::create_wrapper(bitmap->format(), bitmap->alpha_type(), bitmap->size(), bitmap->pitch(), snapshot_buffer.data(), [snapshot_buffer = move(snapshot_buffer)] { });
+            if (snapshot.is_error()) {
+                dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected wrapper failed width={} height={} error={}", texture_source_read_count, source->width(), source->height(), snapshot.error());
+                return {};
+            }
+            dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload snapshot bitmap={} size={}x{} pitch={}",
+                texture_source_read_count,
+                static_cast<void const*>(snapshot.value().ptr()),
+                snapshot.value()->width(),
+                snapshot.value()->height(),
+                snapshot.value()->pitch());
+            return Gfx::ImmutableBitmap::create(snapshot.release_value());
         },
         [&](GC::Root<HTML::ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             log_webgl_source("ImageData"sv, &source->bitmap());
