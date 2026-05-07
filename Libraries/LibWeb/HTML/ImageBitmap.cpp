@@ -152,7 +152,28 @@ void ImageBitmap::close()
 
 void ImageBitmap::set_bitmap(RefPtr<Gfx::Bitmap> bitmap)
 {
-    m_bitmap = move(bitmap);
+    if (bitmap) {
+        auto snapshot = bitmap->clone();
+        if (!snapshot.is_error()) {
+            dbgln("MUNDO_IMAGEBITMAP set_bitmap snapshot source={} snapshot={} size={}x{} pitch={} format={}",
+                static_cast<void const*>(bitmap.ptr()),
+                static_cast<void const*>(snapshot.value().ptr()),
+                snapshot.value()->width(),
+                snapshot.value()->height(),
+                snapshot.value()->pitch(),
+                Gfx::bitmap_format_name(snapshot.value()->format()));
+            m_bitmap = snapshot.release_value();
+        } else {
+            dbgln("MUNDO_IMAGEBITMAP set_bitmap snapshot failed source={} size={}x{} error={}",
+                static_cast<void const*>(bitmap.ptr()),
+                bitmap->width(),
+                bitmap->height(),
+                snapshot.release_error());
+            m_bitmap = move(bitmap);
+        }
+    } else {
+        m_bitmap = nullptr;
+    }
     m_width = m_bitmap ? m_bitmap->width() : 0;
     m_height = m_bitmap ? m_bitmap->height() : 0;
 }
