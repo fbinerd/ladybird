@@ -547,6 +547,8 @@ GC::Ref<WebIDL::Promise> HTMLMediaElement::play()
 // https://html.spec.whatwg.org/multipage/media.html#dom-media-pause
 void HTMLMediaElement::pause()
 {
+    dbgln("MUNDO_MEDIA_ELEMENT element={} pause() requested ready_state={} paused={} current_time={} duration={} src={}", static_cast<void const*>(this), to_underlying(m_ready_state), paused(), m_current_playback_position, m_duration, m_current_src);
+
     // 1. If the media element's networkState attribute has the value NETWORK_EMPTY, invoke the media element's resource
     //    selection algorithm.
     if (m_network_state == NetworkState::Empty)
@@ -752,6 +754,8 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
 
         // 6. If the paused attribute is false, then:
         if (!paused()) {
+            dbgln("MUNDO_MEDIA_ELEMENT element={} load_element abort pausing ready_state={} current_time={} duration={} src={}", static_cast<void const*>(this), to_underlying(m_ready_state), m_current_playback_position, m_duration, m_current_src);
+
             // 1. Set the paused attribute to true.
             set_paused(true);
 
@@ -2384,6 +2388,8 @@ void HTMLMediaElement::play_element()
 // https://html.spec.whatwg.org/multipage/media.html#internal-pause-steps
 void HTMLMediaElement::pause_element()
 {
+    dbgln("MUNDO_MEDIA_ELEMENT element={} pause_element requested ready_state={} paused={} current_time={} duration={} src={}", static_cast<void const*>(this), to_underlying(m_ready_state), paused(), m_current_playback_position, m_duration, m_current_src);
+
     m_mundo_resume_playback_after_load = false;
 
     // 1. Set the media element's can autoplay flag to false.
@@ -2606,6 +2612,8 @@ void HTMLMediaElement::set_paused(bool paused)
     if (m_paused == paused)
         return;
 
+    dbgln("MUNDO_MEDIA_ELEMENT element={} set_paused paused={} ready_state={} current_time={} duration={} src={}", static_cast<void const*>(this), paused, to_underlying(m_ready_state), m_current_playback_position, m_duration, m_current_src);
+
     m_paused = paused;
 
     if (m_paused) {
@@ -2802,6 +2810,8 @@ void HTMLMediaElement::reached_end_of_media_playback()
 
         // 2. If the media element has ended playback, the direction of playback is forwards, and paused is false, then:
         if (has_ended_playback() && direction_of_playback() == PlaybackDirection::Forwards && !paused()) {
+            dbgln("MUNDO_MEDIA_ELEMENT element={} ended playback pausing ready_state={} current_time={} duration={} src={}", static_cast<void const*>(this), to_underlying(m_ready_state), m_current_playback_position, m_duration, m_current_src);
+
             // 1. Set the paused attribute to true.
             set_paused(true);
 
