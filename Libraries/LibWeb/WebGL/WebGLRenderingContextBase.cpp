@@ -330,8 +330,11 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
             if (!bitmap)
                 return {};
             log_webgl_source("ImageBitmap"sv, bitmap);
-            dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload skipped width={} height={}", texture_source_read_count, source->width(), source->height());
-            return {};
+            if (bitmap->width() <= 0 || bitmap->height() <= 0) {
+                dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected empty width={} height={}", texture_source_read_count, source->width(), source->height());
+                return {};
+            }
+            return Gfx::ImmutableBitmap::create(*bitmap);
         },
         [&](GC::Root<HTML::ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             log_webgl_source("ImageData"sv, &source->bitmap());
