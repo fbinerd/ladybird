@@ -1105,8 +1105,13 @@ void HTMLMediaElement::select_resource()
 
             // 5. If urlRecord was obtained successfully, run the resource fetch algorithm with urlRecord. If that algorithm returns without aborting this one,
             //    then the load failed.
-            queue_a_media_element_task([this, url_record = move(url_record), failed_with_attribute = move(failed_with_attribute)]() mutable {
+            auto expected_current_src = url_record.has_value() ? url_record->serialize() : String {};
+            queue_a_media_element_task([this, url_record = move(url_record), failed_with_attribute = move(failed_with_attribute), expected_current_src = move(expected_current_src)]() mutable {
                 if (url_record.has_value()) {
+                    if (m_current_src != expected_current_src) {
+                        dbgln("MUNDO_MEDIA_ELEMENT ignoring stale load_url_resource expected={} current_src={}", expected_current_src, m_current_src);
+                        return;
+                    }
                     load_url_resource(*url_record, move(failed_with_attribute));
                     return;
                 }
@@ -1154,6 +1159,12 @@ void HTMLMediaElement::load_url_resource(URL::URL const& url_record, Function<vo
     // 1. Let mode be remote.
     // 2. If the algorithm was invoked with media provider object, then set mode to local.
     // NB: We invoke load_local_resource() directly when a media provider object is being loaded.
+
+    auto serialized_url = url_record.serialize();
+    if (m_current_src != serialized_url) {
+        dbgln("MUNDO_MEDIA_ELEMENT ignoring stale remote resource url={} current_src={}", serialized_url, m_current_src);
+        return;
+    }
 
     //    Otherwise:
     // AD-HOC: Skip these steps if the URL is not a blob. Otherwise, we'll access a nonexistent
@@ -1289,6 +1300,11 @@ void HTMLMediaElement::load_remote_resource(ByteRange const& byte_range)
         Fetch::Infrastructure::FetchAlgorithms::Input fetch_algorithms_input {};
 
         fetch_algorithms_input.process_response = [self = GC::Ref(*this), byte_range = move(byte_range), fetch_generation](auto response) mutable {
+            if (fetch_generation != self->m_current_fetch_generation || !self->m_remote_fetch_data) {
+                dbgln("MUNDO_MEDIA_ELEMENT ignoring stale process_response generation={} current_generation={} has_fetch_data={}", fetch_generation, self->m_current_fetch_generation, !!self->m_remote_fetch_data);
+                return;
+            }
+
             auto& fetch_data = self->m_remote_fetch_data;
 
             // FIXME: If the response is CORS cross-origin, we must use its internal response to query any of its data. See:
