@@ -695,7 +695,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
 {
     m_first_data_load_event_since_load_start = true;
 
-    if (m_current_src.contains(".m3u8"sv) && m_network_state != NetworkState::Empty && m_ready_state != ReadyState::HaveNothing && has_attribute(HTML::AttributeNames::src)) {
+    if (m_current_src.contains(".m3u8"sv) && has_attribute(HTML::AttributeNames::src)) {
         auto source = get_attribute_value(HTML::AttributeNames::src);
         auto trimmed_source = source.bytes_as_string_view().trim_whitespace();
         if (trimmed_source.is_empty()) {
