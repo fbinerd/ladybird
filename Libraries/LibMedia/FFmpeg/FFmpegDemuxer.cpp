@@ -93,6 +93,14 @@ static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_c
     return {};
 }
 
+static constexpr AK::Duration hls_live_stream_duration()
+{
+    // FFmpeg exposes the current live playlist window as AVFormatContext::duration.
+    // Treating that as the whole media resource makes HTMLMediaElement end after
+    // roughly one playlist window, even though new HLS segments can be fetched.
+    return AK::Duration::from_seconds(24 * 60 * 60);
+}
+
 static DecoderErrorOr<Track> create_track_from_stream(AVStream const& stream, StringView format_name, HashTable<TrackType>& seen_types)
 {
     auto type = track_type_from_ffmpeg_media_type(stream.codecpar->codec_type);
@@ -175,7 +183,12 @@ DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullR
     TRY(initialize_format_context(format_context, *io_context->avio_context(), force_hls_demuxer));
 
     auto demuxer = DECODER_TRY_ALLOC(adopt_nonnull_ref_or_enomem(new (nothrow) FFmpegDemuxer(stream)));
-    demuxer->m_total_duration = AK::Duration::from_time_units(format_context->duration, 1, AV_TIME_BASE);
+    if (force_hls_demuxer) {
+        demuxer->m_total_duration = hls_live_stream_duration();
+        dbgln("MUNDO_MEDIA_FFMPEG hls_live_duration original={}ms effective={}ms", AK::Duration::from_time_units(format_context->duration, 1, AV_TIME_BASE).to_milliseconds(), demuxer->m_total_duration.to_milliseconds());
+    } else {
+        demuxer->m_total_duration = AK::Duration::from_time_units(format_context->duration, 1, AV_TIME_BASE);
+    }
 
     auto format_name = StringView(format_context->iformat->name, strlen(format_context->iformat->name));
     auto seen_types = HashTable<TrackType>();
@@ -201,7 +214,7 @@ DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullR
             stream.time_base.den);
 
         AK::Duration duration;
-        if (stream.duration >= 0)
+        if (!force_hls_demuxer && stream.duration >= 0)
             duration = AK::Duration::from_time_units(stream.duration, stream.time_base.num, stream.time_base.den);
         else
             duration = demuxer->m_total_duration;
