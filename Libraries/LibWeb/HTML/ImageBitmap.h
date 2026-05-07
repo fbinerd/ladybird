@@ -53,6 +53,7 @@ public:
 
     // Implementation specific:
     void set_bitmap(RefPtr<Gfx::Bitmap>);
+    void set_transferred_bitmap(RefPtr<Gfx::Bitmap>);
     Gfx::Bitmap* bitmap() const;
 
 private:

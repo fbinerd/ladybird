@@ -87,7 +87,7 @@ WebIDL::ExceptionOr<void> ImageBitmap::serialization_steps(HTML::TransferDataEnc
 WebIDL::ExceptionOr<void> ImageBitmap::deserialization_steps(HTML::TransferDataDecoder& serialized, HTML::DeserializationMemory&)
 {
     // 1. Set value's bitmap data to serialized.[[BitmapData]].
-    set_bitmap(TRY(deserialize_bitmap(this->realm(), serialized)));
+    set_transferred_bitmap(TRY(deserialize_bitmap(this->realm(), serialized)));
 
     return {};
 }
@@ -110,7 +110,7 @@ WebIDL::ExceptionOr<void> ImageBitmap::transfer_steps(HTML::TransferDataEncoder&
 WebIDL::ExceptionOr<void> ImageBitmap::transfer_receiving_steps(HTML::TransferDataDecoder& data_holder)
 {
     // 1. Set value's bitmap data to dataHolder.[[BitmapData]].
-    set_bitmap(TRY(deserialize_bitmap(this->realm(), data_holder)));
+    set_transferred_bitmap(TRY(deserialize_bitmap(this->realm(), data_holder)));
 
     return {};
 }
@@ -174,6 +174,21 @@ void ImageBitmap::set_bitmap(RefPtr<Gfx::Bitmap> bitmap)
     } else {
         m_bitmap = nullptr;
     }
+    m_width = m_bitmap ? m_bitmap->width() : 0;
+    m_height = m_bitmap ? m_bitmap->height() : 0;
+}
+
+void ImageBitmap::set_transferred_bitmap(RefPtr<Gfx::Bitmap> bitmap)
+{
+    if (bitmap) {
+        dbgln("MUNDO_IMAGEBITMAP set_transferred_bitmap bitmap={} size={}x{} pitch={} format={}",
+            static_cast<void const*>(bitmap.ptr()),
+            bitmap->width(),
+            bitmap->height(),
+            bitmap->pitch(),
+            Gfx::bitmap_format_name(bitmap->format()));
+    }
+    m_bitmap = move(bitmap);
     m_width = m_bitmap ? m_bitmap->width() : 0;
     m_height = m_bitmap ? m_bitmap->height() : 0;
 }
