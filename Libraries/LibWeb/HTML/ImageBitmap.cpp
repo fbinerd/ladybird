@@ -16,7 +16,7 @@ namespace Web::HTML {
 
 GC_DEFINE_ALLOCATOR(ImageBitmap);
 
-[[nodiscard]] static auto create_bitmap_from_bitmap_data(Gfx::BitmapFormat const format, Gfx::AlphaType const alpha_type, u32 const width, u32 const height, u32 const pitch, ByteBuffer data)
+[[nodiscard]] static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> create_bitmap_from_bitmap_data(Gfx::BitmapFormat const format, Gfx::AlphaType const alpha_type, u32 const width, u32 const height, u32 const pitch, ByteBuffer data)
 {
     // NB: Keep the pixel data in a stable allocation owned by the wrapper callback.
     // Passing data.data() and moving data in the same call leaves argument evaluation
