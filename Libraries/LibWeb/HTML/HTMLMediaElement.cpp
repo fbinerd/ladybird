@@ -695,6 +695,19 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
 {
     m_first_data_load_event_since_load_start = true;
 
+    if (m_current_src.contains(".m3u8"sv) && m_network_state != NetworkState::Empty && m_ready_state != ReadyState::HaveNothing && has_attribute(HTML::AttributeNames::src)) {
+        auto source = get_attribute_value(HTML::AttributeNames::src);
+        auto trimmed_source = source.bytes_as_string_view().trim_whitespace();
+        if (trimmed_source.is_empty()) {
+            dbgln("MUNDO_MEDIA_ELEMENT ignoring load() with empty src while current_src={} is active", m_current_src);
+            return {};
+        }
+        if (auto url_record = document().encoding_parse_url(source); url_record.has_value() && url_record->serialize() == m_current_src) {
+            dbgln("MUNDO_MEDIA_ELEMENT ignoring load() for unchanged HLS current_src={}", m_current_src);
+            return {};
+        }
+    }
+
     // 1. Abort any already-running instance of the resource selection algorithm for this element.
     //    NOTE: All deferred subroutines of the resource selection algorithm will be queued under the media element task
     //          source, or run as part of the fetch. Step 2 will remove any subroutine from the queue. Step 6.2 will stop
