@@ -47,6 +47,7 @@ public:
     void set_error_handler(ErrorHandler&&);
     void set_duration_change_handler(FrameEndTimeHandler&&);
     void set_frames_queue_is_full_handler(FramesQueueIsFullHandler&&);
+    void set_time_provider(NonnullRefPtr<MediaTimeProvider> const&);
 
     void start();
     void suspend();
@@ -71,6 +72,7 @@ private:
         void set_error_handler(ErrorHandler&&);
         void set_duration_change_handler(FrameEndTimeHandler&&);
         void set_frames_queue_is_full_handler(FramesQueueIsFullHandler&&);
+        void set_time_provider(NonnullRefPtr<MediaTimeProvider> const&);
 
         void start();
         DecoderErrorOr<void> create_decoder();

@@ -115,6 +115,11 @@ void VideoDataProvider::set_frames_queue_is_full_handler(FramesQueueIsFullHandle
     m_thread_data->set_frames_queue_is_full_handler(move(handler));
 }
 
+void VideoDataProvider::set_time_provider(NonnullRefPtr<MediaTimeProvider> const& provider)
+{
+    m_thread_data->set_time_provider(provider);
+}
+
 TimedImage VideoDataProvider::retrieve_frame()
 {
     auto locker = m_thread_data->take_lock();
@@ -188,6 +193,12 @@ void VideoDataProvider::ThreadData::set_duration_change_handler(FrameEndTimeHand
 void VideoDataProvider::ThreadData::set_frames_queue_is_full_handler(FramesQueueIsFullHandler&& handler)
 {
     m_frames_queue_is_full_handler = move(handler);
+}
+
+void VideoDataProvider::ThreadData::set_time_provider(NonnullRefPtr<MediaTimeProvider> const& provider)
+{
+    auto locker = take_lock();
+    m_time_provider = provider;
 }
 
 void VideoDataProvider::ThreadData::suspend()

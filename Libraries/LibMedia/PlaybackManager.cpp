@@ -302,6 +302,8 @@ void PlaybackManager::track_started_buffering(Track const& track)
 
 void PlaybackManager::track_stopped_buffering(Track const& track)
 {
+    if (!m_tracks_still_buffering.contains(track))
+        return;
     dbgln("MUNDO_MEDIA_PLAYBACK track_stopped_buffering type={} id={} remaining_before={} state={}", track_type_name(track.type()), track.identifier(), m_tracks_still_buffering.size(), to_underlying(m_handler->state()));
     m_tracks_still_buffering.remove(track);
     if (m_tracks_still_buffering.is_empty())
@@ -334,6 +336,7 @@ void PlaybackManager::set_time_provider(NonnullRefPtr<MediaTimeProvider> const& 
     provider->set_time(time);
     m_time_provider = provider;
     for (auto& track_data : m_video_track_datas) {
+        track_data.provider->set_time_provider(provider);
         if (!track_data.display)
             continue;
         track_data.display->set_time_provider(provider);
