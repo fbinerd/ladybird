@@ -1819,6 +1819,11 @@ void HTMLMediaElement::on_metadata_parsed()
     //         causes the playback manager to exit the initial state, the ready state should change.
     m_playback_manager->start();
     update_ready_state();
+
+    if (m_mundo_resume_playback_after_load && paused() && m_current_src.contains(".m3u8"sv)) {
+        dbgln("MUNDO_MEDIA_ELEMENT element={} resuming HLS playback after load current_src={}", static_cast<void const*>(this), m_current_src);
+        play_element();
+    }
 }
 
 // https://html.spec.whatwg.org/multipage/media.html#media-data-processing-steps-list
@@ -2312,6 +2317,8 @@ void HTMLMediaElement::on_playback_manager_state_change()
 // https://html.spec.whatwg.org/multipage/media.html#internal-play-steps
 void HTMLMediaElement::play_element()
 {
+    m_mundo_resume_playback_after_load = true;
+
     // 1. If the media element's networkState attribute has the value NETWORK_EMPTY, invoke the media element's resource
     //    selection algorithm.
     if (m_network_state == NetworkState::Empty)
@@ -2377,6 +2384,8 @@ void HTMLMediaElement::play_element()
 // https://html.spec.whatwg.org/multipage/media.html#internal-pause-steps
 void HTMLMediaElement::pause_element()
 {
+    m_mundo_resume_playback_after_load = false;
+
     // 1. Set the media element's can autoplay flag to false.
     m_can_autoplay = false;
 
