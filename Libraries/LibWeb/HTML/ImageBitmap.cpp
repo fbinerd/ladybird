@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/NonnullOwnPtr.h>
 #include <LibGfx/Bitmap.h>
 #include <LibWeb/Bindings/ImageBitmap.h>
 #include <LibWeb/HTML/ImageBitmap.h>
@@ -17,8 +18,12 @@ GC_DEFINE_ALLOCATOR(ImageBitmap);
 
 [[nodiscard]] static auto create_bitmap_from_bitmap_data(Gfx::BitmapFormat const format, Gfx::AlphaType const alpha_type, u32 const width, u32 const height, u32 const pitch, ByteBuffer data)
 {
-    // NB: The data is captured by value in the destruction callback lambda to ensure its lifetime.
-    return Gfx::Bitmap::create_wrapper(format, alpha_type, Gfx::IntSize(width, height), pitch, data.data(), [data = move(data)] { });
+    // NB: Keep the pixel data in a stable allocation owned by the wrapper callback.
+    // Passing data.data() and moving data in the same call leaves argument evaluation
+    // order up to the compiler, which can make the wrapper point at moved-from data.
+    auto storage = TRY(try_make<ByteBuffer>(move(data)));
+    auto* pixels = storage->data();
+    return Gfx::Bitmap::create_wrapper(format, alpha_type, Gfx::IntSize(width, height), pitch, pixels, [storage = move(storage)] { });
 }
 
 static void serialize_bitmap(HTML::TransferDataEncoder& encoder, RefPtr<Gfx::Bitmap> const& bitmap)

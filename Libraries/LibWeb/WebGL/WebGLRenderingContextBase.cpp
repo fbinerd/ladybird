@@ -12,6 +12,7 @@ extern "C" {
 #include <GLES2/gl2ext_angle.h>
 }
 
+#include <AK/NonnullOwnPtr.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/SkiaUtils.h>
@@ -334,17 +335,20 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
                 dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected empty width={} height={}", texture_source_read_count, source->width(), source->height());
                 return {};
             }
-            if (bitmap->format() == Gfx::BitmapFormat::BGRA8888 && bitmap->width() >= 512 && bitmap->height() >= 512) {
-                dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected unstable BGRA bitmap width={} height={}", texture_source_read_count, source->width(), source->height());
-                return {};
-            }
             auto buffer = ByteBuffer::copy(bitmap->scanline_u8(0), bitmap->data_size());
             if (buffer.is_error()) {
                 dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected copy failed width={} height={} error={}", texture_source_read_count, source->width(), source->height(), buffer.error());
                 return {};
             }
             auto snapshot_buffer = buffer.release_value();
-            auto snapshot = Gfx::Bitmap::create_wrapper(bitmap->format(), bitmap->alpha_type(), bitmap->size(), bitmap->pitch(), snapshot_buffer.data(), [snapshot_buffer = move(snapshot_buffer)] { });
+            auto snapshot_storage = try_make<ByteBuffer>(move(snapshot_buffer));
+            if (snapshot_storage.is_error()) {
+                dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected snapshot allocation failed width={} height={} error={}", texture_source_read_count, source->width(), source->height(), snapshot_storage.error());
+                return {};
+            }
+            auto storage = snapshot_storage.release_value();
+            auto* snapshot_pixels = storage->data();
+            auto snapshot = Gfx::Bitmap::create_wrapper(bitmap->format(), bitmap->alpha_type(), bitmap->size(), bitmap->pitch(), snapshot_pixels, [storage = move(storage)] { });
             if (snapshot.is_error()) {
                 dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected wrapper failed width={} height={} error={}", texture_source_read_count, source->width(), source->height(), snapshot.error());
                 return {};
