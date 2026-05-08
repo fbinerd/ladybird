@@ -181,12 +181,20 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
             return;
         dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} src_attribute_changed old={} new={} current_src={}", static_cast<void const*>(this), document().url_string(), old_value.value_or(String {}), value.value(), m_current_src);
         auto trimmed_value = value->bytes_as_string_view().trim_whitespace();
-        if (trimmed_value.is_empty() && m_current_src.contains(".m3u8"sv)) {
-            dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring empty HLS src attribute while current_src={} is active", static_cast<void const*>(this), document().url_string(), m_current_src);
+        if (trimmed_value.is_empty() && (m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv))) {
+            dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring empty HLS src attribute while current_src={} pending_hls_src={} is active", static_cast<void const*>(this), document().url_string(), m_current_src, m_mundo_last_hls_src_attribute);
             return;
         }
-        if (!trimmed_value.is_empty() && m_current_src.contains(".m3u8"sv)) {
-            if (auto url_record = document().encoding_parse_url(value.value()); url_record.has_value() && url_record->serialize() == m_current_src) {
+        if (!trimmed_value.is_empty()) {
+            Optional<String> serialized_src;
+            if (auto url_record = document().encoding_parse_url(value.value()); url_record.has_value())
+                serialized_src = url_record->serialize();
+            if (serialized_src.has_value() && serialized_src->contains(".m3u8"sv))
+                m_mundo_last_hls_src_attribute = *serialized_src;
+            else
+                m_mundo_last_hls_src_attribute = {};
+
+            if (m_current_src.contains(".m3u8"sv) && serialized_src.has_value() && *serialized_src == m_current_src) {
                 dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring unchanged HLS src attribute current_src={}", static_cast<void const*>(this), document().url_string(), m_current_src);
                 return;
             }
