@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StringBuilder.h>
 #include <LibJS/Runtime/Promise.h>
 #include <LibMedia/IncrementallyPopulatedStream.h>
 #include <LibMedia/PlaybackManager.h>
@@ -55,6 +56,39 @@
 #include <LibWeb/WebIDL/Promise.h>
 
 namespace Web::HTML {
+
+static String mundo_media_stack_trace(JS::VM& vm)
+{
+    auto stack_trace = vm.stack_trace();
+    if (stack_trace.is_empty())
+        return {};
+
+    StringBuilder builder;
+    size_t emitted_frames = 0;
+    for (size_t i = 0; i < stack_trace.size() && emitted_frames < 8; ++i) {
+        auto const& element = stack_trace[i];
+        auto* context = element.execution_context;
+        auto function_name = (context && context->function) ? context->function->name_for_call_stack() : ""_utf16;
+        auto function_name_string = function_name.is_empty() ? "<anonymous>"_string : function_name.to_utf8();
+
+        if (emitted_frames != 0)
+            builder.append(" <- "sv);
+
+        if (element.source_range.has_value()) {
+            auto const& source_range = *element.source_range;
+            if (!source_range.filename().is_empty()) {
+                builder.appendff("{}@{}:{}:{}", function_name_string, source_range.filename(), source_range.start.line, source_range.start.column);
+                ++emitted_frames;
+                continue;
+            }
+        }
+
+        builder.append(function_name_string);
+        ++emitted_frames;
+    }
+
+    return MUST(builder.to_string());
+}
 
 struct HTMLMediaElement::RemoteFetchData {
     URL::URL url_record;
@@ -562,7 +596,18 @@ GC::Ref<WebIDL::Promise> HTMLMediaElement::play()
 // https://html.spec.whatwg.org/multipage/media.html#dom-media-pause
 void HTMLMediaElement::pause()
 {
-    dbgln("MUNDO_MEDIA_ELEMENT element={} pause() requested ready_state={} paused={} current_time={} duration={} src={}", static_cast<void const*>(this), to_underlying(m_ready_state), paused(), m_current_playback_position, m_duration, m_current_src);
+    dbgln("MUNDO_MEDIA_ELEMENT element={} pause() requested network_state={} ready_state={} paused={} current_time={} duration={} pending_play_promises={} page_url={} attr_src={} current_src={} stack={}",
+        static_cast<void const*>(this),
+        to_underlying(m_network_state),
+        to_underlying(m_ready_state),
+        paused(),
+        m_current_playback_position,
+        m_duration,
+        m_pending_play_promises.size(),
+        document().url_string(),
+        has_attribute(HTML::AttributeNames::src) ? get_attribute_value(HTML::AttributeNames::src) : String {},
+        m_current_src,
+        mundo_media_stack_trace(realm().vm()));
 
     // 1. If the media element's networkState attribute has the value NETWORK_EMPTY, invoke the media element's resource
     //    selection algorithm.
@@ -2439,7 +2484,17 @@ void HTMLMediaElement::play_element()
 // https://html.spec.whatwg.org/multipage/media.html#internal-pause-steps
 void HTMLMediaElement::pause_element()
 {
-    dbgln("MUNDO_MEDIA_ELEMENT element={} pause_element requested ready_state={} paused={} current_time={} duration={} src={}", static_cast<void const*>(this), to_underlying(m_ready_state), paused(), m_current_playback_position, m_duration, m_current_src);
+    dbgln("MUNDO_MEDIA_ELEMENT element={} pause_element requested network_state={} ready_state={} paused={} current_time={} duration={} pending_play_promises={} page_url={} attr_src={} current_src={}",
+        static_cast<void const*>(this),
+        to_underlying(m_network_state),
+        to_underlying(m_ready_state),
+        paused(),
+        m_current_playback_position,
+        m_duration,
+        m_pending_play_promises.size(),
+        document().url_string(),
+        has_attribute(HTML::AttributeNames::src) ? get_attribute_value(HTML::AttributeNames::src) : String {},
+        m_current_src);
 
     m_mundo_resume_playback_after_load = false;
 
@@ -2630,9 +2685,28 @@ void HTMLMediaElement::notify_about_playing()
 {
     // 1. Take pending play promises and let promises be the result.
     auto promises = take_pending_play_promises();
+    dbgln("MUNDO_MEDIA_ELEMENT element={} notify_about_playing promises={} network_state={} ready_state={} paused={} current_time={} duration={} page_url={} current_src={}",
+        static_cast<void const*>(this),
+        promises.size(),
+        to_underlying(m_network_state),
+        to_underlying(m_ready_state),
+        paused(),
+        m_current_playback_position,
+        m_duration,
+        document().url_string(),
+        m_current_src);
 
     // 2. Queue a media element task given the element and the following steps:
     queue_a_media_element_task([this, promises = move(promises)]() {
+        dbgln("MUNDO_MEDIA_ELEMENT element={} event=playing ready_state={} paused={} current_time={} duration={} page_url={} current_src={}",
+            static_cast<void const*>(this),
+            to_underlying(m_ready_state),
+            paused(),
+            m_current_playback_position,
+            m_duration,
+            document().url_string(),
+            m_current_src);
+
         // 1. Fire an event named playing at the element.
         dispatch_event(DOM::Event::create(realm(), HTML::EventNames::playing));
 
