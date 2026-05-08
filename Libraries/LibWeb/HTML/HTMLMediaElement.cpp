@@ -532,11 +532,16 @@ GC::Ref<WebIDL::Promise> HTMLMediaElement::play()
 {
     auto& realm = this->realm();
 
+    dbgln("MUNDO_MEDIA_ELEMENT element={} play() requested network_state={} ready_state={} paused={} ended={} pending_play_promises={} current_time={} duration={} src={}",
+        static_cast<void const*>(this), to_underlying(m_network_state), to_underlying(m_ready_state), paused(), ended(), m_pending_play_promises.size(), m_current_playback_position, m_duration, m_current_src);
+
     // FIXME: 1. If the media element is not allowed to play, then return a promise rejected with a "NotAllowedError" DOMException.
 
     // 2. If the media element's error attribute is not null and its code is MEDIA_ERR_SRC_NOT_SUPPORTED, then return a promise
     //    rejected with a "NotSupportedError" DOMException.
     if (m_error && m_error->code() == MediaError::Code::SrcNotSupported) {
+        dbgln("MUNDO_MEDIA_ELEMENT element={} play() rejecting immediately media_error_code={} message={} src={}",
+            static_cast<void const*>(this), to_underlying(m_error->code()), m_error->message(), m_current_src);
         auto exception = WebIDL::NotSupportedError::create(realm, Utf16String::from_utf8(m_error->message()));
         return WebIDL::create_rejected_promise_from_exception(realm, exception);
     }
@@ -544,6 +549,8 @@ GC::Ref<WebIDL::Promise> HTMLMediaElement::play()
     // 3. Let promise be a new promise and append promise to the list of pending play promises.
     auto promise = WebIDL::create_promise(realm);
     m_pending_play_promises.append(promise);
+    dbgln("MUNDO_MEDIA_ELEMENT element={} play() promise queued pending_play_promises={} src={}",
+        static_cast<void const*>(this), m_pending_play_promises.size(), m_current_src);
 
     // 4. Run the internal play steps for the media element.
     play_element();
@@ -704,6 +711,10 @@ GC::Ref<TextTrack> HTMLMediaElement::add_text_track(Bindings::TextTrackKind kind
 WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
 {
     m_first_data_load_event_since_load_start = true;
+
+    dbgln("MUNDO_MEDIA_ELEMENT element={} load_element begin network_state={} ready_state={} paused={} pending_play_promises={} current_time={} duration={} has_src_attr={} attr_src={} current_src={}",
+        static_cast<void const*>(this), to_underlying(m_network_state), to_underlying(m_ready_state), paused(), m_pending_play_promises.size(), m_current_playback_position, m_duration,
+        has_attribute(HTML::AttributeNames::src), has_attribute(HTML::AttributeNames::src) ? get_attribute_value(HTML::AttributeNames::src) : String {}, m_current_src);
 
     if (m_current_src.contains(".m3u8"sv) && has_attribute(HTML::AttributeNames::src)) {
         auto source = get_attribute_value(HTML::AttributeNames::src);
@@ -995,6 +1006,10 @@ void HTMLMediaElement::children_changed(ChildrenChangedMetadata const& metadata)
 void HTMLMediaElement::select_resource()
 {
     auto& realm = this->realm();
+
+    dbgln("MUNDO_MEDIA_ELEMENT element={} select_resource begin network_state={} ready_state={} paused={} pending_play_promises={} has_src_attr={} attr_src={} current_src={}",
+        static_cast<void const*>(this), to_underlying(m_network_state), to_underlying(m_ready_state), paused(), m_pending_play_promises.size(),
+        has_attribute(HTML::AttributeNames::src), has_attribute(HTML::AttributeNames::src) ? get_attribute_value(HTML::AttributeNames::src) : String {}, m_current_src);
 
     // 1. Set the element's networkState attribute to the NETWORK_NO_SOURCE value.
     m_network_state = NetworkState::NoSource;
@@ -2334,15 +2349,22 @@ void HTMLMediaElement::play_element()
 {
     m_mundo_resume_playback_after_load = true;
 
+    dbgln("MUNDO_MEDIA_ELEMENT element={} play_element begin network_state={} ready_state={} paused={} ended={} pending_play_promises={} current_time={} duration={} src={}",
+        static_cast<void const*>(this), to_underlying(m_network_state), to_underlying(m_ready_state), paused(), ended(), m_pending_play_promises.size(), m_current_playback_position, m_duration, m_current_src);
+
     // 1. If the media element's networkState attribute has the value NETWORK_EMPTY, invoke the media element's resource
     //    selection algorithm.
-    if (m_network_state == NetworkState::Empty)
+    if (m_network_state == NetworkState::Empty) {
+        dbgln("MUNDO_MEDIA_ELEMENT element={} play_element selecting_resource_for_empty_network src={}", static_cast<void const*>(this), m_current_src);
         select_resource();
+    }
 
     // 2. If the playback has ended and the direction of playback is forwards, seek to the earliest possible position
     //    of the media resource.
-    if (has_ended_playback() && direction_of_playback() == PlaybackDirection::Forwards)
+    if (has_ended_playback() && direction_of_playback() == PlaybackDirection::Forwards) {
+        dbgln("MUNDO_MEDIA_ELEMENT element={} play_element seeking_to_start_after_ended current_time={} duration={} src={}", static_cast<void const*>(this), m_current_playback_position, m_duration, m_current_src);
         seek_element(0);
+    }
 
     // 3. If the media element's paused attribute is true, then:
     if (paused()) {
@@ -2386,6 +2408,8 @@ void HTMLMediaElement::play_element()
     //    with the result.
     else if (m_ready_state == ReadyState::HaveFutureData || m_ready_state == ReadyState::HaveEnoughData) {
         auto promises = take_pending_play_promises();
+        dbgln("MUNDO_MEDIA_ELEMENT element={} play_element resolving_already_playing promises={} ready_state={} src={}",
+            static_cast<void const*>(this), promises.size(), to_underlying(m_ready_state), m_current_src);
 
         queue_a_media_element_task([this, promises = move(promises)]() {
             resolve_pending_play_promises(promises);
@@ -2953,6 +2977,9 @@ void HTMLMediaElement::resolve_pending_play_promises(ReadonlySpan<GC::Ref<WebIDL
 {
     auto& realm = this->realm();
 
+    dbgln("MUNDO_MEDIA_ELEMENT element={} resolve_play_promises count={} ready_state={} paused={} current_time={} src={}",
+        static_cast<void const*>(this), promises.size(), to_underlying(m_ready_state), paused(), m_current_playback_position, m_current_src);
+
     // AD-HOC: An execution context is required for Promise resolving hooks.
     TemporaryExecutionContext execution_context { realm };
 
@@ -2966,6 +2993,9 @@ void HTMLMediaElement::resolve_pending_play_promises(ReadonlySpan<GC::Ref<WebIDL
 void HTMLMediaElement::reject_pending_play_promises(ReadonlySpan<GC::Ref<WebIDL::Promise>> promises, GC::Ref<WebIDL::DOMException> error)
 {
     auto& realm = this->realm();
+
+    dbgln("MUNDO_MEDIA_ELEMENT element={} reject_play_promises count={} error={} message={} ready_state={} paused={} current_time={} src={}",
+        static_cast<void const*>(this), promises.size(), error->name(), error->message(), to_underlying(m_ready_state), paused(), m_current_playback_position, m_current_src);
 
     // AD-HOC: An execution context is required for Promise rejection hooks.
     TemporaryExecutionContext execution_context { realm };
