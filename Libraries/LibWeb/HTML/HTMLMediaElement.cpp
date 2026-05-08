@@ -754,6 +754,11 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
 
     // 6. If the media element's networkState is not set to NETWORK_EMPTY, then:
     if (m_network_state != NetworkState::Empty) {
+        auto should_preserve_pending_play_for_empty_resource = m_current_src.is_empty()
+            && m_ready_state == ReadyState::HaveNothing
+            && !m_pending_play_promises.is_empty()
+            && !paused();
+
         // 1. Queue a media element task given the media element to fire an event named emptied at the media element.
         queue_a_media_element_task([this] {
             dispatch_event(DOM::Event::create(realm(), HTML::EventNames::emptied));
@@ -773,14 +778,20 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
 
         // 6. If the paused attribute is false, then:
         if (!paused()) {
-            dbgln("MUNDO_MEDIA_ELEMENT element={} load_element abort pausing ready_state={} current_time={} duration={} src={}", static_cast<void const*>(this), to_underlying(m_ready_state), m_current_playback_position, m_duration, m_current_src);
+            if (should_preserve_pending_play_for_empty_resource) {
+                dbgln("MUNDO_MEDIA_ELEMENT element={} preserving pending play while replacing empty media resource pending_play_promises={} attr_src={} current_src={}",
+                    static_cast<void const*>(this), m_pending_play_promises.size(),
+                    has_attribute(HTML::AttributeNames::src) ? get_attribute_value(HTML::AttributeNames::src) : String {}, m_current_src);
+            } else {
+                dbgln("MUNDO_MEDIA_ELEMENT element={} load_element abort pausing ready_state={} current_time={} duration={} src={}", static_cast<void const*>(this), to_underlying(m_ready_state), m_current_playback_position, m_duration, m_current_src);
 
-            // 1. Set the paused attribute to true.
-            set_paused(true);
+                // 1. Set the paused attribute to true.
+                set_paused(true);
 
-            // 2. Take pending play promises and reject pending play promises with the result and an "AbortError" DOMException.
-            auto promises = take_pending_play_promises();
-            reject_pending_play_promises<WebIDL::AbortError>(promises, "Media playback was aborted"_utf16);
+                // 2. Take pending play promises and reject pending play promises with the result and an "AbortError" DOMException.
+                auto promises = take_pending_play_promises();
+                reject_pending_play_promises<WebIDL::AbortError>(promises, "Media playback was aborted"_utf16);
+            }
         }
 
         // 7. If seeking is true, set it to false.
