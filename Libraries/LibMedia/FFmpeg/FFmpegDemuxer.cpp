@@ -383,6 +383,12 @@ DecoderErrorOr<DemuxerSeekResult> FFmpegDemuxer::seek_to_most_recent_keyframe(Tr
             if (track_context.cursor->is_aborted())
                 return DecoderError::format(DecoderErrorCategory::Aborted, "Seek aborted");
 
+            if (track_context.force_hls_demuxer && track_context.hls_reopen_count < 8) {
+                dbgln("MUNDO_MEDIA_FFMPEG hls_seek_reopen track_id={} timestamp={}ms count={}", track.identifier(), timestamp.to_milliseconds(), track_context.hls_reopen_count + 1);
+                TRY(recreate_context_for_track(track, track_context));
+                return DemuxerSeekResult::MovedPosition;
+            }
+
             return DecoderError::format(DecoderErrorCategory::Corrupted, "Failed to seek");
         }
     }
