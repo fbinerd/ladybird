@@ -179,15 +179,15 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
         // this, even if there are source elements present.)
         if (!value.has_value())
             return;
-        dbgln("MUNDO_MEDIA_ELEMENT element={} src_attribute_changed old={} new={} current_src={}", static_cast<void const*>(this), old_value.value_or(String {}), value.value(), m_current_src);
+        dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} src_attribute_changed old={} new={} current_src={}", static_cast<void const*>(this), document().url_string(), old_value.value_or(String {}), value.value(), m_current_src);
         auto trimmed_value = value->bytes_as_string_view().trim_whitespace();
         if (trimmed_value.is_empty() && m_current_src.contains(".m3u8"sv)) {
-            dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring empty HLS src attribute while current_src={} is active", static_cast<void const*>(this), m_current_src);
+            dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring empty HLS src attribute while current_src={} is active", static_cast<void const*>(this), document().url_string(), m_current_src);
             return;
         }
         if (!trimmed_value.is_empty() && m_current_src.contains(".m3u8"sv)) {
             if (auto url_record = document().encoding_parse_url(value.value()); url_record.has_value() && url_record->serialize() == m_current_src) {
-                dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring unchanged HLS src attribute current_src={}", static_cast<void const*>(this), m_current_src);
+                dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring unchanged HLS src attribute current_src={}", static_cast<void const*>(this), document().url_string(), m_current_src);
                 return;
             }
         }
@@ -1601,21 +1601,21 @@ void HTMLMediaElement::set_selected_video_track(Badge<VideoTrack>, GC::Ptr<HTML:
 
     m_selected_video_track = video_track;
     if (video_track) {
-        dbgln("MUNDO_MEDIA_ELEMENT element={} selected_video_track id={} src={}", static_cast<void const*>(this), video_track->track_in_playback_manager().identifier(), m_current_src);
+        dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} selected_video_track id={} src={}", static_cast<void const*>(this), document().url_string(), video_track->track_in_playback_manager().identifier(), m_current_src);
         m_selected_video_track_sink = m_playback_manager->get_or_create_the_displaying_video_sink_for_track(video_track->track_in_playback_manager());
         auto sink_update_result = m_selected_video_track_sink->update();
         if (sink_update_result == Media::DisplayingVideoSinkUpdateResult::NewFrameAvailable) {
             ensure_external_content_source().update(m_selected_video_track_sink->current_frame());
-            dbgln("MUNDO_MEDIA_ELEMENT element={} selected_video_track initial_frame id={} src={}", static_cast<void const*>(this), video_track->track_in_playback_manager().identifier(), m_current_src);
+            dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} selected_video_track initial_frame id={} src={}", static_cast<void const*>(this), document().url_string(), video_track->track_in_playback_manager().identifier(), m_current_src);
             update_intrinsic_video_dimensions();
             set_needs_repaint();
         } else if (auto* video_element = as_if<HTMLVideoElement>(this)) {
             auto const& video_data = video_track->track_in_playback_manager().video_data();
             video_element->set_intrinsic_video_dimensions(Gfx::Size<u32>(video_data.pixel_width, video_data.pixel_height));
-            dbgln("MUNDO_MEDIA_ELEMENT element={} selected_video_track no_initial_frame id={} intrinsic={}x{} src={}", static_cast<void const*>(this), video_track->track_in_playback_manager().identifier(), video_data.pixel_width, video_data.pixel_height, m_current_src);
+            dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} selected_video_track no_initial_frame id={} intrinsic={}x{} src={}", static_cast<void const*>(this), document().url_string(), video_track->track_in_playback_manager().identifier(), video_data.pixel_width, video_data.pixel_height, m_current_src);
         }
     } else {
-        dbgln("MUNDO_MEDIA_ELEMENT element={} selected_video_track cleared src={}", static_cast<void const*>(this), m_current_src);
+        dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} selected_video_track cleared src={}", static_cast<void const*>(this), document().url_string(), m_current_src);
         m_selected_video_track_sink = nullptr;
     }
 
@@ -1636,8 +1636,9 @@ void HTMLMediaElement::update_video_frame_and_timeline()
             m_mundo_video_frame_update_log_count++;
             if (m_mundo_video_frame_update_log_count <= 12 || m_mundo_video_frame_update_log_count % 60 == 0) {
                 auto track_id = m_selected_video_track ? m_selected_video_track->track_in_playback_manager().identifier() : 0;
-                dbgln("MUNDO_MEDIA_ELEMENT element={} video_frame_updated count={} track_id={} current_time={} ready_state={} frame={} size={}x{} src={}",
+                dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} video_frame_updated count={} track_id={} current_time={} ready_state={} frame={} size={}x{} src={}",
                     static_cast<void const*>(this),
+                    document().url_string(),
                     m_mundo_video_frame_update_log_count,
                     track_id,
                     m_current_playback_position,
