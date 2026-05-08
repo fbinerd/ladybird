@@ -374,7 +374,9 @@ void HTMLVideoElement::notify_about_new_video_frame()
     if (m_video_frame_callbacks.is_empty())
         return;
 
-    auto callbacks = move(m_video_frame_callbacks);
+    GC::RootVector<GC::Ref<WebIDL::CallbackType>> callbacks { heap() };
+    for (auto const& callback : m_video_frame_callbacks)
+        callbacks.append(callback.callback);
     m_video_frame_callbacks.clear();
 
     auto frame = bitmap();
@@ -392,22 +394,22 @@ void HTMLVideoElement::notify_about_new_video_frame()
         height,
         current_src());
 
-    queue_a_media_element_task([this, callbacks = move(callbacks), now, width, height, media_time = current_time(), presented_frames = m_presented_video_frame_count]() mutable {
-        auto& realm = this->realm();
-        auto metadata = JS::Object::create(realm, realm.intrinsics().object_prototype());
-        MUST(metadata->create_data_property("presentationTime"_utf16_fly_string, JS::Value(now)));
-        MUST(metadata->create_data_property("expectedDisplayTime"_utf16_fly_string, JS::Value(now)));
-        MUST(metadata->create_data_property("width"_utf16_fly_string, JS::Value(width)));
-        MUST(metadata->create_data_property("height"_utf16_fly_string, JS::Value(height)));
-        MUST(metadata->create_data_property("mediaTime"_utf16_fly_string, JS::Value(media_time)));
-        MUST(metadata->create_data_property("presentedFrames"_utf16_fly_string, JS::Value(presented_frames)));
+    auto& realm = this->realm();
+    auto media_time = current_time();
+    auto presented_frames = m_presented_video_frame_count;
+    auto metadata = JS::Object::create(realm, realm.intrinsics().object_prototype());
+    MUST(metadata->create_data_property("presentationTime"_utf16_fly_string, JS::Value(now)));
+    MUST(metadata->create_data_property("expectedDisplayTime"_utf16_fly_string, JS::Value(now)));
+    MUST(metadata->create_data_property("width"_utf16_fly_string, JS::Value(width)));
+    MUST(metadata->create_data_property("height"_utf16_fly_string, JS::Value(height)));
+    MUST(metadata->create_data_property("mediaTime"_utf16_fly_string, JS::Value(media_time)));
+    MUST(metadata->create_data_property("presentedFrames"_utf16_fly_string, JS::Value(presented_frames)));
 
-        for (auto const& callback : callbacks) {
-            auto result = WebIDL::invoke_callback(callback.callback, {}, WebIDL::ExceptionBehavior::Report, { { JS::Value(now), metadata } });
-            if (result.is_error())
-                HTML::report_exception(result, realm);
-        }
-    });
+    for (auto const& callback : callbacks) {
+        auto result = WebIDL::invoke_callback(callback, {}, WebIDL::ExceptionBehavior::Report, { { JS::Value(now), metadata } });
+        if (result.is_error())
+            HTML::report_exception(result, realm);
+    }
 }
 
 }
