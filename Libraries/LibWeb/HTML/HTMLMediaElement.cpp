@@ -1123,6 +1123,11 @@ void HTMLMediaElement::select_resource()
             // 1. ⌛ If the src attribute's value is the empty string, then end the synchronous section, and jump down to the failed with attribute step below.
             auto source = get_attribute_value(HTML::AttributeNames::src);
             if (source.bytes_as_string_view().trim_whitespace().is_empty()) {
+                if (m_current_src.is_empty() && m_ready_state == ReadyState::HaveNothing && !m_pending_play_promises.is_empty() && !paused()) {
+                    dbgln("MUNDO_MEDIA_ELEMENT element={} deferring empty src failure while play is pending pending_play_promises={} current_src={}",
+                        static_cast<void const*>(this), m_pending_play_promises.size(), m_current_src);
+                    return;
+                }
                 if (m_current_src.contains(".m3u8"sv)) {
                     dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring empty src attribute while current_src={} is active", static_cast<void const*>(this), m_current_src);
                     return;
