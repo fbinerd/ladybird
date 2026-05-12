@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ByteString.h>
 #include <AK/StringBuilder.h>
 #include <LibJS/Runtime/Promise.h>
 #include <LibMedia/IncrementallyPopulatedStream.h>
@@ -56,6 +57,23 @@
 #include <LibWeb/WebIDL/Promise.h>
 
 namespace Web::HTML {
+
+static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& current_src, u64 offset, ByteBuffer const& media_data)
+{
+    if (offset != 0 || !current_src.contains(".m3u8"sv))
+        return {};
+
+    StringView manifest { media_data.bytes() };
+    if (!manifest.starts_with("#EXTM3U"sv) || !manifest.contains("pkey="sv))
+        return {};
+
+    if (!manifest.contains(";ios"sv) && !manifest.contains("%3Bios"sv))
+        return {};
+
+    auto sanitized_manifest = manifest.replace(";ios"sv, ""sv, ReplaceMode::All).replace("%3Bios"sv, ""sv, ReplaceMode::All);
+    dbgln("MUNDO_MEDIA_ELEMENT sanitized_hls_manifest current_src={} original_size={} sanitized_size={}", current_src, media_data.size(), sanitized_manifest.length());
+    return MUST(ByteBuffer::copy(sanitized_manifest.bytes()));
+}
 
 static String mundo_media_stack_trace(JS::VM& vm)
 {
@@ -1432,8 +1450,10 @@ void HTMLMediaElement::load_remote_resource(ByteRange const& byte_range)
                 // 6. Update the media data with the contents of response's unsafe response obtained in this fashion. response can be CORS-same-origin or
                 //    CORS-cross-origin; this affects whether subtitles referenced in the media data are exposed in the API and, for video elements, whether
                 //    a canvas gets tainted when the video is drawn on it.
-                fetch_data->stream->add_chunk_at(fetch_data->offset, media_data.bytes());
-                fetch_data->offset += media_data.size();
+                auto sanitized_media_data = mundo_sanitized_hls_manifest_chunk(weak_self->m_current_src, fetch_data->offset, media_data);
+                auto bytes_to_store = sanitized_media_data.has_value() ? sanitized_media_data->bytes() : media_data.bytes();
+                fetch_data->stream->add_chunk_at(fetch_data->offset, bytes_to_store);
+                fetch_data->offset += bytes_to_store.size();
 
                 weak_self->queue_a_media_element_task([self = weak_self.as_nonnull()] {
                     self->process_media_data(FetchingStatus::Ongoing);
