@@ -8,6 +8,7 @@
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/YUVData.h>
 #include <LibMedia/VideoFrame.h>
+#include <AK/Time.h>
 
 #include "FFmpegHelpers.h"
 #include "FFmpegVideoDecoder.h"
@@ -257,6 +258,11 @@ static bool is_hardware_frame(AVFrame const* frame)
     return frame->format == AV_PIX_FMT_CUDA;
 }
 
+struct HardwareTransferTiming {
+    bool transferred_from_hardware { false };
+    i64 transfer_microseconds { 0 };
+};
+
 static void log_software_frame_while_hwaccel_requested(AVCodecContext const* codec_context, AVFrame const* frame)
 {
     if (!codec_context->hw_device_ctx)
@@ -277,13 +283,15 @@ static void log_software_frame_while_hwaccel_requested(AVCodecContext const* cod
     }
 }
 
-static DecoderErrorOr<AVFrame*> software_frame_for_decoded_frame(AVFrame* frame, AVFrame* transfer_frame)
+static DecoderErrorOr<AVFrame*> software_frame_for_decoded_frame(AVFrame* frame, AVFrame* transfer_frame, HardwareTransferTiming& timing)
 {
     if (!is_hardware_frame(frame))
         return frame;
 
     av_frame_unref(transfer_frame);
+    auto transfer_start = MonotonicTime::now();
     auto result = av_hwframe_transfer_data(transfer_frame, frame, 0);
+    timing.transfer_microseconds = (MonotonicTime::now() - transfer_start).to_microseconds();
     if (result < 0)
         return DecoderError::format(DecoderErrorCategory::Unknown, "Failed to transfer FFmpeg hardware frame to CPU with code {:x}", result);
 
@@ -291,15 +299,18 @@ static DecoderErrorOr<AVFrame*> software_frame_for_decoded_frame(AVFrame* frame,
     if (result < 0)
         return DecoderError::format(DecoderErrorCategory::Unknown, "Failed to copy FFmpeg hardware frame properties with code {:x}", result);
 
+    timing.transferred_from_hardware = true;
+
     static size_t s_hw_transfer_frame_count { 0 };
     auto count = ++s_hw_transfer_frame_count;
     if (count <= 8 || count % 120 == 0) {
-        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_transfer backend=nvdec count={} hw_format={} sw_format={} size={}x{}",
+        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_transfer backend=nvdec count={} hw_format={} sw_format={} size={}x{} transfer_us={}",
             count,
             av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)),
             av_get_pix_fmt_name(static_cast<AVPixelFormat>(transfer_frame->format)),
             transfer_frame->width,
-            transfer_frame->height);
+            transfer_frame->height,
+            timing.transfer_microseconds);
     }
 
     return transfer_frame;
@@ -592,7 +603,8 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
     case 0: {
         if (!is_hardware_frame(m_frame))
             log_software_frame_while_hwaccel_requested(m_codec_context, m_frame);
-        auto* frame = DECODER_TRY(DecoderErrorCategory::Unknown, software_frame_for_decoded_frame(m_frame, m_transfer_frame));
+        HardwareTransferTiming transfer_timing;
+        auto* frame = DECODER_TRY(DecoderErrorCategory::Unknown, software_frame_for_decoded_frame(m_frame, m_transfer_frame, transfer_timing));
 
         auto color_primaries = static_cast<ColorPrimaries>(frame->color_primaries);
         auto transfer_characteristics = static_cast<TransferCharacteristics>(frame->color_trc);
@@ -620,15 +632,38 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         auto timestamp = AK::Duration::from_microseconds(frame->pts);
         auto duration = AK::Duration::from_microseconds(frame->duration);
 
+        auto pipeline_start = MonotonicTime::now();
         auto yuv_data = DECODER_TRY_ALLOC(Gfx::YUVData::create(gfx_size, bit_depth, subsampling, cicp));
 
         auto component_size = bit_depth <= 8 ? 1 : 2;
+        auto copy_start = MonotonicTime::now();
         if (is_semiplanar_pixel_format(pixel_format))
             DECODER_TRY(DecoderErrorCategory::Unknown, copy_semiplanar_frame_to_yuv_data(frame, *yuv_data, size, subsampling, component_size));
         else
             DECODER_TRY(DecoderErrorCategory::Unknown, copy_planar_frame_to_yuv_data(frame, *yuv_data, size, subsampling, component_size));
+        auto copy_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
 
+        auto bitmap_start = MonotonicTime::now();
         auto bitmap = DECODER_TRY_ALLOC(Gfx::ImmutableBitmap::create_from_yuv(move(yuv_data)));
+        auto bitmap_microseconds = (MonotonicTime::now() - bitmap_start).to_microseconds();
+        auto pipeline_microseconds = (MonotonicTime::now() - pipeline_start).to_microseconds();
+
+        static size_t s_video_frame_pipeline_count { 0 };
+        auto count = ++s_video_frame_pipeline_count;
+        if (count <= 8 || count % 120 == 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} hw_transfer={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{}",
+                count,
+                transfer_timing.transferred_from_hardware,
+                transfer_timing.transfer_microseconds,
+                copy_microseconds,
+                bitmap_microseconds,
+                pipeline_microseconds,
+                pixel_format_name(pixel_format),
+                bitmap->width(),
+                bitmap->height(),
+                frame->width,
+                frame->height);
+        }
 
         return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap)));
     }
