@@ -130,6 +130,16 @@ static char const* codec_profile_name(AVCodecContext const* codec_context)
     return name ? name : "unknown";
 }
 
+static bool is_known_unsupported_nvdec_h264_resolution(AVCodecContext const* codec_context)
+{
+    if (codec_context->codec_id != AV_CODEC_ID_H264)
+        return false;
+
+    // NVIDIA's public NVDEC capability tables list H.264 support up to 4096x4096
+    // and level 5.1. Some sites serve 4320-wide H.264 level 5.2 streams.
+    return codec_context->width > 4096 || codec_context->height > 4096 || codec_context->level > 51;
+}
+
 static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecoderBackend backend)
 {
     if (backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Software)
@@ -172,25 +182,39 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
                 pixel_format_name(*format),
                 pixel_format_name(codec_context->sw_pix_fmt));
         }
-        for (auto const* format = formats; *format >= 0; ++format) {
-            if (*format == AV_PIX_FMT_CUDA) {
-                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=cuda codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
-                    avcodec_get_name(codec_context->codec_id),
-                    codec_profile_name(codec_context),
-                    codec_context->level,
-                    codec_context->width,
-                    codec_context->height,
-                    pixel_format_name(codec_context->sw_pix_fmt));
-                return *format;
+        auto skipped_hardware_format = false;
+        if (is_known_unsupported_nvdec_h264_resolution(codec_context)) {
+            skipped_hardware_format = true;
+            dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=nvdec_h264_resolution_or_level_limit codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                avcodec_get_name(codec_context->codec_id),
+                codec_profile_name(codec_context),
+                codec_context->level,
+                codec_context->width,
+                codec_context->height,
+                pixel_format_name(codec_context->sw_pix_fmt));
+        } else {
+            for (auto const* format = formats; *format >= 0; ++format) {
+                if (*format == AV_PIX_FMT_CUDA) {
+                    dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=cuda codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                        avcodec_get_name(codec_context->codec_id),
+                        codec_profile_name(codec_context),
+                        codec_context->level,
+                        codec_context->width,
+                        codec_context->height,
+                        pixel_format_name(codec_context->sw_pix_fmt));
+                    return *format;
+                }
             }
         }
-        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=cuda_not_offered codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
-            avcodec_get_name(codec_context->codec_id),
-            codec_profile_name(codec_context),
-            codec_context->level,
-            codec_context->width,
-            codec_context->height,
-            pixel_format_name(codec_context->sw_pix_fmt));
+        if (!skipped_hardware_format) {
+            dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=cuda_not_offered codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                avcodec_get_name(codec_context->codec_id),
+                codec_profile_name(codec_context),
+                codec_context->level,
+                codec_context->width,
+                codec_context->height,
+                pixel_format_name(codec_context->sw_pix_fmt));
+        }
     }
 
     while (*formats >= 0) {
