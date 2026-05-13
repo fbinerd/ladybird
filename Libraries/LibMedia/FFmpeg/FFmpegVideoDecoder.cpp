@@ -5,6 +5,7 @@
  */
 
 #include <LibCore/System.h>
+#include <LibGfx/Bitmap.h>
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/YUVData.h>
 #include <LibMedia/VideoFrame.h>
@@ -388,6 +389,151 @@ static bool is_semiplanar_pixel_format(AVPixelFormat format)
     return format == AV_PIX_FMT_NV12 || format == AV_PIX_FMT_P010LE || format == AV_PIX_FMT_P016LE;
 }
 
+static int max_nvdec_video_raster_width()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_MAX_RASTER_WIDTH");
+    if (!raw_value) {
+        raw_value = getenv("MUNDO_VIDEO_MAX_RASTER_WIDTH_NVDEC");
+        if (!raw_value)
+            return 1920;
+    }
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return 0;
+
+    return max(value, 320);
+}
+
+static Gfx::IntSize target_size_for_nvdec_frame(AVFrame const* frame)
+{
+    auto max_width = max_nvdec_video_raster_width();
+    if (max_width == 0 || frame->width <= max_width)
+        return { frame->width, frame->height };
+
+    return {
+        max_width,
+        max(1, static_cast<int>((static_cast<i64>(frame->height) * max_width) / frame->width))
+    };
+}
+
+static u8 clamp_to_u8(int value)
+{
+    if (value < 0)
+        return 0;
+    if (value > 255)
+        return 255;
+    return static_cast<u8>(value);
+}
+
+static void convert_yuv_to_rgba(CodingIndependentCodePoints const& cicp, u8 y, u8 u, u8 v, u8* dst)
+{
+    auto y_value = static_cast<int>(y);
+    auto u_offset = static_cast<int>(u) - 128;
+    auto v_offset = static_cast<int>(v) - 128;
+
+    int r;
+    int g;
+    int b;
+
+    if (cicp.video_full_range_flag() == VideoFullRangeFlag::Full) {
+        switch (cicp.matrix_coefficients()) {
+        case MatrixCoefficients::BT601:
+        case MatrixCoefficients::BT470BG:
+            r = y_value + ((359 * v_offset) >> 8);
+            g = y_value - ((88 * u_offset + 183 * v_offset) >> 8);
+            b = y_value + ((454 * u_offset) >> 8);
+            break;
+        case MatrixCoefficients::BT2020NonConstantLuminance:
+        case MatrixCoefficients::BT2020ConstantLuminance:
+            r = y_value + ((377 * v_offset) >> 8);
+            g = y_value - ((42 * u_offset + 146 * v_offset) >> 8);
+            b = y_value + ((482 * u_offset) >> 8);
+            break;
+        case MatrixCoefficients::BT709:
+        case MatrixCoefficients::Unspecified:
+        default:
+            r = y_value + ((403 * v_offset) >> 8);
+            g = y_value - ((48 * u_offset + 120 * v_offset) >> 8);
+            b = y_value + ((475 * u_offset) >> 8);
+            break;
+        }
+    } else {
+        auto c = max(0, y_value - 16);
+        switch (cicp.matrix_coefficients()) {
+        case MatrixCoefficients::BT601:
+        case MatrixCoefficients::BT470BG:
+            r = (298 * c + 409 * v_offset + 128) >> 8;
+            g = (298 * c - 100 * u_offset - 208 * v_offset + 128) >> 8;
+            b = (298 * c + 516 * u_offset + 128) >> 8;
+            break;
+        case MatrixCoefficients::BT2020NonConstantLuminance:
+        case MatrixCoefficients::BT2020ConstantLuminance:
+            r = (298 * c + 430 * v_offset + 128) >> 8;
+            g = (298 * c - 48 * u_offset - 167 * v_offset + 128) >> 8;
+            b = (298 * c + 548 * u_offset + 128) >> 8;
+            break;
+        case MatrixCoefficients::BT709:
+        case MatrixCoefficients::Unspecified:
+        default:
+            r = (298 * c + 459 * v_offset + 128) >> 8;
+            g = (298 * c - 55 * u_offset - 136 * v_offset + 128) >> 8;
+            b = (298 * c + 541 * u_offset + 128) >> 8;
+            break;
+        }
+    }
+
+    dst[0] = clamp_to_u8(r);
+    dst[1] = clamp_to_u8(g);
+    dst[2] = clamp_to_u8(b);
+    dst[3] = 255;
+}
+
+static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_nv12_frame(AVFrame const* frame, CodingIndependentCodePoints const& cicp)
+{
+    VERIFY(frame->format == AV_PIX_FMT_NV12);
+    if (frame->linesize[0] < 0 || frame->linesize[1] < 0)
+        return Error::from_string_literal("Reversed NV12 scanlines are not supported");
+    if (!frame->data[0] || !frame->data[1])
+        return Error::from_string_literal("NV12 frame had missing planes");
+    if (cicp.matrix_coefficients() == MatrixCoefficients::Identity)
+        return Error::from_string_literal("NV12 direct conversion does not support identity matrix");
+
+    auto target_size = target_size_for_nvdec_frame(frame);
+    auto bitmap = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::RGBA8888, Gfx::AlphaType::Premultiplied, target_size));
+
+    auto source_width = static_cast<u32>(frame->width);
+    auto source_height = static_cast<u32>(frame->height);
+    auto target_width = static_cast<u32>(target_size.width());
+    auto target_height = static_cast<u32>(target_size.height());
+
+    for (u32 row = 0; row < target_height; ++row) {
+        auto source_y = min((static_cast<u64>(row) * source_height) / target_height, static_cast<u64>(source_height - 1));
+        auto const* y_row = frame->data[0] + source_y * frame->linesize[0];
+        auto const* uv_row = frame->data[1] + (source_y / 2) * frame->linesize[1];
+        auto* dst_row = bitmap->scanline_u8(row);
+
+        for (u32 col = 0; col < target_width; ++col) {
+            auto source_x = min((static_cast<u64>(col) * source_width) / target_width, static_cast<u64>(source_width - 1));
+            auto uv_x = (source_x / 2) * 2;
+            convert_yuv_to_rgba(cicp, y_row[source_x], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+        }
+    }
+
+    static size_t s_direct_nv12_frame_count { 0 };
+    auto count = ++s_direct_nv12_frame_count;
+    if (count <= 8 || count % 120 == 0) {
+        dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap count={} from={}x{} to={}x{}",
+            count,
+            frame->width,
+            frame->height,
+            target_size.width(),
+            target_size.height());
+    }
+
+    return Gfx::ImmutableBitmap::create(move(bitmap));
+}
+
 static DecoderErrorOr<void> copy_planar_frame_to_yuv_data(AVFrame const* frame, Gfx::YUVData& yuv_data, Gfx::Size<u32> size, Subsampling subsampling, size_t component_size)
 {
     auto y_plane_size = size.to_type<size_t>();
@@ -653,27 +799,43 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         auto duration = AK::Duration::from_microseconds(frame->duration);
 
         auto pipeline_start = MonotonicTime::now();
-        auto yuv_data = DECODER_TRY_ALLOC(Gfx::YUVData::create(gfx_size, bit_depth, subsampling, cicp));
-
-        auto component_size = bit_depth <= 8 ? 1 : 2;
-        auto copy_start = MonotonicTime::now();
-        if (is_semiplanar_pixel_format(pixel_format))
-            DECODER_TRY(DecoderErrorCategory::Unknown, copy_semiplanar_frame_to_yuv_data(frame, *yuv_data, size, subsampling, component_size));
-        else
-            DECODER_TRY(DecoderErrorCategory::Unknown, copy_planar_frame_to_yuv_data(frame, *yuv_data, size, subsampling, component_size));
-        auto copy_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
-
+        i64 copy_microseconds = 0;
         auto bitmap_start = MonotonicTime::now();
-        auto bitmap = DECODER_TRY_ALLOC(Gfx::ImmutableBitmap::create_from_yuv(move(yuv_data)));
+        RefPtr<Gfx::ImmutableBitmap> bitmap;
+        auto used_direct_nv12_bitmap = false;
+        if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12) {
+            auto direct_bitmap = create_bitmap_directly_from_nv12_frame(frame, cicp);
+            if (!direct_bitmap.is_error()) {
+                used_direct_nv12_bitmap = true;
+                bitmap = direct_bitmap.release_value();
+            } else {
+                dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap_fallback size={}x{} error={}", frame->width, frame->height, direct_bitmap.error().string_literal());
+            }
+        }
+
+        if (!bitmap) {
+            auto yuv_data = DECODER_TRY_ALLOC(Gfx::YUVData::create(gfx_size, bit_depth, subsampling, cicp));
+
+            auto component_size = bit_depth <= 8 ? 1 : 2;
+            auto copy_start = MonotonicTime::now();
+            if (is_semiplanar_pixel_format(pixel_format))
+                DECODER_TRY(DecoderErrorCategory::Unknown, copy_semiplanar_frame_to_yuv_data(frame, *yuv_data, size, subsampling, component_size));
+            else
+                DECODER_TRY(DecoderErrorCategory::Unknown, copy_planar_frame_to_yuv_data(frame, *yuv_data, size, subsampling, component_size));
+            copy_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
+
+            bitmap = DECODER_TRY_ALLOC(Gfx::ImmutableBitmap::create_from_yuv(move(yuv_data)));
+        }
         auto bitmap_microseconds = (MonotonicTime::now() - bitmap_start).to_microseconds();
         auto pipeline_microseconds = (MonotonicTime::now() - pipeline_start).to_microseconds();
 
         static size_t s_video_frame_pipeline_count { 0 };
         auto count = ++s_video_frame_pipeline_count;
         if (count <= 8 || count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} hw_transfer={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{}",
+            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} hw_transfer={} direct_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{}",
                 count,
                 transfer_timing.transferred_from_hardware,
+                used_direct_nv12_bitmap,
                 transfer_timing.transfer_microseconds,
                 copy_microseconds,
                 bitmap_microseconds,
@@ -685,7 +847,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                 frame->height);
         }
 
-        return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap)));
+        return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, bitmap.release_nonnull()));
     }
     case AVERROR(EAGAIN):
         return DecoderError::with_description(DecoderErrorCategory::NeedsMoreInput, "FFmpeg decoder has no frames available, send more input"sv);
