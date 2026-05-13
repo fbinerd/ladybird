@@ -49,6 +49,7 @@
         "openh264",
         "openssl",
         "opus",
+        "nvcodec",
         "webp",
         "theora",
         "vorbis",
