@@ -13,6 +13,7 @@ extern "C" {
 }
 
 #include <AK/NonnullOwnPtr.h>
+#include <AK/Time.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/SkiaUtils.h>
@@ -273,6 +274,7 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
     static size_t s_texture_source_read_count { 0 };
     auto texture_source_read_count = ++s_texture_source_read_count;
     auto should_log_texture_source = should_log_mundo_webgl_texture_diagnostic(texture_source_read_count);
+    StringView texture_source_name = "Unknown"sv;
     auto log_webgl_source = [&](StringView source_name, Gfx::Bitmap const* bitmap) {
         if (!should_log_texture_source)
             return;
@@ -308,15 +310,18 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
 
     auto bitmap = source.visit(
         [&](GC::Root<HTML::HTMLImageElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+            texture_source_name = "HTMLImageElement"sv;
             return source->immutable_bitmap();
         },
         [&](GC::Root<HTML::HTMLCanvasElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+            texture_source_name = "HTMLCanvasElement"sv;
             auto surface = source->surface();
             if (!surface)
                 return Gfx::ImmutableBitmap::create(*source->get_bitmap_from_surface());
             return Gfx::ImmutableBitmap::create_snapshot_from_painting_surface(*surface);
         },
         [&](GC::Root<HTML::OffscreenCanvas> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+            texture_source_name = "OffscreenCanvas"sv;
             auto bitmap = source->bitmap();
             if (!bitmap)
                 return {};
@@ -324,6 +329,7 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
             return Gfx::ImmutableBitmap::create(*bitmap);
         },
         [&](GC::Root<HTML::HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+            texture_source_name = "HTMLVideoElement"sv;
             auto bitmap = source->bitmap();
             if (should_log_texture_source) {
                 dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=HTMLVideoElement current_src={} ready_state={} bitmap={} size={}x{}",
@@ -337,6 +343,7 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
             return bitmap;
         },
         [&](GC::Root<HTML::ImageBitmap> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+            texture_source_name = "ImageBitmap"sv;
             auto* bitmap = source->bitmap();
             if (!bitmap)
                 return {};
@@ -374,6 +381,7 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
             return Gfx::ImmutableBitmap::create(snapshot.release_value());
         },
         [&](GC::Root<HTML::ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
+            texture_source_name = "ImageData"sv;
             log_webgl_source("ImageData"sv, &source->bitmap());
             return Gfx::ImmutableBitmap::create(source->bitmap());
         });
@@ -394,13 +402,28 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
     if (m_unpack_premultiply_alpha)
         export_flags |= Gfx::ExportFlags::PremultiplyAlpha;
 
+    auto export_start = MonotonicTime::now();
     auto result = bitmap->export_to_byte_buffer(export_format.value(), export_flags, destination_width, destination_height);
+    auto export_microseconds = (MonotonicTime::now() - export_start).to_microseconds();
     if (result.is_error()) {
         dbgln("Could not export bitmap: {}", result.release_error());
         return OptionalNone {};
     }
 
-    return result.release_value();
+    auto value = result.release_value();
+    if (should_log_texture_source) {
+        dbgln("MUNDO_WEBGL_TEX_EXPORT attempt={} type={} export_us={} source_size={}x{} output_size={}x{} output_bytes={}",
+            texture_source_read_count,
+            texture_source_name,
+            export_microseconds,
+            bitmap->width(),
+            bitmap->height(),
+            value.width,
+            value.height,
+            value.buffer.size());
+    }
+
+    return value;
 }
 
 // TODO: The glGetError spec allows for queueing errors which is something we should probably do, for now

@@ -225,7 +225,7 @@ static int max_large_video_raster_width()
         if (decoder_backend && (!strcmp(decoder_backend, "nvdec") || !strcmp(decoder_backend, "cuda"))) {
             auto const* nvdec_raw_value = getenv("MUNDO_VIDEO_MAX_RASTER_WIDTH_NVDEC");
             if (!nvdec_raw_value)
-                return 1920;
+                return 0;
 
             auto nvdec_value = atoi(nvdec_raw_value);
             if (nvdec_value <= 0)

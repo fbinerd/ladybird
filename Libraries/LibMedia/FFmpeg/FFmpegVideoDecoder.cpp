@@ -395,7 +395,7 @@ static int max_nvdec_video_raster_width()
     if (!raw_value) {
         raw_value = getenv("MUNDO_VIDEO_MAX_RASTER_WIDTH_NVDEC");
         if (!raw_value)
-            return 1920;
+            return 0;
     }
 
     auto value = atoi(raw_value);
