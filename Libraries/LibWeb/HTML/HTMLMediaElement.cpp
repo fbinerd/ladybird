@@ -75,6 +75,22 @@ static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& cur
     return MUST(ByteBuffer::copy(sanitized_manifest.bytes()));
 }
 
+static Optional<String> mundo_normalized_hls_source(StringView source)
+{
+    if (!source.contains("edge-hls.doppiocdn.org/hls/"sv) || !source.contains("_vr/master/"sv))
+        return {};
+
+    auto query_offset = source.find('?');
+    auto path = query_offset.has_value() ? source.substring_view(0, *query_offset) : source;
+    auto query = query_offset.has_value() ? source.substring_view(*query_offset) : ""sv;
+    if (!path.ends_with("_vr.m3u8"sv))
+        return {};
+
+    auto normalized = MUST(String::formatted("{}_1440p60.m3u8{}", path.substring_view(0, path.length() - 5), query));
+    dbgln("MUNDO_MEDIA_ELEMENT normalized_hls_source original={} normalized={}", source, normalized);
+    return normalized;
+}
+
 static String mundo_media_stack_trace(JS::VM& vm)
 {
     auto stack_trace = vm.stack_trace();
@@ -1201,7 +1217,8 @@ void HTMLMediaElement::select_resource()
 
             // 2. ⌛ Let urlRecord be the result of encoding-parsing a URL given the src attribute's value,
             //    relative to the media element's node document when the src attribute was last changed.
-            auto url_record = document().encoding_parse_url(source);
+            auto normalized_source = mundo_normalized_hls_source(source.bytes_as_string_view());
+            auto url_record = document().encoding_parse_url(normalized_source.value_or(source));
 
             // 3. ⌛ If urlRecord is not failure, then set the currentSrc attribute to the result of applying the URL serializer to urlRecord.
             if (url_record.has_value())
