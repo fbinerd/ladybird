@@ -118,6 +118,18 @@ static bool can_create_hw_device(VideoDecoderBackend backend)
     return result >= 0;
 }
 
+static char const* pixel_format_name(AVPixelFormat format)
+{
+    auto const* name = av_get_pix_fmt_name(format);
+    return name ? name : "unknown";
+}
+
+static char const* codec_profile_name(AVCodecContext const* codec_context)
+{
+    auto const* name = avcodec_profile_name(codec_context->codec_id, codec_context->profile);
+    return name ? name : "unknown";
+}
+
 static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecoderBackend backend)
 {
     if (backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Software)
@@ -125,7 +137,7 @@ static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecod
 
     auto ffmpeg_has_config = codec_has_hw_config(codec, backend);
     auto device_available = ffmpeg_has_config && can_create_hw_device(backend);
-    dbgln("MUNDO_MEDIA_FFMPEG hwaccel_probe backend={} codec={} ffmpeg_config={} device_available={} enabled=false reason=hardware_frame_path_not_implemented",
+    dbgln("MUNDO_MEDIA_FFMPEG hwaccel_probe backend={} codec={} ffmpeg_config={} device_available={}",
         video_decoder_backend_name(backend), codec_id, ffmpeg_has_config, device_available);
 }
 
@@ -151,12 +163,34 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
 {
     if (codec_context->hw_device_ctx) {
         for (auto const* format = formats; *format >= 0; ++format) {
+            dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format_offer codec={} profile={} level={} size={}x{} offered={} sw_pix_fmt={}",
+                avcodec_get_name(codec_context->codec_id),
+                codec_profile_name(codec_context),
+                codec_context->level,
+                codec_context->width,
+                codec_context->height,
+                pixel_format_name(*format),
+                pixel_format_name(codec_context->sw_pix_fmt));
+        }
+        for (auto const* format = formats; *format >= 0; ++format) {
             if (*format == AV_PIX_FMT_CUDA) {
-                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=cuda");
+                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=cuda codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                    avcodec_get_name(codec_context->codec_id),
+                    codec_profile_name(codec_context),
+                    codec_context->level,
+                    codec_context->width,
+                    codec_context->height,
+                    pixel_format_name(codec_context->sw_pix_fmt));
                 return *format;
             }
         }
-        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=cuda_not_offered");
+        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=cuda_not_offered codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+            avcodec_get_name(codec_context->codec_id),
+            codec_profile_name(codec_context),
+            codec_context->level,
+            codec_context->width,
+            codec_context->height,
+            pixel_format_name(codec_context->sw_pix_fmt));
     }
 
     while (*formats >= 0) {
@@ -197,6 +231,26 @@ static bool should_try_nvdec(AVCodec const* codec)
 static bool is_hardware_frame(AVFrame const* frame)
 {
     return frame->format == AV_PIX_FMT_CUDA;
+}
+
+static void log_software_frame_while_hwaccel_requested(AVCodecContext const* codec_context, AVFrame const* frame)
+{
+    if (!codec_context->hw_device_ctx)
+        return;
+
+    static size_t s_hw_fallback_frame_count { 0 };
+    auto count = ++s_hw_fallback_frame_count;
+    if (count <= 8 || count % 120 == 0) {
+        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_fallback_frame count={} codec={} profile={} level={} frame_format={} sw_pix_fmt={} size={}x{}",
+            count,
+            avcodec_get_name(codec_context->codec_id),
+            codec_profile_name(codec_context),
+            codec_context->level,
+            pixel_format_name(static_cast<AVPixelFormat>(frame->format)),
+            pixel_format_name(codec_context->sw_pix_fmt),
+            frame->width,
+            frame->height);
+    }
 }
 
 static DecoderErrorOr<AVFrame*> software_frame_for_decoded_frame(AVFrame* frame, AVFrame* transfer_frame)
@@ -512,6 +566,8 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
 
     switch (result) {
     case 0: {
+        if (!is_hardware_frame(m_frame))
+            log_software_frame_while_hwaccel_requested(m_codec_context, m_frame);
         auto* frame = DECODER_TRY(DecoderErrorCategory::Unknown, software_frame_for_decoded_frame(m_frame, m_transfer_frame));
 
         auto color_primaries = static_cast<ColorPrimaries>(frame->color_primaries);
