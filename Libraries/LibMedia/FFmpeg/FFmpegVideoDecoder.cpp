@@ -63,7 +63,8 @@ DecoderErrorOr<NonnullOwnPtr<FFmpegVideoDecoder>> FFmpegVideoDecoder::try_create
 
     codec_context->get_format = negotiate_output_format;
     codec_context->time_base = { 1, 1'000'000 };
-    codec_context->thread_count = static_cast<int>(min(Core::System::hardware_concurrency(), 4));
+    codec_context->thread_count = static_cast<int>(min(Core::System::hardware_concurrency(), 16));
+    dbgln("MUNDO_MEDIA_FFMPEG video_decoder_threads codec={} threads={}", codec_id, codec_context->thread_count);
 
     if (!codec_initialization_data.is_empty()) {
         if (codec_initialization_data.size() > NumericLimits<int>::max())
