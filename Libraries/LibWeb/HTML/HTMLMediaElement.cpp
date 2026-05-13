@@ -55,6 +55,7 @@
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/WebIDL/Promise.h>
+#include <stdlib.h>
 
 namespace Web::HTML {
 
@@ -85,20 +86,40 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
     auto query = query_offset.has_value() ? source.substring_view(*query_offset) : ""sv;
 
     Optional<StringView> normalized_path_base;
-    StringView target_quality;
+    char const* target_quality = nullptr;
     if (path.contains("_vr/master/"sv)) {
-        target_quality = "_1440p60"sv;
+        target_quality = getenv("MUNDO_HLS_MAX_VR_QUALITY");
+        if (!target_quality || target_quality[0] == '\0')
+            return {};
         if (path.ends_with("_vr.m3u8"sv))
             normalized_path_base = path.substring_view(0, path.length() - ".m3u8"sv.length());
+        else if (path.ends_with("_vr_720p60.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_720p60.m3u8"sv.length());
+        else if (path.ends_with("_vr_1440p60.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_1440p60.m3u8"sv.length());
+        else if (path.ends_with("_vr_2160p60.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
     } else {
-        target_quality = "_160p"sv;
+        target_quality = getenv("MUNDO_HLS_AUX_QUALITY");
+        if (!target_quality || target_quality[0] == '\0')
+            return {};
         if (path.ends_with("_auto.m3u8"sv))
             normalized_path_base = path.substring_view(0, path.length() - "_auto.m3u8"sv.length());
+        else if (path.ends_with("_160p.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_160p.m3u8"sv.length());
+        else if (path.ends_with("_240p.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_240p.m3u8"sv.length());
+        else if (path.ends_with("_480p.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_480p.m3u8"sv.length());
+        else if (path.ends_with("_720p.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_720p.m3u8"sv.length());
+        else if (path.ends_with("_720p60.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_720p60.m3u8"sv.length());
     }
     if (!normalized_path_base.has_value())
         return {};
 
-    auto normalized = MUST(String::formatted("{}{}.m3u8{}", *normalized_path_base, target_quality, query));
+    auto normalized = MUST(String::formatted("{}_{}.m3u8{}", *normalized_path_base, target_quality, query));
     if (normalized == source)
         return {};
     dbgln("MUNDO_MEDIA_ELEMENT normalized_hls_source original={} normalized={}", source, normalized);
