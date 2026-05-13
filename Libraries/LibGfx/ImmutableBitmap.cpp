@@ -185,6 +185,15 @@ static Color color_from_raw_bitmap_bytes(u8 const* pixel, BitmapFormat format)
 static void export_raster_bitmap_directly(Bitmap const& bitmap, ByteBuffer& buffer, size_t buffer_pitch, ExportFormat format, int flags)
 {
     auto* raw_buffer = buffer.data();
+    if (format == ExportFormat::RGBA8888 && bitmap.format() == BitmapFormat::RGBA8888) {
+        auto row_size = static_cast<size_t>(bitmap.width()) * 4;
+        for (auto y = 0; y < bitmap.height(); y++) {
+            auto target_y = flags & ExportFlags::FlipY ? bitmap.height() - y - 1 : y;
+            memcpy(raw_buffer + (static_cast<size_t>(target_y) * buffer_pitch), bitmap.scanline_u8(y), row_size);
+        }
+        return;
+    }
+
     for (auto y = 0; y < bitmap.height(); y++) {
         auto target_y = flags & ExportFlags::FlipY ? bitmap.height() - y - 1 : y;
         auto const* source_row = bitmap.scanline_u8(y);
