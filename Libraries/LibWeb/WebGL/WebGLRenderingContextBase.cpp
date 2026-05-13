@@ -50,6 +50,11 @@ extern "C" {
 
 namespace Web::WebGL {
 
+static bool should_log_mundo_webgl_texture_diagnostic(size_t count)
+{
+    return count <= 12 || count % 120 == 0;
+}
+
 static constexpr Optional<Gfx::ExportFormat> determine_export_format(WebIDL::UnsignedLong format, WebIDL::UnsignedLong type)
 {
     switch (format) {
@@ -267,7 +272,10 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
     // FIXME: If source is null then an INVALID_VALUE error is generated.
     static size_t s_texture_source_read_count { 0 };
     auto texture_source_read_count = ++s_texture_source_read_count;
+    auto should_log_texture_source = should_log_mundo_webgl_texture_diagnostic(texture_source_read_count);
     auto log_webgl_source = [&](StringView source_name, Gfx::Bitmap const* bitmap) {
+        if (!should_log_texture_source)
+            return;
         if (!bitmap) {
             dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type={} bitmap=null format={} type_enum={} dest={}x{} flip_y={} premultiply={}",
                 texture_source_read_count,
@@ -317,13 +325,15 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
         },
         [&](GC::Root<HTML::HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             auto bitmap = source->bitmap();
-            dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=HTMLVideoElement current_src={} ready_state={} bitmap={} size={}x{}",
-                texture_source_read_count,
-                source->current_src(),
-                to_underlying(source->ready_state()),
-                static_cast<void const*>(bitmap.ptr()),
-                bitmap ? bitmap->size().width() : 0,
-                bitmap ? bitmap->size().height() : 0);
+            if (should_log_texture_source) {
+                dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=HTMLVideoElement current_src={} ready_state={} bitmap={} size={}x{}",
+                    texture_source_read_count,
+                    source->current_src(),
+                    to_underlying(source->ready_state()),
+                    static_cast<void const*>(bitmap.ptr()),
+                    bitmap ? bitmap->size().width() : 0,
+                    bitmap ? bitmap->size().height() : 0);
+            }
             return bitmap;
         },
         [&](GC::Root<HTML::ImageBitmap> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
@@ -353,12 +363,14 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
                 dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload rejected wrapper failed width={} height={} error={}", texture_source_read_count, source->width(), source->height(), snapshot.error());
                 return {};
             }
-            dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload snapshot bitmap={} size={}x{} pitch={}",
-                texture_source_read_count,
-                static_cast<void const*>(snapshot.value().ptr()),
-                snapshot.value()->width(),
-                snapshot.value()->height(),
-                snapshot.value()->pitch());
+            if (should_log_texture_source) {
+                dbgln("MUNDO_WEBGL_TEX_SOURCE attempt={} type=ImageBitmap upload snapshot bitmap={} size={}x{} pitch={}",
+                    texture_source_read_count,
+                    static_cast<void const*>(snapshot.value().ptr()),
+                    snapshot.value()->width(),
+                    snapshot.value()->height(),
+                    snapshot.value()->pitch());
+            }
             return Gfx::ImmutableBitmap::create(snapshot.release_value());
         },
         [&](GC::Root<HTML::ImageData> const& source) -> RefPtr<Gfx::ImmutableBitmap> {

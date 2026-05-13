@@ -34,6 +34,11 @@ namespace Web::HTML {
 
 GC_DEFINE_ALLOCATOR(HTMLVideoElement);
 
+static bool should_log_mundo_video_frame_diagnostic(size_t count)
+{
+    return count <= 12 || count % 120 == 0;
+}
+
 HTMLVideoElement::HTMLVideoElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLMediaElement(document, move(qualified_name))
 {
@@ -356,7 +361,8 @@ WebIDL::UnsignedLong HTMLVideoElement::request_video_frame_callback(GC::Ref<WebI
         m_next_video_frame_callback_handle = 1;
 
     m_video_frame_callbacks.append({ handle, callback });
-    dbgln("MUNDO_VIDEO_FRAME_CALLBACK request element={} handle={} pending={} src={}", static_cast<void const*>(this), handle, m_video_frame_callbacks.size(), current_src());
+    if (should_log_mundo_video_frame_diagnostic(handle) || m_video_frame_callbacks.size() > 1)
+        dbgln("MUNDO_VIDEO_FRAME_CALLBACK request element={} handle={} pending={} src={}", static_cast<void const*>(this), handle, m_video_frame_callbacks.size(), current_src());
     return handle;
 }
 
@@ -365,7 +371,7 @@ void HTMLVideoElement::cancel_video_frame_callback(WebIDL::UnsignedLong handle)
     auto removed = m_video_frame_callbacks.remove_first_matching([handle](auto const& callback) {
         return callback.handle == handle;
     });
-    if (removed)
+    if (removed && should_log_mundo_video_frame_diagnostic(handle))
         dbgln("MUNDO_VIDEO_FRAME_CALLBACK cancel element={} handle={} pending={} src={}", static_cast<void const*>(this), handle, m_video_frame_callbacks.size(), current_src());
 }
 
@@ -385,14 +391,16 @@ void HTMLVideoElement::notify_about_new_video_frame()
     auto now = HighResolutionTime::current_high_resolution_time(realm().global_object());
     m_presented_video_frame_count++;
 
-    dbgln("MUNDO_VIDEO_FRAME_CALLBACK fire element={} callbacks={} presented={} media_time={} size={}x{} src={}",
-        static_cast<void const*>(this),
-        callbacks.size(),
-        m_presented_video_frame_count,
-        current_time(),
-        width,
-        height,
-        current_src());
+    if (should_log_mundo_video_frame_diagnostic(m_presented_video_frame_count)) {
+        dbgln("MUNDO_VIDEO_FRAME_CALLBACK fire element={} callbacks={} presented={} media_time={} size={}x{} src={}",
+            static_cast<void const*>(this),
+            callbacks.size(),
+            m_presented_video_frame_count,
+            current_time(),
+            width,
+            height,
+            current_src());
+    }
 
     auto& realm = this->realm();
     auto media_time = current_time();
