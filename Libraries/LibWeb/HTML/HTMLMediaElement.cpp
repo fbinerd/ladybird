@@ -89,16 +89,19 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
     char const* target_quality = nullptr;
     if (path.contains("_vr/master/"sv)) {
         target_quality = getenv("MUNDO_HLS_MAX_VR_QUALITY");
-        if (!target_quality || target_quality[0] == '\0')
-            return {};
-        if (path.ends_with("_vr.m3u8"sv))
+        if (path.ends_with("_vr.m3u8"sv)) {
+            if (!target_quality || target_quality[0] == '\0')
+                target_quality = "1440p60";
             normalized_path_base = path.substring_view(0, path.length() - ".m3u8"sv.length());
-        else if (path.ends_with("_vr_720p60.m3u8"sv))
+        } else if (!target_quality || target_quality[0] == '\0') {
+            return {};
+        } else if (path.ends_with("_vr_720p60.m3u8"sv)) {
             normalized_path_base = path.substring_view(0, path.length() - "_720p60.m3u8"sv.length());
-        else if (path.ends_with("_vr_1440p60.m3u8"sv))
+        } else if (path.ends_with("_vr_1440p60.m3u8"sv)) {
             normalized_path_base = path.substring_view(0, path.length() - "_1440p60.m3u8"sv.length());
-        else if (path.ends_with("_vr_2160p60.m3u8"sv))
+        } else if (path.ends_with("_vr_2160p60.m3u8"sv)) {
             normalized_path_base = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
+        }
     } else {
         target_quality = getenv("MUNDO_HLS_AUX_QUALITY");
         if (!target_quality || target_quality[0] == '\0')
