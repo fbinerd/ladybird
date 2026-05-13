@@ -20,6 +20,7 @@
 #include <core/SkYUVAPixmaps.h>
 #include <gpu/ganesh/GrDirectContext.h>
 #include <gpu/ganesh/SkImageGanesh.h>
+#include <stdlib.h>
 
 namespace Gfx {
 
@@ -215,6 +216,50 @@ static void export_raster_bitmap_directly(Bitmap const& bitmap, ByteBuffer& buff
     }
 }
 
+static int max_large_video_raster_width()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_MAX_RASTER_WIDTH");
+    if (!raw_value)
+        return 1920;
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return 0;
+
+    return max(value, 320);
+}
+
+static ErrorOr<NonnullRefPtr<Bitmap>> downscale_large_video_bitmap_if_needed(NonnullRefPtr<Bitmap> bitmap)
+{
+    auto max_width = max_large_video_raster_width();
+    if (max_width == 0 || bitmap->width() <= max_width)
+        return bitmap;
+
+    auto scaled_height = max(1, static_cast<int>((static_cast<i64>(bitmap->height()) * max_width) / bitmap->width()));
+    auto scaled_bitmap = TRY(bitmap->scaled(max_width, scaled_height, ScalingMode::Bilinear));
+
+    static size_t s_downscaled_large_video_frame_count { 0 };
+    auto count = ++s_downscaled_large_video_frame_count;
+    if (count <= 8 || count % 120 == 0) {
+        dbgln("MUNDO_IMMUTABLE_BITMAP yuv_large_downscale count={} from={}x{} to={}x{}",
+            count, bitmap->width(), bitmap->height(), scaled_bitmap->width(), scaled_bitmap->height());
+    }
+
+    return scaled_bitmap;
+}
+
+static Optional<IntSize> scaled_large_video_size(IntSize size)
+{
+    auto max_width = max_large_video_raster_width();
+    if (max_width == 0 || size.width() <= max_width)
+        return {};
+
+    return IntSize {
+        max_width,
+        max(1, static_cast<int>((static_cast<i64>(size.height()) * max_width) / size.width()))
+    };
+}
+
 ErrorOr<BitmapExportResult> ImmutableBitmap::export_to_byte_buffer(ExportFormat format, int flags, Optional<int> target_width, Optional<int> target_height) const
 {
     if (!m_impl->bitmap && SkiaBackendContext::the() && !ensure_sk_image(*SkiaBackendContext::the()))
@@ -311,10 +356,29 @@ ErrorOr<NonnullRefPtr<ImmutableBitmap>> ImmutableBitmap::create_from_yuv(Nonnull
     // expensive and currently fragile for live VR streams.
     static size_t s_large_raster_video_frame_count { 0 };
     if (static_cast<i64>(size.width()) * size.height() >= 1920 * 1080) {
-        auto bitmap = TRY(yuv_data->to_bitmap());
+        auto bitmap = TRY([&]() -> ErrorOr<NonnullRefPtr<Bitmap>> {
+            auto scaled_size = scaled_large_video_size(size);
+            if (scaled_size.has_value()) {
+                auto scaled_bitmap = yuv_data->to_scaled_bitmap(scaled_size.value());
+                if (!scaled_bitmap.is_error()) {
+                    static size_t s_scaled_yuv_video_frame_count { 0 };
+                    auto scaled_count = ++s_scaled_yuv_video_frame_count;
+                    if (scaled_count <= 8 || scaled_count % 120 == 0) {
+                        dbgln("MUNDO_IMMUTABLE_BITMAP yuv_scaled_raster count={} from={}x{} to={}x{}",
+                            scaled_count, size.width(), size.height(), scaled_size.value().width(), scaled_size.value().height());
+                    }
+                    return scaled_bitmap.release_value();
+                }
+
+                dbgln("MUNDO_IMMUTABLE_BITMAP yuv_scaled_raster_fallback size={}x{} error={}", size.width(), size.height(), scaled_bitmap.error().string_literal());
+            }
+
+            auto bitmap = TRY(yuv_data->to_bitmap());
+            return TRY(downscale_large_video_bitmap_if_needed(move(bitmap)));
+        }());
         auto count = ++s_large_raster_video_frame_count;
         if (count <= 8 || count % 120 == 0)
-            dbgln("MUNDO_IMMUTABLE_BITMAP yuv_large_raster count={} size={}x{}", count, size.width(), size.height());
+            dbgln("MUNDO_IMMUTABLE_BITMAP yuv_large_raster count={} size={}x{} raster={}x{}", count, size.width(), size.height(), bitmap->width(), bitmap->height());
         return create(move(bitmap), move(color_space));
     }
 

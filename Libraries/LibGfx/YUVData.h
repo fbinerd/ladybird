@@ -45,6 +45,7 @@ public:
     Bytes v_data();
 
     ErrorOr<NonnullRefPtr<Bitmap>> to_bitmap() const;
+    ErrorOr<NonnullRefPtr<Bitmap>> to_scaled_bitmap(IntSize) const;
 
     SkYUVAPixmaps make_pixmaps() const;
 

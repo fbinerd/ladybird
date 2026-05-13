@@ -128,6 +128,118 @@ static FFI::YUVMatrix yuv_matrix_for_cicp(Media::CodingIndependentCodePoints con
     }
 }
 
+static u8 clamp_to_u8(int value)
+{
+    if (value < 0)
+        return 0;
+    if (value > 255)
+        return 255;
+    return static_cast<u8>(value);
+}
+
+static void convert_yuv_to_rgba(Media::CodingIndependentCodePoints const& cicp, u8 y, u8 u, u8 v, u8* dst)
+{
+    auto y_value = static_cast<int>(y);
+    auto u_offset = static_cast<int>(u) - 128;
+    auto v_offset = static_cast<int>(v) - 128;
+
+    int r;
+    int g;
+    int b;
+
+    if (cicp.video_full_range_flag() == Media::VideoFullRangeFlag::Full) {
+        switch (cicp.matrix_coefficients()) {
+        case Media::MatrixCoefficients::BT601:
+        case Media::MatrixCoefficients::BT470BG:
+            r = y_value + ((359 * v_offset) >> 8);
+            g = y_value - ((88 * u_offset + 183 * v_offset) >> 8);
+            b = y_value + ((454 * u_offset) >> 8);
+            break;
+        case Media::MatrixCoefficients::BT2020NonConstantLuminance:
+        case Media::MatrixCoefficients::BT2020ConstantLuminance:
+            r = y_value + ((377 * v_offset) >> 8);
+            g = y_value - ((42 * u_offset + 146 * v_offset) >> 8);
+            b = y_value + ((482 * u_offset) >> 8);
+            break;
+        case Media::MatrixCoefficients::BT709:
+        case Media::MatrixCoefficients::Unspecified:
+        default:
+            r = y_value + ((403 * v_offset) >> 8);
+            g = y_value - ((48 * u_offset + 120 * v_offset) >> 8);
+            b = y_value + ((475 * u_offset) >> 8);
+            break;
+        }
+    } else {
+        auto c = max(0, y_value - 16);
+        switch (cicp.matrix_coefficients()) {
+        case Media::MatrixCoefficients::BT601:
+        case Media::MatrixCoefficients::BT470BG:
+            r = (298 * c + 409 * v_offset + 128) >> 8;
+            g = (298 * c - 100 * u_offset - 208 * v_offset + 128) >> 8;
+            b = (298 * c + 516 * u_offset + 128) >> 8;
+            break;
+        case Media::MatrixCoefficients::BT2020NonConstantLuminance:
+        case Media::MatrixCoefficients::BT2020ConstantLuminance:
+            r = (298 * c + 430 * v_offset + 128) >> 8;
+            g = (298 * c - 48 * u_offset - 167 * v_offset + 128) >> 8;
+            b = (298 * c + 548 * u_offset + 128) >> 8;
+            break;
+        case Media::MatrixCoefficients::BT709:
+        case Media::MatrixCoefficients::Unspecified:
+        default:
+            r = (298 * c + 459 * v_offset + 128) >> 8;
+            g = (298 * c - 55 * u_offset - 136 * v_offset + 128) >> 8;
+            b = (298 * c + 541 * u_offset + 128) >> 8;
+            break;
+        }
+    }
+
+    dst[0] = clamp_to_u8(r);
+    dst[1] = clamp_to_u8(g);
+    dst[2] = clamp_to_u8(b);
+    dst[3] = 255;
+}
+
+ErrorOr<NonnullRefPtr<Bitmap>> YUVData::to_scaled_bitmap(IntSize target_size) const
+{
+    auto const& impl = *m_impl;
+    if (target_size.is_empty())
+        return Error::from_string_literal("YUV scaled bitmap target size is empty");
+
+    if (target_size == impl.size)
+        return to_bitmap();
+
+    if (impl.bit_depth > 8)
+        return Error::from_string_literal("Scaled YUV conversion supports only 8-bit data");
+
+    if (impl.cicp.matrix_coefficients() == Media::MatrixCoefficients::Identity)
+        return Error::from_string_literal("Scaled RGB YUV conversion is unsupported");
+
+    auto bitmap = TRY(Bitmap::create(BitmapFormat::RGBA8888, AlphaType::Premultiplied, target_size));
+    auto const source_width = static_cast<u32>(impl.size.width());
+    auto const source_height = static_cast<u32>(impl.size.height());
+    auto const target_width = static_cast<u32>(target_size.width());
+    auto const target_height = static_cast<u32>(target_size.height());
+    auto uv_size = impl.subsampling.subsampled_size(impl.size).to_type<u32>();
+
+    for (u32 row = 0; row < target_height; ++row) {
+        auto source_y = min((static_cast<u64>(row) * source_height) / target_height, static_cast<u64>(source_height - 1));
+        auto uv_y = source_y >> static_cast<u32>(impl.subsampling.y());
+        auto* dst_row = bitmap->scanline_u8(row);
+        auto const* y_row = impl.y_buffer.data() + source_y * source_width;
+        auto const* u_row = impl.u_buffer.data() + uv_y * uv_size.width();
+        auto const* v_row = impl.v_buffer.data() + uv_y * uv_size.width();
+
+        for (u32 col = 0; col < target_width; ++col) {
+            auto source_x = min((static_cast<u64>(col) * source_width) / target_width, static_cast<u64>(source_width - 1));
+            auto uv_x = source_x >> static_cast<u32>(impl.subsampling.x());
+            convert_yuv_to_rgba(impl.cicp, y_row[source_x], u_row[uv_x], v_row[uv_x], dst_row + col * 4);
+        }
+    }
+
+    return bitmap;
+}
+
 ErrorOr<NonnullRefPtr<Bitmap>> YUVData::to_bitmap() const
 {
     auto const& impl = *m_impl;
