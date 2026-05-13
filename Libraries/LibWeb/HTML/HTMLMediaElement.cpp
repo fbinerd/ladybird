@@ -83,10 +83,16 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
     auto query_offset = source.find('?');
     auto path = query_offset.has_value() ? source.substring_view(0, *query_offset) : source;
     auto query = query_offset.has_value() ? source.substring_view(*query_offset) : ""sv;
-    if (!path.ends_with("_vr.m3u8"sv))
+
+    Optional<StringView> normalized_path_base;
+    if (path.ends_with("_vr.m3u8"sv))
+        normalized_path_base = path.substring_view(0, path.length() - 5);
+    else if (path.ends_with("_vr_2160p60.m3u8"sv))
+        normalized_path_base = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
+    else
         return {};
 
-    auto normalized = MUST(String::formatted("{}_1440p60.m3u8{}", path.substring_view(0, path.length() - 5), query));
+    auto normalized = MUST(String::formatted("{}_1440p60.m3u8{}", *normalized_path_base, query));
     dbgln("MUNDO_MEDIA_ELEMENT normalized_hls_source original={} normalized={}", source, normalized);
     return normalized;
 }
