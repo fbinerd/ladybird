@@ -11,10 +11,35 @@
 
 #include "DisplayingVideoSink.h"
 
+#include <stdlib.h>
+
 namespace Media {
 
-static constexpr auto max_late_frame_age = AK::Duration::from_milliseconds(500);
-static constexpr size_t max_consecutive_late_frame_drops = 2;
+static AK::Duration late_frame_age_threshold()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_LATE_DROP_MS");
+    if (!raw_value)
+        return AK::Duration::from_milliseconds(250);
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return AK::Duration::max();
+
+    return AK::Duration::from_milliseconds(max(value, 16));
+}
+
+static size_t max_consecutive_late_frame_drops()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_MAX_LATE_DROPS");
+    if (!raw_value)
+        return 12;
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return 0;
+
+    return static_cast<size_t>(value);
+}
 
 ErrorOr<NonnullRefPtr<DisplayingVideoSink>> DisplayingVideoSink::try_create(NonnullRefPtr<MediaTimeProvider> const& time_provider)
 {
@@ -90,11 +115,13 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
             break;
 
         auto frame_age = current_time - m_next_frame.timestamp();
-        if (m_current_frame != nullptr && frame_age > max_late_frame_age && m_consecutive_late_frame_drop_count < max_consecutive_late_frame_drops) {
+        auto late_frame_threshold = late_frame_age_threshold();
+        auto late_frame_drop_limit = max_consecutive_late_frame_drops();
+        if (m_current_frame != nullptr && frame_age > late_frame_threshold && m_consecutive_late_frame_drop_count < late_frame_drop_limit) {
             m_dropped_late_frame_count++;
             m_consecutive_late_frame_drop_count++;
             if (m_dropped_late_frame_count <= 8 || m_dropped_late_frame_count % 60 == 0)
-                dbgln("MUNDO_MEDIA_VIDEO_SINK drop_late_frame count={} consecutive={} track_id={} current_time={}ms frame_time={}ms age={}ms threshold={}ms", m_dropped_late_frame_count, m_consecutive_late_frame_drop_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.timestamp().to_milliseconds(), frame_age.to_milliseconds(), max_late_frame_age.to_milliseconds());
+                dbgln("MUNDO_MEDIA_VIDEO_SINK drop_late_frame count={} consecutive={} limit={} track_id={} current_time={}ms frame_time={}ms age={}ms threshold={}ms", m_dropped_late_frame_count, m_consecutive_late_frame_drop_count, late_frame_drop_limit, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.timestamp().to_milliseconds(), frame_age.to_milliseconds(), late_frame_threshold.to_milliseconds());
             m_next_frame.clear();
             continue;
         }

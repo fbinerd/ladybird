@@ -77,6 +77,7 @@ private:
     mutable NonnullOwnPtr<ImmutableBitmapImpl> m_impl;
 
     explicit ImmutableBitmap(NonnullOwnPtr<ImmutableBitmapImpl>&&);
+    static ErrorOr<NonnullRefPtr<ImmutableBitmap>> create_from_gpu_yuv(NonnullOwnPtr<YUVData>, ColorSpace, NonnullRefPtr<SkiaBackendContext>);
 
     void lock_context();
     void unlock_context();

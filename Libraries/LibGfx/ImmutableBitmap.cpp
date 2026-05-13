@@ -21,6 +21,7 @@
 #include <gpu/ganesh/GrDirectContext.h>
 #include <gpu/ganesh/SkImageGanesh.h>
 #include <stdlib.h>
+#include <string.h>
 
 namespace Gfx {
 
@@ -220,7 +221,7 @@ static int max_large_video_raster_width()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_MAX_RASTER_WIDTH");
     if (!raw_value)
-        return 1920;
+        return 1280;
 
     auto value = atoi(raw_value);
     if (value <= 0)
@@ -258,6 +259,99 @@ static Optional<IntSize> scaled_large_video_size(IntSize size)
         max_width,
         max(1, static_cast<int>((static_cast<i64>(size.height()) * max_width) / size.width()))
     };
+}
+
+enum class YUVFrameBackend {
+    Auto,
+    Software,
+    Gpu,
+};
+
+static YUVFrameBackend yuv_frame_backend()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_BACKEND");
+    if (!raw_value)
+        return YUVFrameBackend::Auto;
+
+    if (!strcmp(raw_value, "software") || !strcmp(raw_value, "cpu"))
+        return YUVFrameBackend::Software;
+    if (!strcmp(raw_value, "gpu") || !strcmp(raw_value, "hardware"))
+        return YUVFrameBackend::Gpu;
+
+    return YUVFrameBackend::Auto;
+}
+
+static bool is_large_video_frame(IntSize size)
+{
+    return static_cast<i64>(size.width()) * size.height() >= 1920 * 1080;
+}
+
+static ErrorOr<NonnullRefPtr<ImmutableBitmap>> create_from_rasterized_yuv(NonnullOwnPtr<YUVData> yuv_data, ColorSpace color_space)
+{
+    auto size = yuv_data->size();
+    auto bitmap = TRY([&]() -> ErrorOr<NonnullRefPtr<Bitmap>> {
+        auto scaled_size = scaled_large_video_size(size);
+        if (scaled_size.has_value()) {
+            auto scaled_bitmap = yuv_data->to_scaled_bitmap(scaled_size.value());
+            if (!scaled_bitmap.is_error()) {
+                static size_t s_scaled_yuv_video_frame_count { 0 };
+                auto scaled_count = ++s_scaled_yuv_video_frame_count;
+                if (scaled_count <= 8 || scaled_count % 120 == 0) {
+                    dbgln("MUNDO_IMMUTABLE_BITMAP yuv_scaled_raster count={} from={}x{} to={}x{} backend=software",
+                        scaled_count, size.width(), size.height(), scaled_size.value().width(), scaled_size.value().height());
+                }
+                return scaled_bitmap.release_value();
+            }
+
+            dbgln("MUNDO_IMMUTABLE_BITMAP yuv_scaled_raster_fallback size={}x{} error={}", size.width(), size.height(), scaled_bitmap.error().string_literal());
+        }
+
+        auto bitmap = TRY(yuv_data->to_bitmap());
+        return TRY(downscale_large_video_bitmap_if_needed(move(bitmap)));
+    }());
+
+    static size_t s_large_raster_video_frame_count { 0 };
+    auto count = ++s_large_raster_video_frame_count;
+    if (count <= 8 || count % 120 == 0)
+        dbgln("MUNDO_IMMUTABLE_BITMAP yuv_large_raster count={} size={}x{} raster={}x{} backend=software", count, size.width(), size.height(), bitmap->width(), bitmap->height());
+    return ImmutableBitmap::create(move(bitmap), move(color_space));
+}
+
+ErrorOr<NonnullRefPtr<ImmutableBitmap>> ImmutableBitmap::create_from_gpu_yuv(NonnullOwnPtr<YUVData> yuv_data, ColorSpace color_space, NonnullRefPtr<SkiaBackendContext> context)
+{
+    auto size = yuv_data->size();
+    auto* gr_context = context->sk_context();
+    if (!gr_context)
+        return Error::from_string_literal("No GPU context available for YUV frame");
+
+    if (yuv_data->bit_depth() > 8)
+        yuv_data->expand_samples_to_full_16_bit_range();
+
+    context->lock();
+    auto sk_image = SkImages::TextureFromYUVAPixmaps(
+        gr_context,
+        yuv_data->make_pixmaps(),
+        skgpu::Mipmapped::kNo,
+        false,
+        color_space.color_space<sk_sp<SkColorSpace>>());
+    context->unlock();
+
+    if (!sk_image)
+        return Error::from_string_literal("Failed to upload YUV data");
+
+    static size_t s_gpu_yuv_video_frame_count { 0 };
+    auto count = ++s_gpu_yuv_video_frame_count;
+    if (count <= 8 || count % 120 == 0)
+        dbgln("MUNDO_IMMUTABLE_BITMAP yuv_gpu_texture count={} size={}x{} backend=gpu", count, size.width(), size.height());
+
+    ImmutableBitmapImpl impl {
+        .context = context,
+        .sk_image = move(sk_image),
+        .sk_bitmap = {},
+        .bitmap = nullptr,
+        .color_space = {},
+    };
+    return adopt_ref(*new ImmutableBitmap(make<ImmutableBitmapImpl>(move(impl))));
 }
 
 ErrorOr<BitmapExportResult> ImmutableBitmap::export_to_byte_buffer(ExportFormat format, int flags, Optional<int> target_width, Optional<int> target_height) const
@@ -350,69 +444,26 @@ ErrorOr<NonnullRefPtr<ImmutableBitmap>> ImmutableBitmap::create_from_yuv(Nonnull
     auto color_space = TRY(ColorSpace::from_cicp(yuv_data->cicp()));
     auto size = yuv_data->size();
 
-    // Large video frames are commonly uploaded back into WebGL by sites using
-    // requestVideoFrameCallback. Keeping these frames as GPU-backed SkImages
-    // makes that path read pixels back through Skia/Vulkan, which is both
-    // expensive and currently fragile for live VR streams.
-    static size_t s_large_raster_video_frame_count { 0 };
-    if (static_cast<i64>(size.width()) * size.height() >= 1920 * 1080) {
-        auto bitmap = TRY([&]() -> ErrorOr<NonnullRefPtr<Bitmap>> {
-            auto scaled_size = scaled_large_video_size(size);
-            if (scaled_size.has_value()) {
-                auto scaled_bitmap = yuv_data->to_scaled_bitmap(scaled_size.value());
-                if (!scaled_bitmap.is_error()) {
-                    static size_t s_scaled_yuv_video_frame_count { 0 };
-                    auto scaled_count = ++s_scaled_yuv_video_frame_count;
-                    if (scaled_count <= 8 || scaled_count % 120 == 0) {
-                        dbgln("MUNDO_IMMUTABLE_BITMAP yuv_scaled_raster count={} from={}x{} to={}x{}",
-                            scaled_count, size.width(), size.height(), scaled_size.value().width(), scaled_size.value().height());
-                    }
-                    return scaled_bitmap.release_value();
-                }
-
-                dbgln("MUNDO_IMMUTABLE_BITMAP yuv_scaled_raster_fallback size={}x{} error={}", size.width(), size.height(), scaled_bitmap.error().string_literal());
-            }
-
-            auto bitmap = TRY(yuv_data->to_bitmap());
-            return TRY(downscale_large_video_bitmap_if_needed(move(bitmap)));
-        }());
-        auto count = ++s_large_raster_video_frame_count;
-        if (count <= 8 || count % 120 == 0)
-            dbgln("MUNDO_IMMUTABLE_BITMAP yuv_large_raster count={} size={}x{} raster={}x{}", count, size.width(), size.height(), bitmap->width(), bitmap->height());
-        return create(move(bitmap), move(color_space));
-    }
-
     auto context = SkiaBackendContext::the();
-    auto* gr_context = context ? context->sk_context() : nullptr;
+    auto backend = yuv_frame_backend();
 
-    if (!gr_context) {
-        auto bitmap = TRY(yuv_data->to_bitmap());
-        return create(move(bitmap), move(color_space));
+    if (backend == YUVFrameBackend::Software)
+        return create_from_rasterized_yuv(move(yuv_data), move(color_space));
+
+    if (backend == YUVFrameBackend::Gpu) {
+        if (!context)
+            return create_from_rasterized_yuv(move(yuv_data), move(color_space));
+        return create_from_gpu_yuv(move(yuv_data), move(color_space), *context);
     }
 
-    if (yuv_data->bit_depth() > 8)
-        yuv_data->expand_samples_to_full_16_bit_range();
+    // Large video frames are commonly uploaded back into WebGL by sites using
+    // requestVideoFrameCallback. The current GPU-backed SkImage path can force
+    // expensive readbacks there, so auto mode keeps large live-video frames on
+    // the software/scaled path until a true hardware/zero-copy backend exists.
+    if (is_large_video_frame(size) || !context)
+        return create_from_rasterized_yuv(move(yuv_data), move(color_space));
 
-    context->lock();
-    auto sk_image = SkImages::TextureFromYUVAPixmaps(
-        gr_context,
-        yuv_data->make_pixmaps(),
-        skgpu::Mipmapped::kNo,
-        false,
-        color_space.color_space<sk_sp<SkColorSpace>>());
-    context->unlock();
-
-    if (!sk_image)
-        return Error::from_string_literal("Failed to upload YUV data");
-
-    ImmutableBitmapImpl impl {
-        .context = context,
-        .sk_image = move(sk_image),
-        .sk_bitmap = {},
-        .bitmap = nullptr,
-        .color_space = {},
-    };
-    return adopt_ref(*new ImmutableBitmap(make<ImmutableBitmapImpl>(move(impl))));
+    return create_from_gpu_yuv(move(yuv_data), move(color_space), *context);
 }
 
 bool ImmutableBitmap::ensure_sk_image(SkiaBackendContext& context) const
