@@ -77,7 +77,7 @@ static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& cur
 
 static Optional<String> mundo_normalized_hls_source(StringView source)
 {
-    if (!source.contains("edge-hls.doppiocdn.org/hls/"sv) || !source.contains("_vr/master/"sv))
+    if (!source.contains("edge-hls.doppiocdn.org/hls/"sv))
         return {};
 
     auto query_offset = source.find('?');
@@ -85,14 +85,26 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
     auto query = query_offset.has_value() ? source.substring_view(*query_offset) : ""sv;
 
     Optional<StringView> normalized_path_base;
-    if (path.ends_with("_vr.m3u8"sv))
-        normalized_path_base = path.substring_view(0, path.length() - 5);
-    else if (path.ends_with("_vr_2160p60.m3u8"sv))
-        normalized_path_base = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
-    else
+    StringView target_quality;
+    if (path.contains("_vr/master/"sv)) {
+        target_quality = "_720p60"sv;
+        if (path.ends_with("_vr.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - ".m3u8"sv.length());
+        else if (path.ends_with("_vr_2160p60.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
+        else if (path.ends_with("_vr_1440p60.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_1440p60.m3u8"sv.length());
+    } else {
+        target_quality = "_160p"sv;
+        if (path.ends_with("_auto.m3u8"sv))
+            normalized_path_base = path.substring_view(0, path.length() - "_auto.m3u8"sv.length());
+    }
+    if (!normalized_path_base.has_value())
         return {};
 
-    auto normalized = MUST(String::formatted("{}_1440p60.m3u8{}", *normalized_path_base, query));
+    auto normalized = MUST(String::formatted("{}{}.m3u8{}", *normalized_path_base, target_quality, query));
+    if (normalized == source)
+        return {};
     dbgln("MUNDO_MEDIA_ELEMENT normalized_hls_source original={} normalized={}", source, normalized);
     return normalized;
 }

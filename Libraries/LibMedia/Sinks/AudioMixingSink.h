@@ -93,6 +93,7 @@ private:
     double m_volume { 1 };
 
     HashMap<Track, TrackMixingData> m_track_mixing_datas;
+    u64 m_write_callback_count { 0 };
     Atomic<i64, MemoryOrder::memory_order_relaxed> m_next_sample_to_write { 0 };
 
     AK::Duration m_last_stream_time;

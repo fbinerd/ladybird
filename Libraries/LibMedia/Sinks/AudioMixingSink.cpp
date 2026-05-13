@@ -44,15 +44,19 @@ void AudioMixingSink::set_provider(Track const& track, RefPtr<AudioDataProvider>
 {
     Threading::MutexLocker locker { m_mutex };
     m_track_mixing_datas.remove(track);
-    if (provider == nullptr)
+    if (provider == nullptr) {
+        dbgln("MUNDO_AUDIO_SINK clear_provider track_id={}", track.identifier());
         return;
+    }
 
     // The provider must have its output sample specification set before it starts decoding, or
     // we'll drop some samples due to a mismatch.
     m_track_mixing_datas.set(track, TrackMixingData(*provider));
+    dbgln("MUNDO_AUDIO_SINK set_provider track_id={} sample_spec_valid={}", track.identifier(), m_sample_specification.is_valid());
     if (m_sample_specification.is_valid()) {
         provider->set_output_sample_specification(m_sample_specification);
         provider->start();
+        dbgln("MUNDO_AUDIO_SINK provider_started track_id={} sample_rate={} channels={}", track.identifier(), m_sample_specification.sample_rate(), m_sample_specification.channel_count());
     }
 }
 
@@ -94,10 +98,13 @@ void AudioMixingSink::create_playback_stream()
 
         Threading::MutexLocker locker { self->m_mutex };
         self->m_sample_specification = stream->sample_specification();
+        dbgln("MUNDO_AUDIO_SINK playback_stream_ready sample_rate={} channels={} providers={} playing={} volume={}",
+            self->m_sample_specification.sample_rate(), self->m_sample_specification.channel_count(), self->m_track_mixing_datas.size(), self->m_playing, self->m_volume);
 
         for (auto& [track, track_data] : self->m_track_mixing_datas) {
             track_data.provider->set_output_sample_specification(self->m_sample_specification);
             track_data.provider->start();
+            dbgln("MUNDO_AUDIO_SINK provider_started track_id={} sample_rate={} channels={}", track.identifier(), self->m_sample_specification.sample_rate(), self->m_sample_specification.channel_count());
         }
 
         if (self->m_playing)
@@ -163,9 +170,14 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
     sample_count = max(samples_end - buffer_start, 0);
     auto write_size = sample_count * channel_count;
 
-    if (sample_count == 0)
+    if (sample_count == 0) {
+        ++m_write_callback_count;
+        if (m_write_callback_count <= 12 || m_write_callback_count % 120 == 0)
+            dbgln("MUNDO_AUDIO_SINK write count={} requested={} wrote=0 buffering={} providers={} volume={}", m_write_callback_count, buffer.size() / channel_count, buffering, m_track_mixing_datas.size(), m_volume);
         return buffer;
+    }
 
+    bool wrote_nonzero_sample = false;
     for (auto& [track, track_data] : m_track_mixing_datas) {
         auto next_sample = buffer_start;
 
@@ -224,6 +236,10 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
 
             for (size_t i = 0; i < write_count; i++)
                 buffer[index_in_buffer + i] += current_block.data()[index_in_block + i];
+            for (size_t i = 0; i < write_count && !wrote_nonzero_sample; i++) {
+                if (current_block.data()[index_in_block + i] != 0.0f)
+                    wrote_nonzero_sample = true;
+            }
 
             auto write_end = index_in_block + write_count;
             if (write_end == current_block.data_count()) {
@@ -241,6 +257,10 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
     }
 
     m_next_sample_to_write += static_cast<i64>(sample_count);
+    ++m_write_callback_count;
+    if (m_write_callback_count <= 12 || m_write_callback_count % 120 == 0)
+        dbgln("MUNDO_AUDIO_SINK write count={} requested={} wrote={} buffering={} providers={} nonzero={} volume={} next_sample={}",
+            m_write_callback_count, buffer.size() / channel_count, sample_count, buffering, m_track_mixing_datas.size(), wrote_nonzero_sample, m_volume, m_next_sample_to_write.load());
     return buffer;
 }
 
@@ -262,6 +282,7 @@ AK::Duration AudioMixingSink::current_time() const
 void AudioMixingSink::resume()
 {
     m_playing = true;
+    dbgln("MUNDO_AUDIO_SINK resume playback_stream={} temporary_time={}", m_playback_stream != nullptr, m_temporary_time.has_value());
 
     // If we're in the middle of the set_time() callbacks, let those take care of resuming.
     if (m_temporary_time.has_value())
@@ -292,6 +313,7 @@ void AudioMixingSink::resume()
 void AudioMixingSink::pause()
 {
     m_playing = false;
+    dbgln("MUNDO_AUDIO_SINK pause playback_stream={}", m_playback_stream != nullptr);
 
     if (!m_playback_stream)
         return;
@@ -384,6 +406,7 @@ void AudioMixingSink::clear_track_data(Track const& track)
 void AudioMixingSink::set_volume(double volume)
 {
     m_volume = volume;
+    dbgln("MUNDO_AUDIO_SINK set_volume volume={} playback_stream={}", m_volume, m_playback_stream != nullptr);
 
     if (m_playback_stream) {
         m_playback_stream->set_volume(m_volume)
