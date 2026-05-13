@@ -294,6 +294,20 @@ RefPtr<Gfx::Bitmap const> ImmutableBitmap::bitmap() const
 ErrorOr<NonnullRefPtr<ImmutableBitmap>> ImmutableBitmap::create_from_yuv(NonnullOwnPtr<YUVData> yuv_data)
 {
     auto color_space = TRY(ColorSpace::from_cicp(yuv_data->cicp()));
+    auto size = yuv_data->size();
+
+    // Large video frames are commonly uploaded back into WebGL by sites using
+    // requestVideoFrameCallback. Keeping these frames as GPU-backed SkImages
+    // makes that path read pixels back through Skia/Vulkan, which is both
+    // expensive and currently fragile for live VR streams.
+    static size_t s_large_raster_video_frame_count { 0 };
+    if (static_cast<i64>(size.width()) * size.height() >= 1920 * 1080) {
+        auto bitmap = TRY(yuv_data->to_bitmap());
+        auto count = ++s_large_raster_video_frame_count;
+        if (count <= 8 || count % 120 == 0)
+            dbgln("MUNDO_IMMUTABLE_BITMAP yuv_large_raster count={} size={}x{}", count, size.width(), size.height());
+        return create(move(bitmap), move(color_space));
+    }
 
     auto context = SkiaBackendContext::the();
     auto* gr_context = context ? context->sk_context() : nullptr;
