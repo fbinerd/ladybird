@@ -13,6 +13,9 @@
 
 namespace Media {
 
+static constexpr auto max_late_frame_age = AK::Duration::from_milliseconds(500);
+static constexpr size_t max_consecutive_late_frame_drops = 2;
+
 ErrorOr<NonnullRefPtr<DisplayingVideoSink>> DisplayingVideoSink::try_create(NonnullRefPtr<MediaTimeProvider> const& time_provider)
 {
     return TRY(try_make_ref_counted<DisplayingVideoSink>(time_provider));
@@ -85,7 +88,19 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         }
         if (m_next_frame.timestamp() > current_time)
             break;
+
+        auto frame_age = current_time - m_next_frame.timestamp();
+        if (m_current_frame != nullptr && frame_age > max_late_frame_age && m_consecutive_late_frame_drop_count < max_consecutive_late_frame_drops) {
+            m_dropped_late_frame_count++;
+            m_consecutive_late_frame_drop_count++;
+            if (m_dropped_late_frame_count <= 8 || m_dropped_late_frame_count % 60 == 0)
+                dbgln("MUNDO_MEDIA_VIDEO_SINK drop_late_frame count={} consecutive={} track_id={} current_time={}ms frame_time={}ms age={}ms threshold={}ms", m_dropped_late_frame_count, m_consecutive_late_frame_drop_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.timestamp().to_milliseconds(), frame_age.to_milliseconds(), max_late_frame_age.to_milliseconds());
+            m_next_frame.clear();
+            continue;
+        }
+
         m_current_frame = m_next_frame.release_image();
+        m_consecutive_late_frame_drop_count = 0;
         m_presented_frame_count++;
         if (m_presented_frame_count <= 8 || m_presented_frame_count % 60 == 0)
             dbgln("MUNDO_MEDIA_VIDEO_SINK present_frame count={} track_id={} current_time={}ms frame={} size={}x{}", m_presented_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), static_cast<void const*>(m_current_frame.ptr()), m_current_frame->size().width(), m_current_frame->size().height());
