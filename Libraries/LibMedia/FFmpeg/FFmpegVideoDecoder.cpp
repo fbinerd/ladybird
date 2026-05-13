@@ -12,7 +12,139 @@
 #include "FFmpegHelpers.h"
 #include "FFmpegVideoDecoder.h"
 
+#include <stdlib.h>
+#include <string.h>
+
+extern "C" {
+#include <libavutil/hwcontext.h>
+}
+
 namespace Media::FFmpeg {
+
+enum class VideoDecoderBackend {
+    Auto,
+    Software,
+    Vaapi,
+    Nvdec,
+};
+
+static VideoDecoderBackend requested_video_decoder_backend()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_DECODER_BACKEND");
+    if (!raw_value)
+        return VideoDecoderBackend::Auto;
+
+    if (!strcmp(raw_value, "software") || !strcmp(raw_value, "cpu"))
+        return VideoDecoderBackend::Software;
+    if (!strcmp(raw_value, "vaapi"))
+        return VideoDecoderBackend::Vaapi;
+    if (!strcmp(raw_value, "nvdec") || !strcmp(raw_value, "cuda"))
+        return VideoDecoderBackend::Nvdec;
+
+    return VideoDecoderBackend::Auto;
+}
+
+static StringView video_decoder_backend_name(VideoDecoderBackend backend)
+{
+    switch (backend) {
+    case VideoDecoderBackend::Auto:
+        return "auto"sv;
+    case VideoDecoderBackend::Software:
+        return "software"sv;
+    case VideoDecoderBackend::Vaapi:
+        return "vaapi"sv;
+    case VideoDecoderBackend::Nvdec:
+        return "nvdec"sv;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static AVHWDeviceType hw_device_type_for_backend(VideoDecoderBackend backend)
+{
+    switch (backend) {
+    case VideoDecoderBackend::Vaapi:
+        return AV_HWDEVICE_TYPE_VAAPI;
+    case VideoDecoderBackend::Nvdec:
+        return AV_HWDEVICE_TYPE_CUDA;
+    case VideoDecoderBackend::Auto:
+    case VideoDecoderBackend::Software:
+        return AV_HWDEVICE_TYPE_NONE;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static AVPixelFormat hw_pixel_format_for_backend(VideoDecoderBackend backend)
+{
+    switch (backend) {
+    case VideoDecoderBackend::Vaapi:
+        return AV_PIX_FMT_VAAPI;
+    case VideoDecoderBackend::Nvdec:
+        return AV_PIX_FMT_CUDA;
+    case VideoDecoderBackend::Auto:
+    case VideoDecoderBackend::Software:
+        return AV_PIX_FMT_NONE;
+    }
+    VERIFY_NOT_REACHED();
+}
+
+static bool codec_has_hw_config(AVCodec const* codec, VideoDecoderBackend backend)
+{
+    auto device_type = hw_device_type_for_backend(backend);
+    auto pixel_format = hw_pixel_format_for_backend(backend);
+    if (device_type == AV_HWDEVICE_TYPE_NONE || pixel_format == AV_PIX_FMT_NONE)
+        return false;
+
+    for (int index = 0;; ++index) {
+        auto const* config = avcodec_get_hw_config(codec, index);
+        if (!config)
+            return false;
+
+        if (config->device_type == device_type && config->pix_fmt == pixel_format && (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
+            return true;
+    }
+}
+
+static bool can_create_hw_device(VideoDecoderBackend backend)
+{
+    auto device_type = hw_device_type_for_backend(backend);
+    if (device_type == AV_HWDEVICE_TYPE_NONE)
+        return false;
+
+    AVBufferRef* device_context = nullptr;
+    auto result = av_hwdevice_ctx_create(&device_context, device_type, nullptr, nullptr, 0);
+    if (device_context)
+        av_buffer_unref(&device_context);
+    return result >= 0;
+}
+
+static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecoderBackend backend)
+{
+    if (backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Software)
+        return;
+
+    auto ffmpeg_has_config = codec_has_hw_config(codec, backend);
+    auto device_available = ffmpeg_has_config && can_create_hw_device(backend);
+    dbgln("MUNDO_MEDIA_FFMPEG hwaccel_probe backend={} codec={} ffmpeg_config={} device_available={} enabled=false reason=hardware_frame_path_not_implemented",
+        video_decoder_backend_name(backend), codec_id, ffmpeg_has_config, device_available);
+}
+
+static void log_video_decoder_backend_probe(AVCodec const* codec, CodecID codec_id)
+{
+    auto requested_backend = requested_video_decoder_backend();
+    dbgln("MUNDO_MEDIA_FFMPEG video_decoder_backend requested={} codec={} active=software",
+        video_decoder_backend_name(requested_backend), codec_id);
+
+    if (requested_backend == VideoDecoderBackend::Software)
+        return;
+
+    if (requested_backend == VideoDecoderBackend::Auto) {
+        log_hwaccel_probe(codec, codec_id, VideoDecoderBackend::Nvdec);
+        log_hwaccel_probe(codec, codec_id, VideoDecoderBackend::Vaapi);
+        return;
+    }
+
+    log_hwaccel_probe(codec, codec_id, requested_backend);
+}
 
 static AVPixelFormat negotiate_output_format(AVCodecContext*, AVPixelFormat const* formats)
 {
@@ -56,6 +188,8 @@ DecoderErrorOr<NonnullOwnPtr<FFmpegVideoDecoder>> FFmpegVideoDecoder::try_create
     auto const* codec = avcodec_find_decoder(ff_codec_id);
     if (!codec)
         return DecoderError::format(DecoderErrorCategory::NotImplemented, "Could not find FFmpeg decoder for codec {}", codec_id);
+
+    log_video_decoder_backend_probe(codec, codec_id);
 
     codec_context = avcodec_alloc_context3(codec);
     if (!codec_context)
