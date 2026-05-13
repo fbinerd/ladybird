@@ -59,7 +59,18 @@ static DecoderErrorOr<bool> stream_looks_like_hls(MediaStreamCursor& cursor)
     return probe.starts_with("#EXTM3U"sv) && probe.contains("#EXT-X-"sv);
 }
 
-static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_context, AVIOContext& io_context, bool force_hls_demuxer)
+static void discard_unselected_streams(AVFormatContext& format_context, Optional<u32> selected_stream_index)
+{
+    if (!selected_stream_index.has_value())
+        return;
+
+    for (u32 i = 0; i < format_context.nb_streams; ++i)
+        format_context.streams[i]->discard = i == selected_stream_index.value() ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
+
+    dbgln("MUNDO_MEDIA_FFMPEG discard_unselected_streams selected={} streams={}", selected_stream_index.value(), format_context.nb_streams);
+}
+
+static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_context, AVIOContext& io_context, bool force_hls_demuxer, Optional<u32> selected_stream_index = OptionalNone {})
 {
     format_context = avformat_alloc_context();
     if (format_context == nullptr)
@@ -77,12 +88,16 @@ static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_c
         return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to open input for format parsing"sv);
     }
 
+    discard_unselected_streams(*format_context, selected_stream_index);
+
     // Read stream info; doing this is required for headerless formats like MPEG
     auto find_stream_info_result = avformat_find_stream_info(format_context, nullptr);
     if (find_stream_info_result < 0) {
         dbgln("MUNDO_MEDIA_FFMPEG find_stream_info failed error={} format={}", find_stream_info_result, format_context->iformat ? format_context->iformat->name : "(null)");
         return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to find stream info"sv);
     }
+
+    discard_unselected_streams(*format_context, selected_stream_index);
 
     dbgln("MUNDO_MEDIA_FFMPEG stream_info format={} streams={} duration={} force_hls={}",
         format_context->iformat ? format_context->iformat->name : "(null)",
@@ -255,7 +270,7 @@ DecoderErrorOr<void> FFmpegDemuxer::create_context_for_track(Track const& track)
 
     auto track_context = make<TrackContext>(move(cursor), move(io_context), force_hls_demuxer);
 
-    TRY(initialize_format_context(track_context->format_context, *track_context->io_context->avio_context(), force_hls_demuxer));
+    TRY(initialize_format_context(track_context->format_context, *track_context->io_context->avio_context(), force_hls_demuxer, track.identifier()));
 
     track_context->packet = av_packet_alloc();
     VERIFY(track_context->packet != nullptr);
@@ -293,7 +308,7 @@ DecoderErrorOr<void> FFmpegDemuxer::recreate_context_for_track(Track const& trac
     track_context.io_context = move(io_context);
     track_context.is_seekable = true;
 
-    TRY(initialize_format_context(track_context.format_context, *track_context.io_context->avio_context(), track_context.force_hls_demuxer));
+    TRY(initialize_format_context(track_context.format_context, *track_context.io_context->avio_context(), track_context.force_hls_demuxer, track.identifier()));
     track_context.hls_reopen_count++;
     track_context.context_was_recreated = true;
     dbgln("MUNDO_MEDIA_FFMPEG hls_reopen track_id={} count={}", track.identifier(), track_context.hls_reopen_count);
