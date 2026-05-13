@@ -13,8 +13,54 @@
 #include <LibWeb/MediaCapabilitiesAPI/MediaCapabilities.h>
 #include <LibWeb/MimeSniff/MimeType.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
+#include <stdlib.h>
+#include <string.h>
 
 namespace Web::MediaCapabilitiesAPI {
+
+static bool mundo_nvdec_backend_requested()
+{
+    auto* backend = getenv("MUNDO_VIDEO_DECODER_BACKEND");
+    if (!backend)
+        return false;
+
+    auto backend_view = StringView { backend, strlen(backend) };
+    return backend_view.equals_ignoring_ascii_case("nvdec"sv) || backend_view.equals_ignoring_ascii_case("cuda"sv);
+}
+
+static bool codec_list_contains_prefix(StringView codecs, StringView prefix)
+{
+    bool matches = false;
+    codecs.for_each_split_view(',', SplitBehavior::Nothing, [&](auto codec) {
+        codec = codec.trim_whitespace();
+        if (codec.starts_with(prefix)) {
+            matches = true;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return matches;
+}
+
+static bool mundo_video_configuration_is_nvdec_friendly(VideoConfiguration const& video)
+{
+    auto mime_type = MimeSniff::MimeType::parse(video.content_type);
+    if (!mime_type.has_value())
+        return false;
+
+    auto codecs_iter = mime_type->parameters().find("codecs"sv);
+    if (codecs_iter == mime_type->parameters().end())
+        return false;
+
+    auto codecs = codecs_iter->value.bytes_as_string_view();
+    if (codec_list_contains_prefix(codecs, "hvc1"sv) || codec_list_contains_prefix(codecs, "hev1"sv) || codec_list_contains_prefix(codecs, "av01"sv))
+        return video.width <= 8192 && video.height <= 8192;
+
+    if (codec_list_contains_prefix(codecs, "avc1"sv) || codec_list_contains_prefix(codecs, "avc3"sv))
+        return video.width <= 4096 && video.height <= 4096;
+
+    return false;
+}
 
 // https://w3c.github.io/media-capabilities/#valid-mediaconfiguration
 bool MediaConfiguration::is_valid_media_configuration() const
@@ -199,13 +245,24 @@ MediaCapabilitiesDecodingInfo create_a_media_capabilities_decoding_info(MediaDec
 
     // 5. If the user agent is able to decode the media represented by configuration at the indicated framerate without
     //    dropping frames, set smooth to true. Otherwise set it to false.
-    // FIXME: Actually check this.
-    info.smooth = false;
+    info.smooth = info.supported && configuration.video.has_value() && mundo_nvdec_backend_requested() && mundo_video_configuration_is_nvdec_friendly(configuration.video.value());
 
     // 6. If the user agent is able to decode the media represented by configuration in a power efficient manner, set
     //    powerEfficient to true. Otherwise set it to false.
-    // FIXME: Actually check this... somehow.
-    info.power_efficient = false;
+    info.power_efficient = info.smooth;
+
+    if (configuration.video.has_value()) {
+        auto const& video = configuration.video.value();
+        dbgln("MUNDO_MEDIA_CAPABILITIES decoding_info supported={} smooth={} powerEfficient={} backend_nvdec={} content_type={} size={}x{} framerate={}",
+            info.supported,
+            info.smooth,
+            info.power_efficient,
+            mundo_nvdec_backend_requested(),
+            video.content_type,
+            video.width,
+            video.height,
+            video.framerate);
+    }
 
     // 7. Return info.
     return info;
