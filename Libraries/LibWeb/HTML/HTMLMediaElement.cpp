@@ -90,8 +90,6 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
         target_quality = "_1440p60"sv;
         if (path.ends_with("_vr.m3u8"sv))
             normalized_path_base = path.substring_view(0, path.length() - ".m3u8"sv.length());
-        else if (path.ends_with("_vr_2160p60.m3u8"sv))
-            normalized_path_base = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
     } else {
         target_quality = "_160p"sv;
         if (path.ends_with("_auto.m3u8"sv))

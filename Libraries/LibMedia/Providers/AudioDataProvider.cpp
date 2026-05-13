@@ -360,6 +360,8 @@ void AudioDataProvider::ThreadData::flush_decoder()
 {
     m_decoder->flush();
     m_last_sample = NumericLimits<i64>::min();
+    m_has_block_timestamp_offset = false;
+    m_block_timestamp_offset = AK::Duration::zero();
 }
 
 DecoderErrorOr<void> AudioDataProvider::ThreadData::retrieve_next_block(AudioBlock& block)
@@ -369,6 +371,20 @@ DecoderErrorOr<void> AudioDataProvider::ThreadData::retrieve_next_block(AudioBlo
     auto convert_result = m_converter->convert(block);
     if (convert_result.is_error())
         return DecoderError::format(DecoderErrorCategory::NotImplemented, "Sample specification conversion failed: {}", convert_result.error().string_literal());
+
+    if (!m_has_block_timestamp_offset) {
+        m_block_timestamp_offset = block.timestamp();
+        m_has_block_timestamp_offset = true;
+        if (!m_block_timestamp_offset.is_zero())
+            dbgln("MUNDO_MEDIA_AUDIO_PROVIDER timestamp_offset track_id={} offset={}ms", m_track.identifier(), m_block_timestamp_offset.to_milliseconds());
+    }
+
+    if (block.timestamp() <= m_block_timestamp_offset) {
+        block.set_timestamp_in_samples(0);
+    } else {
+        auto normalized_timestamp = block.timestamp() - m_block_timestamp_offset;
+        block.set_timestamp_in_samples(normalized_timestamp.to_time_units(1, block.sample_rate()));
+    }
 
     if (block.timestamp_in_samples() < m_last_sample)
         block.set_timestamp_in_samples(m_last_sample);
