@@ -19,6 +19,7 @@
 extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/log.h>
 }
 
 namespace Media::FFmpeg {
@@ -251,6 +252,20 @@ static bool should_try_nvdec(AVCodec const* codec)
         return false;
 
     return codec_has_hw_config(codec, VideoDecoderBackend::Nvdec);
+}
+
+static void quiet_ffmpeg_logs_for_nvdec()
+{
+    static bool s_did_quiet_logs { false };
+    if (s_did_quiet_logs)
+        return;
+
+    // The CUDA decoder can emit malformed teardown diagnostics after the
+    // WebContent process is already shutting down. Keep our own structured
+    // MUNDO_MEDIA_FFMPEG logs, but avoid routing those FFmpeg internals through
+    // av_log_default_callback.
+    av_log_set_level(AV_LOG_FATAL);
+    s_did_quiet_logs = true;
 }
 
 static bool is_hardware_frame(AVFrame const* frame)
@@ -492,10 +507,15 @@ DecoderErrorOr<NonnullOwnPtr<FFmpegVideoDecoder>> FFmpegVideoDecoder::try_create
 
     codec_context->get_format = negotiate_output_format;
     codec_context->time_base = { 1, 1'000'000 };
-    codec_context->thread_count = static_cast<int>(min(Core::System::hardware_concurrency(), 16));
-    dbgln("MUNDO_MEDIA_FFMPEG video_decoder_threads codec={} threads={}", codec_id, codec_context->thread_count);
+    auto use_nvdec = should_try_nvdec(codec);
+    codec_context->thread_count = use_nvdec ? 1 : static_cast<int>(min(Core::System::hardware_concurrency(), 16));
+    dbgln("MUNDO_MEDIA_FFMPEG video_decoder_threads codec={} threads={} reason={}",
+        codec_id,
+        codec_context->thread_count,
+        use_nvdec ? "nvdec"sv : "software"sv);
 
-    if (should_try_nvdec(codec)) {
+    if (use_nvdec) {
+        quiet_ffmpeg_logs_for_nvdec();
         auto result = av_hwdevice_ctx_create(&hw_device_context, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
         if (result >= 0) {
             codec_context->hw_device_ctx = av_buffer_ref(hw_device_context);
