@@ -38,6 +38,23 @@ static StringView track_type_name(TrackType type)
     VERIFY_NOT_REACHED();
 }
 
+static Vector<Track> tracks_with_preferred_first(Vector<Track> const& tracks, Optional<Track> const& preferred_track)
+{
+    auto ordered_tracks = Vector<Track> {};
+    ordered_tracks.ensure_capacity(tracks.size());
+
+    if (preferred_track.has_value() && tracks.contains_slow(*preferred_track))
+        ordered_tracks.append(*preferred_track);
+
+    for (auto const& track : tracks) {
+        if (preferred_track.has_value() && track == *preferred_track)
+            continue;
+        ordered_tracks.append(track);
+    }
+
+    return ordered_tracks;
+}
+
 DecoderErrorOr<NonnullRefPtr<Demuxer>> PlaybackManager::create_demuxer_for_stream(NonnullRefPtr<MediaStream> const& stream)
 {
     if (Matroska::Reader::is_matroska_or_webm(stream->create_cursor()))
@@ -50,12 +67,14 @@ DecoderErrorOr<void> PlaybackManager::prepare_playback_from_demuxer(WeakPlayback
     // Create the video tracks and their data providers.
     auto all_video_tracks = TRY(demuxer->get_tracks_for_type(TrackType::Video));
     dbgln("MUNDO_MEDIA_PLAYBACK demuxer video_tracks={}", all_video_tracks.size());
+    auto demuxer_preferred_video_track = demuxer->get_preferred_track_for_type(TrackType::Video).value_or({});
+    auto video_tracks_to_probe = tracks_with_preferred_first(all_video_tracks, demuxer_preferred_video_track);
 
     auto supported_video_tracks = VideoTracks();
     auto supported_video_track_datas = VideoTrackDatas();
-    supported_video_tracks.ensure_capacity(all_video_tracks.size());
-    supported_video_track_datas.ensure_capacity(all_video_tracks.size());
-    for (auto const& track : all_video_tracks) {
+    supported_video_tracks.ensure_capacity(min(video_tracks_to_probe.size(), static_cast<size_t>(1)));
+    supported_video_track_datas.ensure_capacity(min(video_tracks_to_probe.size(), static_cast<size_t>(1)));
+    for (auto const& track : video_tracks_to_probe) {
         dbgln("MUNDO_MEDIA_PLAYBACK probing {} track id={}", track_type_name(track.type()), track.identifier());
         auto video_data_provider_result = VideoDataProvider::try_create(main_thread_event_loop_reference, demuxer, track);
         if (video_data_provider_result.is_error()) {
@@ -66,19 +85,23 @@ DecoderErrorOr<void> PlaybackManager::prepare_playback_from_demuxer(WeakPlayback
         dbgln("MUNDO_MEDIA_PLAYBACK accepted video track id={}", track.identifier());
         supported_video_tracks.append(track);
         supported_video_track_datas.empend(VideoTrackData(track, video_data_provider_result.release_value(), nullptr));
+        break;
     }
+    dbgln("MUNDO_MEDIA_PLAYBACK limited video providers total={} supported={}", all_video_tracks.size(), supported_video_tracks.size());
     supported_video_tracks.shrink_to_fit();
     supported_video_track_datas.shrink_to_fit();
 
     // Create all the audio tracks, their data providers, and the audio output.
     auto all_audio_tracks = TRY(demuxer->get_tracks_for_type(TrackType::Audio));
     dbgln("MUNDO_MEDIA_PLAYBACK demuxer audio_tracks={}", all_audio_tracks.size());
+    auto demuxer_preferred_audio_track = demuxer->get_preferred_track_for_type(TrackType::Audio).value_or({});
+    auto audio_tracks_to_probe = tracks_with_preferred_first(all_audio_tracks, demuxer_preferred_audio_track);
 
     auto supported_audio_tracks = AudioTracks();
     auto supported_audio_track_datas = AudioTrackDatas();
-    supported_audio_tracks.ensure_capacity(all_audio_tracks.size());
-    supported_audio_track_datas.ensure_capacity(all_audio_tracks.size());
-    for (auto const& track : all_audio_tracks) {
+    supported_audio_tracks.ensure_capacity(min(audio_tracks_to_probe.size(), static_cast<size_t>(1)));
+    supported_audio_track_datas.ensure_capacity(min(audio_tracks_to_probe.size(), static_cast<size_t>(1)));
+    for (auto const& track : audio_tracks_to_probe) {
         dbgln("MUNDO_MEDIA_PLAYBACK probing {} track id={}", track_type_name(track.type()), track.identifier());
         auto audio_data_provider_result = AudioDataProvider::try_create(main_thread_event_loop_reference, demuxer, track);
         if (audio_data_provider_result.is_error()) {
@@ -90,7 +113,9 @@ DecoderErrorOr<void> PlaybackManager::prepare_playback_from_demuxer(WeakPlayback
         dbgln("MUNDO_MEDIA_PLAYBACK accepted audio track id={}", track.identifier());
         supported_audio_tracks.append(track);
         supported_audio_track_datas.empend(AudioTrackData(track, move(audio_data_provider)));
+        break;
     }
+    dbgln("MUNDO_MEDIA_PLAYBACK limited audio providers total={} supported={}", all_audio_tracks.size(), supported_audio_tracks.size());
     supported_audio_tracks.shrink_to_fit();
     supported_audio_track_datas.shrink_to_fit();
 
@@ -100,12 +125,16 @@ DecoderErrorOr<void> PlaybackManager::prepare_playback_from_demuxer(WeakPlayback
         return DecoderError::with_description(DecoderErrorCategory::NotImplemented, "No supported video or audio tracks found"sv);
     }
 
-    auto preferred_video_track = demuxer->get_preferred_track_for_type(TrackType::Video).value_or({});
+    auto preferred_video_track = demuxer_preferred_video_track;
     if (preferred_video_track.has_value() && !supported_video_tracks.contains_slow(*preferred_video_track))
         preferred_video_track = {};
-    auto preferred_audio_track = demuxer->get_preferred_track_for_type(TrackType::Audio).value_or({});
+    if (!preferred_video_track.has_value() && !supported_video_tracks.is_empty())
+        preferred_video_track = supported_video_tracks.first();
+    auto preferred_audio_track = demuxer_preferred_audio_track;
     if (preferred_audio_track.has_value() && !supported_audio_tracks.contains_slow(*preferred_audio_track))
         preferred_audio_track = {};
+    if (!preferred_audio_track.has_value() && !supported_audio_tracks.is_empty())
+        preferred_audio_track = supported_audio_tracks.first();
 
     auto duration = demuxer->total_duration().value_or(AK::Duration::zero());
 
