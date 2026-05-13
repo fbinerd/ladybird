@@ -17,7 +17,7 @@ namespace Media::FFmpeg {
 class MEDIA_API FFmpegVideoDecoder final : public VideoDecoder {
 public:
     static DecoderErrorOr<NonnullOwnPtr<FFmpegVideoDecoder>> try_create(CodecID, ReadonlyBytes codec_initialization_data);
-    FFmpegVideoDecoder(AVCodecContext* codec_context, AVPacket* packet, AVFrame* frame);
+    FFmpegVideoDecoder(AVCodecContext* codec_context, AVPacket* packet, AVFrame* frame, AVFrame* transfer_frame);
     virtual ~FFmpegVideoDecoder() override;
 
     virtual DecoderErrorOr<void> receive_coded_data(AK::Duration timestamp, AK::Duration duration, ReadonlyBytes coded_data) override;
@@ -30,6 +30,7 @@ private:
     AVCodecContext* m_codec_context;
     AVPacket* m_packet;
     AVFrame* m_frame;
+    AVFrame* m_transfer_frame;
 };
 
 }
