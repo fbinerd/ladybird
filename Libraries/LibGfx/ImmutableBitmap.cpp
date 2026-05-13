@@ -220,8 +220,22 @@ static void export_raster_bitmap_directly(Bitmap const& bitmap, ByteBuffer& buff
 static int max_large_video_raster_width()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_MAX_RASTER_WIDTH");
-    if (!raw_value)
+    if (!raw_value) {
+        auto const* decoder_backend = getenv("MUNDO_VIDEO_DECODER_BACKEND");
+        if (decoder_backend && (!strcmp(decoder_backend, "nvdec") || !strcmp(decoder_backend, "cuda"))) {
+            auto const* nvdec_raw_value = getenv("MUNDO_VIDEO_MAX_RASTER_WIDTH_NVDEC");
+            if (!nvdec_raw_value)
+                return 1920;
+
+            auto nvdec_value = atoi(nvdec_raw_value);
+            if (nvdec_value <= 0)
+                return 0;
+
+            return max(nvdec_value, 320);
+        }
+
         return 1280;
+    }
 
     auto value = atoi(raw_value);
     if (value <= 0)
