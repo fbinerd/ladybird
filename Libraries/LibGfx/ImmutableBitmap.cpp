@@ -467,6 +467,15 @@ ErrorOr<NonnullRefPtr<ImmutableBitmap>> ImmutableBitmap::create_from_yuv(Nonnull
     if (backend == YUVFrameBackend::Gpu) {
         if (!context)
             return create_from_rasterized_yuv(move(yuv_data), move(color_space));
+        if (is_large_video_frame(size) && !yuv_data->prefers_gpu_upload()) {
+            static size_t s_unpreferred_gpu_yuv_video_frame_count { 0 };
+            auto count = ++s_unpreferred_gpu_yuv_video_frame_count;
+            if (count <= 8 || count % 120 == 0) {
+                dbgln("MUNDO_IMMUTABLE_BITMAP yuv_gpu_texture_skipped count={} size={}x{} reason=large_software_frame backend=gpu",
+                    count, size.width(), size.height());
+            }
+            return create_from_rasterized_yuv(move(yuv_data), move(color_space));
+        }
         return create_from_gpu_yuv(move(yuv_data), move(color_space), *context);
     }
 

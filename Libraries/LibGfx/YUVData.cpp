@@ -28,6 +28,7 @@ struct YUVDataImpl {
     u8 bit_depth;
     Media::Subsampling subsampling;
     Media::CodingIndependentCodePoints cicp;
+    bool prefers_gpu_upload { false };
 
     FixedArray<u8> y_buffer;
     FixedArray<u8> u_buffer;
@@ -103,6 +104,16 @@ Bytes YUVData::u_data()
 Bytes YUVData::v_data()
 {
     return m_impl->v_buffer.span();
+}
+
+void YUVData::set_prefers_gpu_upload(bool value)
+{
+    m_impl->prefers_gpu_upload = value;
+}
+
+bool YUVData::prefers_gpu_upload() const
+{
+    return m_impl->prefers_gpu_upload;
 }
 
 static FFI::YUVMatrix yuv_matrix_for_cicp(Media::CodingIndependentCodePoints const& cicp)

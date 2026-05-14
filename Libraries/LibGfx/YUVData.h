@@ -44,6 +44,9 @@ public:
     Bytes u_data();
     Bytes v_data();
 
+    void set_prefers_gpu_upload(bool);
+    bool prefers_gpu_upload() const;
+
     ErrorOr<NonnullRefPtr<Bitmap>> to_bitmap() const;
     ErrorOr<NonnullRefPtr<Bitmap>> to_scaled_bitmap(IntSize) const;
 

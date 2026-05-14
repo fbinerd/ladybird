@@ -880,6 +880,8 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
 
         if (!bitmap) {
             auto yuv_data = DECODER_TRY_ALLOC(Gfx::YUVData::create(gfx_size, bit_depth, subsampling, cicp));
+            if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12)
+                yuv_data->set_prefers_gpu_upload(true);
 
             auto component_size = bit_depth <= 8 ? 1 : 2;
             auto copy_start = MonotonicTime::now();
