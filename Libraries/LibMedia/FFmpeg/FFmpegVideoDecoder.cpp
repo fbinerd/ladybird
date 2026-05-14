@@ -534,20 +534,67 @@ static YUVToRGBCoefficients coefficients_for_cicp(CodingIndependentCodePoints co
     return coefficients;
 }
 
-static void convert_yuv_to_rgba(YUVToRGBCoefficients const& coefficients, u8 y, u8 u, u8 v, u8* dst)
-{
-    auto y_value = max(0, static_cast<int>(y) - coefficients.y_offset);
-    auto u_offset = static_cast<int>(u) - 128;
-    auto v_offset = static_cast<int>(v) - 128;
+struct YUVToRGBLookupTables {
+    int y[256] {};
+    int r_from_v[256] {};
+    int g_from_u[256] {};
+    int g_from_v[256] {};
+    int b_from_u[256] {};
+};
 
-    auto r = (coefficients.y_multiplier * y_value + coefficients.r_v * v_offset + 128) >> 8;
-    auto g = (coefficients.y_multiplier * y_value - coefficients.g_u * u_offset - coefficients.g_v * v_offset + 128) >> 8;
-    auto b = (coefficients.y_multiplier * y_value + coefficients.b_u * u_offset + 128) >> 8;
+static YUVToRGBLookupTables make_yuv_to_rgb_lookup_tables(YUVToRGBCoefficients const& coefficients)
+{
+    YUVToRGBLookupTables tables;
+    for (auto value = 0; value < 256; ++value) {
+        auto y_value = max(0, value - coefficients.y_offset);
+        auto chroma_offset = value - 128;
+        tables.y[value] = coefficients.y_multiplier * y_value;
+        tables.r_from_v[value] = coefficients.r_v * chroma_offset;
+        tables.g_from_u[value] = coefficients.g_u * chroma_offset;
+        tables.g_from_v[value] = coefficients.g_v * chroma_offset;
+        tables.b_from_u[value] = coefficients.b_u * chroma_offset;
+    }
+    return tables;
+}
+
+static void write_yuv_to_rgba(YUVToRGBLookupTables const& tables, u8 y, int r_uv, int g_uv, int b_uv, u8* dst)
+{
+    auto y_value = tables.y[y];
+    auto r = (y_value + r_uv + 128) >> 8;
+    auto g = (y_value - g_uv + 128) >> 8;
+    auto b = (y_value + b_uv + 128) >> 8;
 
     dst[0] = clamp_to_u8(r);
     dst[1] = clamp_to_u8(g);
     dst[2] = clamp_to_u8(b);
     dst[3] = 255;
+}
+
+static void convert_yuv_to_rgba(YUVToRGBLookupTables const& tables, u8 y, u8 u, u8 v, u8* dst)
+{
+    auto r_uv = tables.r_from_v[v];
+    auto g_uv = tables.g_from_u[u] + tables.g_from_v[v];
+    auto b_uv = tables.b_from_u[u];
+    write_yuv_to_rgba(tables, y, r_uv, g_uv, b_uv, dst);
+}
+
+static void convert_nv12_row_to_rgba(YUVToRGBLookupTables const& tables, u8 const* y_row, u8 const* uv_row, u8* dst_row, u32 width)
+{
+    u32 col = 0;
+    for (; col + 1 < width; col += 2) {
+        auto u = uv_row[col];
+        auto v = uv_row[col + 1];
+        auto r_uv = tables.r_from_v[v];
+        auto g_uv = tables.g_from_u[u] + tables.g_from_v[v];
+        auto b_uv = tables.b_from_u[u];
+        write_yuv_to_rgba(tables, y_row[col], r_uv, g_uv, b_uv, dst_row + col * 4);
+        write_yuv_to_rgba(tables, y_row[col + 1], r_uv, g_uv, b_uv, dst_row + (col + 1) * 4);
+    }
+
+    if (col < width) {
+        auto uv_x = (col / 2) * 2;
+        convert_yuv_to_rgba(tables, y_row[col], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+    }
 }
 
 static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_nv12_frame(AVFrame const* frame, CodingIndependentCodePoints const& cicp)
@@ -568,24 +615,19 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
     auto target_width = static_cast<u32>(target_size.width());
     auto target_height = static_cast<u32>(target_size.height());
     auto coefficients = coefficients_for_cicp(cicp);
+    auto lookup_tables = make_yuv_to_rgb_lookup_tables(coefficients);
 
     if (target_width == source_width && target_height == source_height) {
-        for (u32 row = 0; row < source_height; ++row) {
+        for (u32 row = 0; row < source_height; row += 2) {
             auto const* y_row = frame->data[0] + row * frame->linesize[0];
             auto const* uv_row = frame->data[1] + (row / 2) * frame->linesize[1];
             auto* dst_row = bitmap->scanline_u8(row);
+            convert_nv12_row_to_rgba(lookup_tables, y_row, uv_row, dst_row, source_width);
 
-            u32 col = 0;
-            for (; col + 1 < source_width; col += 2) {
-                auto uv_x = col;
-                auto u = uv_row[uv_x];
-                auto v = uv_row[uv_x + 1];
-                convert_yuv_to_rgba(coefficients, y_row[col], u, v, dst_row + col * 4);
-                convert_yuv_to_rgba(coefficients, y_row[col + 1], u, v, dst_row + (col + 1) * 4);
-            }
-            if (col < source_width) {
-                auto uv_x = (col / 2) * 2;
-                convert_yuv_to_rgba(coefficients, y_row[col], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+            if (row + 1 < source_height) {
+                auto const* next_y_row = frame->data[0] + (row + 1) * frame->linesize[0];
+                auto* next_dst_row = bitmap->scanline_u8(row + 1);
+                convert_nv12_row_to_rgba(lookup_tables, next_y_row, uv_row, next_dst_row, source_width);
             }
         }
     } else {
@@ -598,7 +640,7 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
             for (u32 col = 0; col < target_width; ++col) {
                 auto source_x = min((static_cast<u64>(col) * source_width) / target_width, static_cast<u64>(source_width - 1));
                 auto uv_x = (source_x / 2) * 2;
-                convert_yuv_to_rgba(coefficients, y_row[source_x], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+                convert_yuv_to_rgba(lookup_tables, y_row[source_x], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
             }
         }
     }
