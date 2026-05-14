@@ -12,6 +12,7 @@
 #include <AK/RefPtr.h>
 #include <AK/Time.h>
 #include <LibGfx/Forward.h>
+#include <LibGfx/Size.h>
 #include <LibMedia/VideoFrame.h>
 
 namespace Media {
@@ -28,6 +29,8 @@ public:
 
     bool is_valid() const { return m_image != nullptr || m_frame != nullptr; }
     AK::Duration const& timestamp() const;
+    Gfx::Size<u32> size() const;
+    bool has_lazy_bitmap() const;
     NonnullRefPtr<Gfx::ImmutableBitmap> image() const;
     NonnullRefPtr<Gfx::ImmutableBitmap> release_image();
     void clear();

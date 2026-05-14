@@ -32,6 +32,19 @@ AK::Duration const& TimedImage::timestamp() const
     return m_timestamp;
 }
 
+Gfx::Size<u32> TimedImage::size() const
+{
+    VERIFY(is_valid());
+    if (m_frame)
+        return m_frame->size();
+    return m_image->size().to_type<u32>();
+}
+
+bool TimedImage::has_lazy_bitmap() const
+{
+    return m_frame && m_frame->has_lazy_bitmap();
+}
+
 NonnullRefPtr<Gfx::ImmutableBitmap> TimedImage::image() const
 {
     VERIFY(is_valid());

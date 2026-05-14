@@ -92,7 +92,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
 
     auto current_time = m_time_provider->current_time();
     if (m_update_count <= 8 || m_update_count % 120 == 0)
-        dbgln("MUNDO_MEDIA_VIDEO_SINK update count={} track_id={} current_time={}ms has_next={} has_current={}", m_update_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.is_valid(), m_current_frame.ptr());
+        dbgln("MUNDO_MEDIA_VIDEO_SINK update count={} track_id={} current_time={}ms has_next={} has_current={} current_lazy={}", m_update_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.is_valid(), m_current_frame.is_valid(), m_current_frame.has_lazy_bitmap());
     auto result = DisplayingVideoSinkUpdateResult::NoChange;
     if (m_has_new_current_frame) {
         result = DisplayingVideoSinkUpdateResult::NewFrameAvailable;
@@ -117,7 +117,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         auto frame_age = current_time - m_next_frame.timestamp();
         auto late_frame_threshold = late_frame_age_threshold();
         auto late_frame_drop_limit = max_consecutive_late_frame_drops();
-        if (m_current_frame != nullptr && frame_age > late_frame_threshold) {
+        if (m_current_frame.is_valid() && frame_age > late_frame_threshold) {
             m_dropped_late_frame_count++;
             m_consecutive_late_frame_drop_count++;
             if (m_dropped_late_frame_count <= 8 || m_dropped_late_frame_count % 60 == 0)
@@ -130,11 +130,13 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
             continue;
         }
 
-        m_current_frame = m_next_frame.release_image();
+        m_current_frame = move(m_next_frame);
         m_consecutive_late_frame_drop_count = 0;
         m_presented_frame_count++;
-        if (m_presented_frame_count <= 8 || m_presented_frame_count % 60 == 0)
-            dbgln("MUNDO_MEDIA_VIDEO_SINK present_frame count={} track_id={} current_time={}ms frame={} size={}x{}", m_presented_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), static_cast<void const*>(m_current_frame.ptr()), m_current_frame->size().width(), m_current_frame->size().height());
+        if (m_presented_frame_count <= 8 || m_presented_frame_count % 60 == 0) {
+            auto size = m_current_frame.size();
+            dbgln("MUNDO_MEDIA_VIDEO_SINK present_frame count={} track_id={} current_time={}ms size={}x{} lazy_bitmap={}", m_presented_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), size.width(), size.height(), m_current_frame.has_lazy_bitmap());
+        }
         result = DisplayingVideoSinkUpdateResult::NewFrameAvailable;
     }
     return result;
@@ -149,7 +151,9 @@ void DisplayingVideoSink::prepare_current_frame_for_next_update()
 
 RefPtr<Gfx::ImmutableBitmap> DisplayingVideoSink::current_frame()
 {
-    return m_current_frame;
+    if (!m_current_frame.is_valid())
+        return nullptr;
+    return m_current_frame.image();
 }
 
 void DisplayingVideoSink::pause_updates()
@@ -160,7 +164,7 @@ void DisplayingVideoSink::pause_updates()
 void DisplayingVideoSink::resume_updates()
 {
     m_next_frame.clear();
-    m_current_frame = nullptr;
+    m_current_frame.clear();
     m_pause_updates = false;
     m_has_new_current_frame = true;
     prepare_current_frame_for_next_update();
