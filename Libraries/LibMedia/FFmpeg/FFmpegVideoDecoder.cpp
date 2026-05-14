@@ -405,6 +405,19 @@ static int max_nvdec_video_raster_width()
     return max(value, 320);
 }
 
+static bool should_create_direct_nv12_rgba_bitmap()
+{
+    auto const* raw_backend = getenv("MUNDO_VIDEO_BACKEND");
+    if (raw_backend && (!strcmp(raw_backend, "gpu") || !strcmp(raw_backend, "hardware")))
+        return false;
+
+    auto const* raw_value = getenv("MUNDO_VIDEO_DIRECT_NV12_RGBA");
+    if (!raw_value)
+        return true;
+
+    return strcmp(raw_value, "0") && strcmp(raw_value, "no") && strcmp(raw_value, "false");
+}
+
 static Gfx::IntSize target_size_for_nvdec_frame(AVFrame const* frame)
 {
     auto max_width = max_nvdec_video_raster_width();
@@ -850,7 +863,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         auto bitmap_start = MonotonicTime::now();
         RefPtr<Gfx::ImmutableBitmap> bitmap;
         auto used_direct_nv12_bitmap = false;
-        if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12) {
+        if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12 && should_create_direct_nv12_rgba_bitmap()) {
             auto direct_bitmap = create_bitmap_directly_from_nv12_frame(frame, cicp);
             if (!direct_bitmap.is_error()) {
                 used_direct_nv12_bitmap = true;
@@ -858,6 +871,11 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
             } else {
                 dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap_fallback size={}x{} error={}", frame->width, frame->height, direct_bitmap.error().string_literal());
             }
+        } else if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12) {
+            static size_t s_skipped_direct_nv12_frame_count { 0 };
+            auto skipped_count = ++s_skipped_direct_nv12_frame_count;
+            if (skipped_count <= 8 || skipped_count % 120 == 0)
+                dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap_skipped count={} reason=gpu_yuv_backend size={}x{}", skipped_count, frame->width, frame->height);
         }
 
         if (!bitmap) {
