@@ -18,7 +18,22 @@
 
 #include "VideoDataProvider.h"
 
+#include <stdlib.h>
+
 namespace Media {
+
+static size_t video_frame_queue_size()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_FRAME_QUEUE_SIZE");
+    if (!raw_value)
+        return VideoDataProvider::QUEUE_CAPACITY;
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return VideoDataProvider::QUEUE_CAPACITY;
+
+    return clamp(static_cast<size_t>(value), static_cast<size_t>(1), VideoDataProvider::QUEUE_CAPACITY);
+}
 
 DecoderErrorOr<NonnullRefPtr<VideoDataProvider>> VideoDataProvider::try_create(NonnullRefPtr<Core::WeakEventLoopReference> const& main_thread_event_loop, NonnullRefPtr<Demuxer> const& demuxer, Track const& track, RefPtr<MediaTimeProvider> const& time_provider)
 {
@@ -149,6 +164,8 @@ VideoDataProvider::ThreadData::ThreadData(NonnullRefPtr<Core::WeakEventLoopRefer
     , m_duration(duration)
     , m_time_provider(time_provider)
 {
+    m_queue_max_size = video_frame_queue_size();
+    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER frame_queue track_id={} capacity={} max_size={}", m_track.identifier(), QUEUE_CAPACITY, m_queue_max_size);
 }
 
 DecoderErrorOr<void> VideoDataProvider::ThreadData::create_decoder()
