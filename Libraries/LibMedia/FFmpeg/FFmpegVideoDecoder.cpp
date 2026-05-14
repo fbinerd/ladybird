@@ -426,62 +426,87 @@ static u8 clamp_to_u8(int value)
     return static_cast<u8>(value);
 }
 
-static void convert_yuv_to_rgba(CodingIndependentCodePoints const& cicp, u8 y, u8 u, u8 v, u8* dst)
+struct YUVToRGBCoefficients {
+    bool full_range { false };
+    int y_multiplier { 298 };
+    int y_offset { 16 };
+    int r_v { 459 };
+    int g_u { 55 };
+    int g_v { 136 };
+    int b_u { 541 };
+};
+
+static YUVToRGBCoefficients coefficients_for_cicp(CodingIndependentCodePoints const& cicp)
 {
-    auto y_value = static_cast<int>(y);
-    auto u_offset = static_cast<int>(u) - 128;
-    auto v_offset = static_cast<int>(v) - 128;
+    YUVToRGBCoefficients coefficients;
+    coefficients.full_range = cicp.video_full_range_flag() == VideoFullRangeFlag::Full;
 
-    int r;
-    int g;
-    int b;
-
-    if (cicp.video_full_range_flag() == VideoFullRangeFlag::Full) {
+    if (coefficients.full_range) {
+        coefficients.y_multiplier = 256;
+        coefficients.y_offset = 0;
         switch (cicp.matrix_coefficients()) {
         case MatrixCoefficients::BT601:
         case MatrixCoefficients::BT470BG:
-            r = y_value + ((359 * v_offset) >> 8);
-            g = y_value - ((88 * u_offset + 183 * v_offset) >> 8);
-            b = y_value + ((454 * u_offset) >> 8);
+            coefficients.r_v = 359;
+            coefficients.g_u = 88;
+            coefficients.g_v = 183;
+            coefficients.b_u = 454;
             break;
         case MatrixCoefficients::BT2020NonConstantLuminance:
         case MatrixCoefficients::BT2020ConstantLuminance:
-            r = y_value + ((377 * v_offset) >> 8);
-            g = y_value - ((42 * u_offset + 146 * v_offset) >> 8);
-            b = y_value + ((482 * u_offset) >> 8);
+            coefficients.r_v = 377;
+            coefficients.g_u = 42;
+            coefficients.g_v = 146;
+            coefficients.b_u = 482;
             break;
         case MatrixCoefficients::BT709:
         case MatrixCoefficients::Unspecified:
         default:
-            r = y_value + ((403 * v_offset) >> 8);
-            g = y_value - ((48 * u_offset + 120 * v_offset) >> 8);
-            b = y_value + ((475 * u_offset) >> 8);
+            coefficients.r_v = 403;
+            coefficients.g_u = 48;
+            coefficients.g_v = 120;
+            coefficients.b_u = 475;
             break;
         }
     } else {
-        auto c = max(0, y_value - 16);
         switch (cicp.matrix_coefficients()) {
         case MatrixCoefficients::BT601:
         case MatrixCoefficients::BT470BG:
-            r = (298 * c + 409 * v_offset + 128) >> 8;
-            g = (298 * c - 100 * u_offset - 208 * v_offset + 128) >> 8;
-            b = (298 * c + 516 * u_offset + 128) >> 8;
+            coefficients.r_v = 409;
+            coefficients.g_u = 100;
+            coefficients.g_v = 208;
+            coefficients.b_u = 516;
             break;
         case MatrixCoefficients::BT2020NonConstantLuminance:
         case MatrixCoefficients::BT2020ConstantLuminance:
-            r = (298 * c + 430 * v_offset + 128) >> 8;
-            g = (298 * c - 48 * u_offset - 167 * v_offset + 128) >> 8;
-            b = (298 * c + 548 * u_offset + 128) >> 8;
+            coefficients.r_v = 430;
+            coefficients.g_u = 48;
+            coefficients.g_v = 167;
+            coefficients.b_u = 548;
             break;
         case MatrixCoefficients::BT709:
         case MatrixCoefficients::Unspecified:
         default:
-            r = (298 * c + 459 * v_offset + 128) >> 8;
-            g = (298 * c - 55 * u_offset - 136 * v_offset + 128) >> 8;
-            b = (298 * c + 541 * u_offset + 128) >> 8;
+            coefficients.r_v = 459;
+            coefficients.g_u = 55;
+            coefficients.g_v = 136;
+            coefficients.b_u = 541;
             break;
         }
     }
+
+    return coefficients;
+}
+
+static void convert_yuv_to_rgba(YUVToRGBCoefficients const& coefficients, u8 y, u8 u, u8 v, u8* dst)
+{
+    auto y_value = max(0, static_cast<int>(y) - coefficients.y_offset);
+    auto u_offset = static_cast<int>(u) - 128;
+    auto v_offset = static_cast<int>(v) - 128;
+
+    auto r = (coefficients.y_multiplier * y_value + coefficients.r_v * v_offset + 128) >> 8;
+    auto g = (coefficients.y_multiplier * y_value - coefficients.g_u * u_offset - coefficients.g_v * v_offset + 128) >> 8;
+    auto b = (coefficients.y_multiplier * y_value + coefficients.b_u * u_offset + 128) >> 8;
 
     dst[0] = clamp_to_u8(r);
     dst[1] = clamp_to_u8(g);
@@ -506,17 +531,39 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
     auto source_height = static_cast<u32>(frame->height);
     auto target_width = static_cast<u32>(target_size.width());
     auto target_height = static_cast<u32>(target_size.height());
+    auto coefficients = coefficients_for_cicp(cicp);
 
-    for (u32 row = 0; row < target_height; ++row) {
-        auto source_y = min((static_cast<u64>(row) * source_height) / target_height, static_cast<u64>(source_height - 1));
-        auto const* y_row = frame->data[0] + source_y * frame->linesize[0];
-        auto const* uv_row = frame->data[1] + (source_y / 2) * frame->linesize[1];
-        auto* dst_row = bitmap->scanline_u8(row);
+    if (target_width == source_width && target_height == source_height) {
+        for (u32 row = 0; row < source_height; ++row) {
+            auto const* y_row = frame->data[0] + row * frame->linesize[0];
+            auto const* uv_row = frame->data[1] + (row / 2) * frame->linesize[1];
+            auto* dst_row = bitmap->scanline_u8(row);
 
-        for (u32 col = 0; col < target_width; ++col) {
-            auto source_x = min((static_cast<u64>(col) * source_width) / target_width, static_cast<u64>(source_width - 1));
-            auto uv_x = (source_x / 2) * 2;
-            convert_yuv_to_rgba(cicp, y_row[source_x], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+            u32 col = 0;
+            for (; col + 1 < source_width; col += 2) {
+                auto uv_x = col;
+                auto u = uv_row[uv_x];
+                auto v = uv_row[uv_x + 1];
+                convert_yuv_to_rgba(coefficients, y_row[col], u, v, dst_row + col * 4);
+                convert_yuv_to_rgba(coefficients, y_row[col + 1], u, v, dst_row + (col + 1) * 4);
+            }
+            if (col < source_width) {
+                auto uv_x = (col / 2) * 2;
+                convert_yuv_to_rgba(coefficients, y_row[col], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+            }
+        }
+    } else {
+        for (u32 row = 0; row < target_height; ++row) {
+            auto source_y = min((static_cast<u64>(row) * source_height) / target_height, static_cast<u64>(source_height - 1));
+            auto const* y_row = frame->data[0] + source_y * frame->linesize[0];
+            auto const* uv_row = frame->data[1] + (source_y / 2) * frame->linesize[1];
+            auto* dst_row = bitmap->scanline_u8(row);
+
+            for (u32 col = 0; col < target_width; ++col) {
+                auto source_x = min((static_cast<u64>(col) * source_width) / target_width, static_cast<u64>(source_width - 1));
+                auto uv_x = (source_x / 2) * 2;
+                convert_yuv_to_rgba(coefficients, y_row[source_x], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+            }
         }
     }
 
