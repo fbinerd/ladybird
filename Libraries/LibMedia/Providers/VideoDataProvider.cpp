@@ -22,15 +22,19 @@
 
 namespace Media {
 
-static size_t video_frame_queue_size()
+static size_t video_frame_queue_size(Track const& track)
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_FRAME_QUEUE_SIZE");
     if (!raw_value)
-        return VideoDataProvider::QUEUE_CAPACITY;
+        return static_cast<size_t>(4);
 
     auto value = atoi(raw_value);
     if (value <= 0)
-        return VideoDataProvider::QUEUE_CAPACITY;
+        return static_cast<size_t>(4);
+
+    auto pixel_count = static_cast<size_t>(track.video_data().pixel_width) * static_cast<size_t>(track.video_data().pixel_height);
+    if (pixel_count > 4096 * 2048)
+        return clamp(static_cast<size_t>(value), static_cast<size_t>(1), static_cast<size_t>(2));
 
     return clamp(static_cast<size_t>(value), static_cast<size_t>(1), VideoDataProvider::QUEUE_CAPACITY);
 }
@@ -164,7 +168,7 @@ VideoDataProvider::ThreadData::ThreadData(NonnullRefPtr<Core::WeakEventLoopRefer
     , m_duration(duration)
     , m_time_provider(time_provider)
 {
-    m_queue_max_size = video_frame_queue_size();
+    m_queue_max_size = video_frame_queue_size(m_track);
     dbgln("MUNDO_MEDIA_VIDEO_PROVIDER frame_queue track_id={} capacity={} max_size={}", m_track.identifier(), QUEUE_CAPACITY, m_queue_max_size);
 }
 

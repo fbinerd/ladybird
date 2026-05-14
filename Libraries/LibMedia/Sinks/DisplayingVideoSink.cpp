@@ -32,7 +32,7 @@ static size_t max_consecutive_late_frame_drops()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_MAX_LATE_DROPS");
     if (!raw_value)
-        return 120;
+        return 24;
 
     auto value = atoi(raw_value);
     if (value <= 0)

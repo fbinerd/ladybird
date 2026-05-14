@@ -136,7 +136,7 @@ static bool mundo_should_prefer_hevc_hls_source()
     if (mundo_env_flag_enabled("MUNDO_HLS_PREFER_HEVC"))
         return true;
 
-    return mundo_nvdec_backend_requested();
+    return false;
 }
 
 static Optional<String> mundo_normalized_hls_source(StringView source)
