@@ -21,6 +21,32 @@ using Bindings::ReadyState;
 
 GC_DEFINE_ALLOCATOR(MediaSource);
 
+static bool mundo_mse_codecs_are_supported(StringView codecs)
+{
+    bool unsupported = false;
+    codecs.for_each_split_view(',', SplitBehavior::Nothing, [&](auto codec) {
+        codec = codec.trim_whitespace();
+        if (codec.is_empty())
+            return IterationDecision::Continue;
+
+        if (!codec.starts_with("avc1"sv)
+            && !codec.starts_with("avc3"sv)
+            && !codec.starts_with("hvc1"sv)
+            && !codec.starts_with("hev1"sv)
+            && !codec.starts_with("av01"sv)
+            && !codec.starts_with("vp9"sv)
+            && !codec.starts_with("vp09"sv)
+            && !codec.starts_with("opus"sv)
+            && !codec.starts_with("vorbis"sv)
+            && !codec.starts_with("mp4a"sv)) {
+            unsupported = true;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return !unsupported;
+}
+
 WebIDL::ExceptionOr<GC::Ref<MediaSource>> MediaSource::construct_impl(JS::Realm& realm)
 {
     return realm.create<MediaSource>(realm);
@@ -355,6 +381,10 @@ bool MediaSource::is_type_supported(String const& type)
             return true;
         if (mime_type->type() == "audio" && mime_type->subtype() == "webm")
             return true;
+        if (mime_type->type() == "video" && mime_type->subtype() == "mp4")
+            return true;
+        if (mime_type->type() == "audio" && mime_type->subtype() == "mp4")
+            return true;
         return false;
     }();
     if (!type_and_subtype_are_supported)
@@ -367,18 +397,13 @@ bool MediaSource::is_type_supported(String const& type)
     if (codecs_iter == mime_type->parameters().end())
         return false;
     auto codecs = codecs_iter->value.bytes_as_string_view();
-    auto had_unsupported_codec = false;
-    codecs.for_each_split_view(',', SplitBehavior::Nothing, [&](auto const& codec) {
-        if (!codec.starts_with("vp9"sv) && !codec.starts_with("vp09"sv) && !codec.starts_with("opus"sv)) {
-            had_unsupported_codec = true;
-            return IterationDecision::Break;
-        }
-        return IterationDecision::Continue;
-    });
-    if (had_unsupported_codec)
+    if (!mundo_mse_codecs_are_supported(codecs)) {
+        dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=false reason=unsupported_codec", type);
         return false;
+    }
 
     // 6. Return true.
+    dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=true", type);
     return true;
 }
 

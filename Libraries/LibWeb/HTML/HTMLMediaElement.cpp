@@ -59,6 +59,31 @@
 
 namespace Web::HTML {
 
+static bool mundo_codec_list_contains_unsupported_codec(StringView codecs, bool video)
+{
+    bool unsupported = false;
+    codecs.for_each_split_view(',', SplitBehavior::Nothing, [&](auto codec) {
+        codec = codec.trim_whitespace();
+        if (codec.is_empty())
+            return IterationDecision::Continue;
+
+        auto supported = video
+            ? codec.starts_with("avc1"sv) || codec.starts_with("avc3"sv) || codec.starts_with("hvc1"sv) || codec.starts_with("hev1"sv) || codec.starts_with("av01"sv) || codec.starts_with("vp9"sv) || codec.starts_with("vp09"sv) || codec.starts_with("theora"sv)
+            : codec.starts_with("mp4a"sv) || codec.starts_with("opus"sv) || codec.starts_with("vorbis"sv) || codec.starts_with("flac"sv) || codec.starts_with("mp3"sv);
+        if (!supported) {
+            unsupported = true;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return unsupported;
+}
+
+static bool mundo_is_hls_mime_type(MimeSniff::MimeType const& mime_type)
+{
+    return mime_type.essence().is_one_of("application/vnd.apple.mpegurl"sv, "application/x-mpegurl"sv, "audio/mpegurl"sv, "audio/x-mpegurl"sv);
+}
+
 static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& current_src, u64 offset, ByteBuffer const& media_data)
 {
     if (offset != 0 || !current_src.contains(".m3u8"sv))
@@ -484,21 +509,46 @@ Bindings::CanPlayTypeResult HTMLMediaElement::can_play_type(StringView type) con
 
     auto mime_type = MimeSniff::MimeType::parse(type);
 
+    if (mime_type.has_value() && mundo_is_hls_mime_type(*mime_type)) {
+        dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=probably reason=hls", type);
+        return Bindings::CanPlayTypeResult::Probably;
+    }
+
     if (mime_type.has_value() && mime_type->type() == "video"sv) {
-        if (supported_video_subtypes.contains_slow(mime_type->subtype()))
+        if (supported_video_subtypes.contains_slow(mime_type->subtype())) {
+            auto codecs_iter = mime_type->parameters().find("codecs"sv);
+            if (codecs_iter == mime_type->parameters().end()) {
+                dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=maybe reason=no_codecs", type);
+                return Bindings::CanPlayTypeResult::Maybe;
+            }
+            if (mundo_codec_list_contains_unsupported_codec(codecs_iter->value.bytes_as_string_view(), true)) {
+                dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=empty reason=unsupported_video_codec", type);
+                return Bindings::CanPlayTypeResult::Empty;
+            }
+            dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=probably reason=supported_video_codec", type);
             return Bindings::CanPlayTypeResult::Probably;
+        }
         return Bindings::CanPlayTypeResult::Maybe;
     }
 
     if (mime_type.has_value() && mime_type->type() == "audio"sv) {
         auto result = Bindings::CanPlayTypeResult::Maybe;
-        if (supported_audio_subtypes.contains_slow(mime_type->subtype()))
-            result = Bindings::CanPlayTypeResult::Probably;
+        if (supported_audio_subtypes.contains_slow(mime_type->subtype())) {
+            auto codecs_iter = mime_type->parameters().find("codecs"sv);
+            if (codecs_iter == mime_type->parameters().end())
+                result = Bindings::CanPlayTypeResult::Maybe;
+            else if (mundo_codec_list_contains_unsupported_codec(codecs_iter->value.bytes_as_string_view(), false))
+                result = Bindings::CanPlayTypeResult::Empty;
+            else
+                result = Bindings::CanPlayTypeResult::Probably;
+        }
 
         // "Maybe" because we support mp3, but "mpeg" can also refer to MP1 and MP2.
         if (mime_type->subtype() == "mpeg"sv)
             result = Bindings::CanPlayTypeResult::Maybe;
 
+        dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result={}", type, result == Bindings::CanPlayTypeResult::Probably ? "probably"sv : result == Bindings::CanPlayTypeResult::Maybe ? "maybe"sv
+                                                                                                                                                                       : "empty"sv);
         return result;
     }
 
