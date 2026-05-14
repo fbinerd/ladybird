@@ -117,19 +117,17 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         auto frame_age = current_time - m_next_frame.timestamp();
         auto late_frame_threshold = late_frame_age_threshold();
         auto late_frame_drop_limit = max_consecutive_late_frame_drops();
-        if (m_current_frame != nullptr && frame_age > late_frame_threshold && m_consecutive_late_frame_drop_count < late_frame_drop_limit) {
+        if (m_current_frame != nullptr && frame_age > late_frame_threshold) {
             m_dropped_late_frame_count++;
             m_consecutive_late_frame_drop_count++;
             if (m_dropped_late_frame_count <= 8 || m_dropped_late_frame_count % 60 == 0)
                 dbgln("MUNDO_MEDIA_VIDEO_SINK drop_late_frame count={} consecutive={} limit={} track_id={} current_time={}ms frame_time={}ms age={}ms threshold={}ms", m_dropped_late_frame_count, m_consecutive_late_frame_drop_count, late_frame_drop_limit, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.timestamp().to_milliseconds(), frame_age.to_milliseconds(), late_frame_threshold.to_milliseconds());
+            if (m_consecutive_late_frame_drop_count == late_frame_drop_limit && late_frame_drop_limit > 0) {
+                m_late_drop_limit_hit_count++;
+                dbgln("MUNDO_MEDIA_VIDEO_SINK late_drop_limit_hit count={} limit={} track_id={} current_time={}ms frame_time={}ms age={}ms action=continue_dropping", m_late_drop_limit_hit_count, late_frame_drop_limit, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.timestamp().to_milliseconds(), frame_age.to_milliseconds());
+            }
             m_next_frame.clear();
             continue;
-        }
-
-        if (m_consecutive_late_frame_drop_count >= late_frame_drop_limit && late_frame_drop_limit > 0) {
-            m_late_drop_limit_hit_count++;
-            if (m_late_drop_limit_hit_count <= 8 || m_late_drop_limit_hit_count % 30 == 0)
-                dbgln("MUNDO_MEDIA_VIDEO_SINK late_drop_limit_hit count={} limit={} track_id={} current_time={}ms frame_time={}ms age={}ms", m_late_drop_limit_hit_count, late_frame_drop_limit, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.timestamp().to_milliseconds(), frame_age.to_milliseconds());
         }
 
         m_current_frame = m_next_frame.release_image();
