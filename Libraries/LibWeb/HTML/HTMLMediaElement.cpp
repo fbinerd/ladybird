@@ -368,13 +368,21 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
             Optional<String> serialized_src;
             if (auto url_record = document().encoding_parse_url(value.value()); url_record.has_value())
                 serialized_src = url_record->serialize();
-            if (serialized_src.has_value() && serialized_src->contains(".m3u8"sv))
-                m_mundo_last_hls_src_attribute = *serialized_src;
+
+            Optional<String> effective_serialized_src;
+            if (serialized_src.has_value()) {
+                effective_serialized_src = *serialized_src;
+                if (auto normalized_src = mundo_normalized_hls_source(serialized_src->bytes_as_string_view()); normalized_src.has_value())
+                    effective_serialized_src = normalized_src.release_value();
+            }
+
+            if (effective_serialized_src.has_value() && effective_serialized_src->contains(".m3u8"sv))
+                m_mundo_last_hls_src_attribute = *effective_serialized_src;
             else
                 m_mundo_last_hls_src_attribute = {};
 
-            if (m_current_src.contains(".m3u8"sv) && serialized_src.has_value() && *serialized_src == m_current_src) {
-                dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring unchanged HLS src attribute current_src={}", static_cast<void const*>(this), document().url_string(), m_current_src);
+            if (m_current_src.contains(".m3u8"sv) && effective_serialized_src.has_value() && *effective_serialized_src == m_current_src) {
+                dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring unchanged normalized HLS src attribute current_src={} attr_src={}", static_cast<void const*>(this), document().url_string(), m_current_src, *serialized_src);
                 return;
             }
         }
