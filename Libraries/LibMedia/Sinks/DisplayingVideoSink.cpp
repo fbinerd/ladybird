@@ -156,6 +156,13 @@ RefPtr<Gfx::ImmutableBitmap> DisplayingVideoSink::current_frame()
     return m_current_frame.image();
 }
 
+Optional<Gfx::Size<u32>> DisplayingVideoSink::current_frame_size() const
+{
+    if (!m_current_frame.is_valid())
+        return {};
+    return m_current_frame.size();
+}
+
 void DisplayingVideoSink::pause_updates()
 {
     m_pause_updates = true;

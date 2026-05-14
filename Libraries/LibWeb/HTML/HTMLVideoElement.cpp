@@ -152,14 +152,13 @@ void HTMLVideoElement::update_intrinsic_video_dimensions()
         return;
     }
 
-    auto current_frame = selected_video_track_sink()->current_frame();
-    if (current_frame == nullptr)
+    auto current_frame_size = selected_video_track_sink()->current_frame_size();
+    if (!current_frame_size.has_value())
         return;
 
-    auto current_frame_size = current_frame->size().to_type<u32>();
-    if (current_frame_size == m_intrinsic_video_dimensions)
+    if (current_frame_size.value() == m_intrinsic_video_dimensions)
         return;
-    set_intrinsic_video_dimensions(current_frame_size);
+    set_intrinsic_video_dimensions(current_frame_size.value());
 }
 
 void HTMLVideoElement::update_natural_dimensions()

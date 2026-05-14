@@ -7,8 +7,10 @@
 #pragma once
 
 #include <AK/NonnullRefPtr.h>
+#include <AK/Optional.h>
 #include <AK/Time.h>
 #include <LibGfx/ImmutableBitmap.h>
+#include <LibGfx/Size.h>
 #include <LibMedia/Export.h>
 #include <LibMedia/Forward.h>
 #include <LibMedia/Sinks/VideoSink.h>
@@ -40,6 +42,7 @@ public:
     DisplayingVideoSinkUpdateResult update();
     void prepare_current_frame_for_next_update();
     RefPtr<Gfx::ImmutableBitmap> current_frame();
+    Optional<Gfx::Size<u32>> current_frame_size() const;
 
     void pause_updates();
     void resume_updates();
