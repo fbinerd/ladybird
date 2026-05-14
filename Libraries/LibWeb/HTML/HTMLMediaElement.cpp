@@ -177,8 +177,13 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
         }
     } else {
         target_quality = getenv("MUNDO_HLS_AUX_QUALITY");
-        if (!target_quality || target_quality[0] == '\0')
+        if (target_quality && (!strcmp(target_quality, "0") || !strcmp(target_quality, "false") || !strcmp(target_quality, "no") || !strcmp(target_quality, "off") || !strcmp(target_quality, "source") || !strcmp(target_quality, "original")))
             return {};
+        if (!target_quality || target_quality[0] == '\0') {
+            if (!mundo_nvdec_backend_requested())
+                return {};
+            target_quality = "160p";
+        }
         if (path.ends_with("_auto.m3u8"sv))
             normalized_path_base = path.substring_view(0, path.length() - "_auto.m3u8"sv.length());
         else if (path.ends_with("_160p.m3u8"sv))
