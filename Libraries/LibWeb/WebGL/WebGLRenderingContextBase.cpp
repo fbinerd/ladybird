@@ -457,18 +457,22 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_pbo(TexImageSou
 
     auto upload_start = MonotonicTime::now();
 
-    if (!m_mundo_video_upload_pbo)
-        glGenBuffers(1, &m_mundo_video_upload_pbo);
-    if (!m_mundo_video_upload_pbo)
+    auto pbo_index = m_mundo_video_upload_pbo_index++ % 3;
+    auto& pbo = m_mundo_video_upload_pbos[pbo_index];
+    auto& pbo_size = m_mundo_video_upload_pbo_sizes[pbo_index];
+
+    if (!pbo)
+        glGenBuffers(1, &pbo);
+    if (!pbo)
         return false;
 
     GLint previous_unpack_buffer = 0;
     glGetIntegervRobustANGLE(GL_PIXEL_UNPACK_BUFFER_BINDING, 1, nullptr, &previous_unpack_buffer);
 
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_mundo_video_upload_pbo);
-    if (m_mundo_video_upload_pbo_size < converted_texture.buffer.size()) {
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    if (pbo_size < converted_texture.buffer.size()) {
         glBufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(converted_texture.buffer.size()), nullptr, GL_STREAM_DRAW);
-        m_mundo_video_upload_pbo_size = converted_texture.buffer.size();
+        pbo_size = converted_texture.buffer.size();
     }
 
     glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, static_cast<GLsizeiptr>(converted_texture.buffer.size()), converted_texture.buffer.data());
@@ -483,14 +487,15 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_pbo(TexImageSou
     static size_t s_video_pbo_upload_count { 0 };
     auto upload_count = ++s_video_pbo_upload_count;
     if (should_log_mundo_webgl_texture_diagnostic(upload_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_PBO_UPLOAD attempt={} kind={} upload_us={} size={}x{} bytes={} pbo_size={}",
+        dbgln("MUNDO_WEBGL_VIDEO_PBO_UPLOAD attempt={} kind={} upload_us={} size={}x{} bytes={} pbo_slot={} pbo_size={}",
             upload_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             upload_microseconds,
             converted_texture.width,
             converted_texture.height,
             converted_texture.buffer.size(),
-            m_mundo_video_upload_pbo_size);
+            pbo_index,
+            pbo_size);
     }
     return true;
 }

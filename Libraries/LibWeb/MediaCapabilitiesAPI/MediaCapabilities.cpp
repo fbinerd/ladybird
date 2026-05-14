@@ -42,6 +42,51 @@ static bool codec_list_contains_prefix(StringView codecs, StringView prefix)
     return matches;
 }
 
+static Optional<unsigned> avc_codec_level_idc(StringView codec)
+{
+    auto dot_offset = codec.find('.');
+    if (!dot_offset.has_value())
+        return {};
+
+    auto avc_identifier = codec.substring_view(*dot_offset + 1);
+    if (avc_identifier.length() < 6)
+        return {};
+
+    auto hex_value = [](u8 ch) -> Optional<unsigned> {
+        if (ch >= '0' && ch <= '9')
+            return ch - '0';
+        if (ch >= 'a' && ch <= 'f')
+            return ch - 'a' + 10;
+        if (ch >= 'A' && ch <= 'F')
+            return ch - 'A' + 10;
+        return {};
+    };
+
+    auto high = hex_value(avc_identifier[4]);
+    auto low = hex_value(avc_identifier[5]);
+    if (!high.has_value() || !low.has_value())
+        return {};
+    return (*high << 4) | *low;
+}
+
+static bool codec_list_contains_h264_above_nvdec_level(StringView codecs)
+{
+    bool matches = false;
+    codecs.for_each_split_view(',', SplitBehavior::Nothing, [&](auto codec) {
+        codec = codec.trim_whitespace();
+        if (!codec.starts_with("avc1"sv) && !codec.starts_with("avc3"sv))
+            return IterationDecision::Continue;
+
+        auto level_idc = avc_codec_level_idc(codec);
+        if (level_idc.has_value() && *level_idc > 0x33) {
+            matches = true;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return matches;
+}
+
 static bool mundo_video_configuration_is_nvdec_friendly(VideoConfiguration const& video)
 {
     auto mime_type = MimeSniff::MimeType::parse(video.content_type);
@@ -57,7 +102,7 @@ static bool mundo_video_configuration_is_nvdec_friendly(VideoConfiguration const
         return video.width <= 8192 && video.height <= 8192;
 
     if (codec_list_contains_prefix(codecs, "avc1"sv) || codec_list_contains_prefix(codecs, "avc3"sv))
-        return video.width <= 4096 && video.height <= 4096;
+        return video.width <= 4096 && video.height <= 4096 && !codec_list_contains_h264_above_nvdec_level(codecs);
 
     return false;
 }
@@ -241,6 +286,18 @@ MediaCapabilitiesDecodingInfo create_a_media_capabilities_decoding_info(MediaDec
         // 2. If the user agent is able to decode the media represented by configuration, set supported to true.
         // 3. Otherwise, set it to false.
         info.supported = is_able_to_decode_media(configuration);
+        if (info.supported && configuration.video.has_value() && mundo_nvdec_backend_requested()) {
+            auto const& video = configuration.video.value();
+            auto mime_type = MimeSniff::MimeType::parse(video.content_type);
+            if (mime_type.has_value()) {
+                auto codecs_iter = mime_type->parameters().find("codecs"sv);
+                if (codecs_iter != mime_type->parameters().end()) {
+                    auto codecs = codecs_iter->value.bytes_as_string_view();
+                    if ((codec_list_contains_prefix(codecs, "avc1"sv) || codec_list_contains_prefix(codecs, "avc3"sv)) && (video.width > 4096 || video.height > 4096 || codec_list_contains_h264_above_nvdec_level(codecs)))
+                        info.supported = false;
+                }
+            }
+        }
     }
 
     // 5. If the user agent is able to decode the media represented by configuration at the indicated framerate without

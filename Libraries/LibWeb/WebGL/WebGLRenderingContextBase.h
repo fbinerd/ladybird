@@ -189,8 +189,9 @@ private:
     bool m_xr_compatible { false };
 
     Vector<WebIDL::UnsignedLong> m_enabled_compressed_texture_formats;
-    unsigned m_mundo_video_upload_pbo { 0 };
-    size_t m_mundo_video_upload_pbo_size { 0 };
+    unsigned m_mundo_video_upload_pbos[3] {};
+    size_t m_mundo_video_upload_pbo_sizes[3] {};
+    size_t m_mundo_video_upload_pbo_index { 0 };
 
     // Extensions
     // "Multiple calls to getExtension with the same extension string, taking into account case-insensitive comparison, must return the same object as long as the extension is enabled."

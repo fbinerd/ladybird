@@ -14,12 +14,68 @@
 #include <LibWeb/MediaSourceExtensions/SourceBuffer.h>
 #include <LibWeb/MediaSourceExtensions/SourceBufferList.h>
 #include <LibWeb/MimeSniff/MimeType.h>
+#include <stdlib.h>
+#include <string.h>
 
 namespace Web::MediaSourceExtensions {
 
 using Bindings::ReadyState;
 
 GC_DEFINE_ALLOCATOR(MediaSource);
+
+static bool mundo_nvdec_backend_requested()
+{
+    auto const* raw_backend = getenv("MUNDO_VIDEO_DECODER_BACKEND");
+    if (!raw_backend)
+        return false;
+
+    return !strcmp(raw_backend, "nvdec") || !strcmp(raw_backend, "cuda");
+}
+
+static Optional<unsigned> mundo_avc_codec_level_idc(StringView codec)
+{
+    auto dot_offset = codec.find('.');
+    if (!dot_offset.has_value())
+        return {};
+
+    auto avc_identifier = codec.substring_view(*dot_offset + 1);
+    if (avc_identifier.length() < 6)
+        return {};
+
+    auto hex_value = [](u8 ch) -> Optional<unsigned> {
+        if (ch >= '0' && ch <= '9')
+            return ch - '0';
+        if (ch >= 'a' && ch <= 'f')
+            return ch - 'a' + 10;
+        if (ch >= 'A' && ch <= 'F')
+            return ch - 'A' + 10;
+        return {};
+    };
+
+    auto high = hex_value(avc_identifier[4]);
+    auto low = hex_value(avc_identifier[5]);
+    if (!high.has_value() || !low.has_value())
+        return {};
+    return (*high << 4) | *low;
+}
+
+static bool mundo_mse_codecs_contain_nvdec_unfriendly_h264(StringView codecs)
+{
+    bool unsupported = false;
+    codecs.for_each_split_view(',', SplitBehavior::Nothing, [&](auto codec) {
+        codec = codec.trim_whitespace();
+        if (!codec.starts_with("avc1"sv) && !codec.starts_with("avc3"sv))
+            return IterationDecision::Continue;
+
+        auto level_idc = mundo_avc_codec_level_idc(codec);
+        if (level_idc.has_value() && *level_idc > 0x33) {
+            unsupported = true;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return unsupported;
+}
 
 static bool mundo_mse_codecs_are_supported(StringView codecs)
 {
@@ -399,6 +455,10 @@ bool MediaSource::is_type_supported(String const& type)
     auto codecs = codecs_iter->value.bytes_as_string_view();
     if (!mundo_mse_codecs_are_supported(codecs)) {
         dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=false reason=unsupported_codec", type);
+        return false;
+    }
+    if (mundo_nvdec_backend_requested() && mundo_mse_codecs_contain_nvdec_unfriendly_h264(codecs)) {
+        dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=false reason=nvdec_h264_level_limit", type);
         return false;
     }
 
