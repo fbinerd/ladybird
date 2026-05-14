@@ -547,7 +547,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_pat
         return reject("not_video"sv);
     if (format != GL_RGBA || type != GL_UNSIGNED_BYTE)
         return reject("unsupported_format_or_type"sv);
-    if (m_unpack_flip_y || m_unpack_premultiply_alpha)
+    if (m_unpack_premultiply_alpha)
         return reject("unpack_transform"sv);
 
     bitmap = source.get<GC::Root<HTML::HTMLVideoElement>>()->bitmap();
@@ -572,23 +572,60 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_pat
     if (raster_bitmap->pitch() != row_bytes)
         return reject("non_contiguous_rows"sv);
 
-    auto upload_start = MonotonicTime::now();
     auto data_size = raster_bitmap->data_size();
-    if (is_sub_image) {
-        glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, raster_bitmap->width(), raster_bitmap->height(), format, type, data_size, raster_bitmap->scanline_u8(0));
+
+    auto upload_start = MonotonicTime::now();
+    auto copy_microseconds = 0;
+    if (m_unpack_flip_y) {
+        auto copy_start = MonotonicTime::now();
+        auto flipped_buffer = MUST(ByteBuffer::create_uninitialized(data_size));
+        for (int y = 0; y < raster_bitmap->height(); ++y)
+            memcpy(flipped_buffer.data() + static_cast<size_t>(y) * row_bytes, raster_bitmap->scanline_u8(raster_bitmap->height() - 1 - y), row_bytes);
+        copy_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
+
+        auto pbo_index = m_mundo_video_upload_pbo_index++ % 3;
+        auto& pbo = m_mundo_video_upload_pbos[pbo_index];
+        auto& pbo_size = m_mundo_video_upload_pbo_sizes[pbo_index];
+
+        if (!pbo)
+            glGenBuffers(1, &pbo);
+        if (!pbo)
+            return reject("missing_pbo"sv);
+
+        GLint previous_unpack_buffer = 0;
+        glGetIntegervRobustANGLE(GL_PIXEL_UNPACK_BUFFER_BINDING, 1, nullptr, &previous_unpack_buffer);
+
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+        if (pbo_size < flipped_buffer.size()) {
+            glBufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(flipped_buffer.size()), nullptr, GL_STREAM_DRAW);
+            pbo_size = flipped_buffer.size();
+        }
+        glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, static_cast<GLsizeiptr>(flipped_buffer.size()), flipped_buffer.data());
+        if (is_sub_image) {
+            glTexSubImage2D(target, level, xoffset, yoffset, raster_bitmap->width(), raster_bitmap->height(), format, type, nullptr);
+        } else {
+            glTexImage2D(target, level, internalformat, raster_bitmap->width(), raster_bitmap->height(), border, format, type, nullptr);
+        }
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, previous_unpack_buffer);
     } else {
-        glTexImage2DRobustANGLE(target, level, internalformat, raster_bitmap->width(), raster_bitmap->height(), border, format, type, data_size, raster_bitmap->scanline_u8(0));
+        if (is_sub_image) {
+            glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, raster_bitmap->width(), raster_bitmap->height(), format, type, data_size, raster_bitmap->scanline_u8(0));
+        } else {
+            glTexImage2DRobustANGLE(target, level, internalformat, raster_bitmap->width(), raster_bitmap->height(), border, format, type, data_size, raster_bitmap->scanline_u8(0));
+        }
     }
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
 
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_DIRECT_BITMAP_UPLOAD attempt={} kind={} upload_us={} size={}x{} bytes={} bitmap={} raster={}",
+        dbgln("MUNDO_WEBGL_VIDEO_DIRECT_BITMAP_UPLOAD attempt={} kind={} upload_us={} copy_us={} size={}x{} bytes={} flip_y={} bitmap={} raster={}",
             attempt_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             upload_microseconds,
+            copy_microseconds,
             raster_bitmap->width(),
             raster_bitmap->height(),
             data_size,
+            m_unpack_flip_y,
             static_cast<void const*>(bitmap.ptr()),
             static_cast<void const*>(raster_bitmap.ptr()));
     }
