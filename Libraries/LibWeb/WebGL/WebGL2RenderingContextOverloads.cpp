@@ -92,6 +92,9 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
 {
     m_context->make_current();
 
+    if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
+        return;
+
     auto maybe_converted_texture = read_and_pixel_convert_texture_image_source(source, format, type);
     if (!maybe_converted_texture.has_value())
         return;
@@ -117,6 +120,9 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
 {
     m_context->make_current();
 
+    if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, OptionalNone {}, OptionalNone {}, true))
+        return;
+
     auto maybe_converted_texture = read_and_pixel_convert_texture_image_source(source, format, type);
 
     if (!maybe_converted_texture.has_value())
@@ -130,6 +136,9 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
 void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source)
 {
     m_context->make_current();
+
+    if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, internalformat, 0, 0, border, format, type, width, height, false))
+        return;
 
     auto maybe_converted_texture = read_and_pixel_convert_texture_image_source(source, format, type, width, height);
     if (!maybe_converted_texture.has_value())
@@ -155,6 +164,9 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
 void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source)
 {
     m_context->make_current();
+
+    if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, width, height, true))
+        return;
 
     auto maybe_converted_texture = read_and_pixel_convert_texture_image_source(source, format, type, width, height);
 

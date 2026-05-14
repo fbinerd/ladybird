@@ -74,6 +74,15 @@ static bool mundo_webgl_video_pbo_upload_enabled()
     return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
+static bool mundo_webgl_video_direct_bitmap_upload_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_BITMAP_UPLOAD");
+    if (!raw_value)
+        return true;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
 static constexpr Optional<Gfx::ExportFormat> determine_export_format(WebIDL::UnsignedLong format, WebIDL::UnsignedLong type)
 {
     switch (format) {
@@ -497,6 +506,63 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_pbo(TexImageSou
             pbo_index,
             pbo_size);
     }
+    return true;
+}
+
+bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_path(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width, Optional<int> destination_height, bool is_sub_image)
+{
+    if (!mundo_webgl_video_direct_bitmap_upload_enabled())
+        return false;
+    if (!source.has<GC::Root<HTML::HTMLVideoElement>>())
+        return false;
+    if (format != GL_RGBA || type != GL_UNSIGNED_BYTE)
+        return false;
+    if (destination_width.has_value() || destination_height.has_value())
+        return false;
+    if (m_unpack_flip_y || m_unpack_premultiply_alpha)
+        return false;
+
+    auto bitmap = source.get<GC::Root<HTML::HTMLVideoElement>>()->bitmap();
+    if (!bitmap)
+        return false;
+
+    auto raster_bitmap = bitmap->bitmap();
+    if (!raster_bitmap)
+        return false;
+    if (raster_bitmap->format() != Gfx::BitmapFormat::RGBA8888)
+        return false;
+    if (raster_bitmap->alpha_type() != Gfx::AlphaType::Premultiplied)
+        return false;
+    if (raster_bitmap->width() <= 0 || raster_bitmap->height() <= 0)
+        return false;
+
+    auto row_bytes = static_cast<size_t>(raster_bitmap->width()) * 4;
+    if (raster_bitmap->pitch() != row_bytes)
+        return false;
+
+    auto upload_start = MonotonicTime::now();
+    auto data_size = raster_bitmap->data_size();
+    if (is_sub_image) {
+        glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, raster_bitmap->width(), raster_bitmap->height(), format, type, data_size, raster_bitmap->scanline_u8(0));
+    } else {
+        glTexImage2DRobustANGLE(target, level, internalformat, raster_bitmap->width(), raster_bitmap->height(), border, format, type, data_size, raster_bitmap->scanline_u8(0));
+    }
+    auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
+
+    static size_t s_video_direct_bitmap_upload_count { 0 };
+    auto upload_count = ++s_video_direct_bitmap_upload_count;
+    if (should_log_mundo_webgl_texture_diagnostic(upload_count)) {
+        dbgln("MUNDO_WEBGL_VIDEO_DIRECT_BITMAP_UPLOAD attempt={} kind={} upload_us={} size={}x{} bytes={} bitmap={} raster={}",
+            upload_count,
+            is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
+            upload_microseconds,
+            raster_bitmap->width(),
+            raster_bitmap->height(),
+            data_size,
+            static_cast<void const*>(bitmap.ptr()),
+            static_cast<void const*>(raster_bitmap.ptr()));
+    }
+
     return true;
 }
 

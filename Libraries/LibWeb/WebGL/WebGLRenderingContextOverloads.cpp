@@ -168,6 +168,9 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
 {
     m_context->make_current();
 
+    if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
+        return;
+
     auto maybe_converted_texture = read_and_pixel_convert_texture_image_source(source, format, type);
     if (!maybe_converted_texture.has_value())
         return;
@@ -188,6 +191,9 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
 void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source)
 {
     m_context->make_current();
+
+    if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, OptionalNone {}, OptionalNone {}, true))
+        return;
 
     auto maybe_converted_texture = read_and_pixel_convert_texture_image_source(source, format, type);
 
