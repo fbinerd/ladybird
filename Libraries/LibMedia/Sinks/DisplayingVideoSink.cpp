@@ -32,7 +32,7 @@ static size_t max_consecutive_late_frame_drops()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_MAX_LATE_DROPS");
     if (!raw_value)
-        return 12;
+        return 120;
 
     auto value = atoi(raw_value);
     if (value <= 0)
@@ -124,6 +124,12 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                 dbgln("MUNDO_MEDIA_VIDEO_SINK drop_late_frame count={} consecutive={} limit={} track_id={} current_time={}ms frame_time={}ms age={}ms threshold={}ms", m_dropped_late_frame_count, m_consecutive_late_frame_drop_count, late_frame_drop_limit, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.timestamp().to_milliseconds(), frame_age.to_milliseconds(), late_frame_threshold.to_milliseconds());
             m_next_frame.clear();
             continue;
+        }
+
+        if (m_consecutive_late_frame_drop_count >= late_frame_drop_limit && late_frame_drop_limit > 0) {
+            m_late_drop_limit_hit_count++;
+            if (m_late_drop_limit_hit_count <= 8 || m_late_drop_limit_hit_count % 30 == 0)
+                dbgln("MUNDO_MEDIA_VIDEO_SINK late_drop_limit_hit count={} limit={} track_id={} current_time={}ms frame_time={}ms age={}ms", m_late_drop_limit_hit_count, late_frame_drop_limit, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.timestamp().to_milliseconds(), frame_age.to_milliseconds());
         }
 
         m_current_frame = m_next_frame.release_image();
