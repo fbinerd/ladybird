@@ -511,34 +511,66 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_pbo(TexImageSou
 
 bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_path(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width, Optional<int> destination_height, bool is_sub_image)
 {
+    static size_t s_video_direct_bitmap_attempt_count { 0 };
+    auto attempt_count = ++s_video_direct_bitmap_attempt_count;
+    RefPtr<Gfx::ImmutableBitmap> bitmap;
+    RefPtr<Gfx::Bitmap const> raster_bitmap;
+    auto reject = [&](StringView reason) {
+        if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+            dbgln("MUNDO_WEBGL_VIDEO_DIRECT_BITMAP_UPLOAD_REJECT attempt={} reason={} source_is_video={} format={} type={} dest={}x{} flip_y={} premultiply={} bitmap={} bitmap_size={}x{} raster={} raster_size={}x{} raster_format={} alpha_type={} pitch={} data_size={}",
+                attempt_count,
+                reason,
+                source.has<GC::Root<HTML::HTMLVideoElement>>(),
+                format,
+                type,
+                destination_width.value_or(-1),
+                destination_height.value_or(-1),
+                m_unpack_flip_y,
+                m_unpack_premultiply_alpha,
+                static_cast<void const*>(bitmap.ptr()),
+                bitmap ? bitmap->width() : 0,
+                bitmap ? bitmap->height() : 0,
+                static_cast<void const*>(raster_bitmap.ptr()),
+                raster_bitmap ? raster_bitmap->width() : 0,
+                raster_bitmap ? raster_bitmap->height() : 0,
+                raster_bitmap ? static_cast<int>(raster_bitmap->format()) : -1,
+                raster_bitmap ? static_cast<int>(raster_bitmap->alpha_type()) : -1,
+                raster_bitmap ? raster_bitmap->pitch() : 0,
+                raster_bitmap ? raster_bitmap->data_size() : 0);
+        }
+        return false;
+    };
+
     if (!mundo_webgl_video_direct_bitmap_upload_enabled())
-        return false;
+        return reject("disabled"sv);
     if (!source.has<GC::Root<HTML::HTMLVideoElement>>())
-        return false;
+        return reject("not_video"sv);
     if (format != GL_RGBA || type != GL_UNSIGNED_BYTE)
-        return false;
-    if (destination_width.has_value() || destination_height.has_value())
-        return false;
+        return reject("unsupported_format_or_type"sv);
     if (m_unpack_flip_y || m_unpack_premultiply_alpha)
-        return false;
+        return reject("unpack_transform"sv);
 
-    auto bitmap = source.get<GC::Root<HTML::HTMLVideoElement>>()->bitmap();
+    bitmap = source.get<GC::Root<HTML::HTMLVideoElement>>()->bitmap();
     if (!bitmap)
-        return false;
+        return reject("missing_bitmap"sv);
 
-    auto raster_bitmap = bitmap->bitmap();
+    raster_bitmap = bitmap->bitmap();
     if (!raster_bitmap)
-        return false;
+        return reject("missing_raster_bitmap"sv);
     if (raster_bitmap->format() != Gfx::BitmapFormat::RGBA8888)
-        return false;
+        return reject("unsupported_bitmap_format"sv);
     if (raster_bitmap->alpha_type() != Gfx::AlphaType::Premultiplied)
-        return false;
+        return reject("unsupported_alpha_type"sv);
     if (raster_bitmap->width() <= 0 || raster_bitmap->height() <= 0)
-        return false;
+        return reject("empty_bitmap"sv);
+    if (destination_width.has_value() && destination_width.value() != raster_bitmap->width())
+        return reject("destination_width_mismatch"sv);
+    if (destination_height.has_value() && destination_height.value() != raster_bitmap->height())
+        return reject("destination_height_mismatch"sv);
 
     auto row_bytes = static_cast<size_t>(raster_bitmap->width()) * 4;
     if (raster_bitmap->pitch() != row_bytes)
-        return false;
+        return reject("non_contiguous_rows"sv);
 
     auto upload_start = MonotonicTime::now();
     auto data_size = raster_bitmap->data_size();
@@ -549,11 +581,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_pat
     }
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
 
-    static size_t s_video_direct_bitmap_upload_count { 0 };
-    auto upload_count = ++s_video_direct_bitmap_upload_count;
-    if (should_log_mundo_webgl_texture_diagnostic(upload_count)) {
+    if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         dbgln("MUNDO_WEBGL_VIDEO_DIRECT_BITMAP_UPLOAD attempt={} kind={} upload_us={} size={}x{} bytes={} bitmap={} raster={}",
-            upload_count,
+            attempt_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             upload_microseconds,
             raster_bitmap->width(),
