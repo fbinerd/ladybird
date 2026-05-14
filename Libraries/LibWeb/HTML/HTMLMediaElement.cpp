@@ -56,6 +56,7 @@
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/WebIDL/Promise.h>
 #include <stdlib.h>
+#include <string.h>
 
 namespace Web::HTML {
 
@@ -101,6 +102,43 @@ static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& cur
     return MUST(ByteBuffer::copy(sanitized_manifest.bytes()));
 }
 
+static bool mundo_env_flag_enabled(char const* name)
+{
+    auto const* raw_value = getenv(name);
+    if (!raw_value)
+        return false;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+static bool mundo_env_flag_disabled(char const* name)
+{
+    auto const* raw_value = getenv(name);
+    if (!raw_value)
+        return false;
+
+    return !strcmp(raw_value, "0") || !strcmp(raw_value, "false") || !strcmp(raw_value, "no") || !strcmp(raw_value, "off");
+}
+
+static bool mundo_nvdec_backend_requested()
+{
+    auto const* raw_backend = getenv("MUNDO_VIDEO_DECODER_BACKEND");
+    if (!raw_backend)
+        return false;
+
+    return !strcmp(raw_backend, "nvdec") || !strcmp(raw_backend, "cuda");
+}
+
+static bool mundo_should_prefer_hevc_hls_source()
+{
+    if (mundo_env_flag_disabled("MUNDO_HLS_PREFER_HEVC"))
+        return false;
+    if (mundo_env_flag_enabled("MUNDO_HLS_PREFER_HEVC"))
+        return true;
+
+    return mundo_nvdec_backend_requested();
+}
+
 static Optional<String> mundo_normalized_hls_source(StringView source)
 {
     if (!source.contains("edge-hls.doppiocdn.org/hls/"sv))
@@ -114,6 +152,16 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
     char const* target_quality = nullptr;
     if (path.contains("_vr/master/"sv)) {
         target_quality = getenv("MUNDO_HLS_MAX_VR_QUALITY");
+        if ((!target_quality || target_quality[0] == '\0') && mundo_should_prefer_hevc_hls_source()) {
+            if (path.ends_with("_vr.m3u8"sv))
+                return {};
+            if (path.ends_with("_vr_2160p60.m3u8"sv)) {
+                auto generic_vr_path = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
+                auto normalized = MUST(String::formatted("{}.m3u8{}", generic_vr_path, query));
+                dbgln("MUNDO_MEDIA_ELEMENT preferred_hevc_hls_source original={} normalized={} reason=nvdec_hevc_candidate", source, normalized);
+                return normalized;
+            }
+        }
         if (path.ends_with("_vr.m3u8"sv)) {
             if (!target_quality || target_quality[0] == '\0')
                 target_quality = "1440p60";
