@@ -9,6 +9,9 @@
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/YUVData.h>
 #include <LibMedia/VideoFrame.h>
+#include <LibThreading/ConditionVariable.h>
+#include <LibThreading/Mutex.h>
+#include <LibThreading/ThreadPool.h>
 #include <AK/Time.h>
 
 #include "FFmpegHelpers.h"
@@ -597,6 +600,77 @@ static void convert_nv12_row_to_rgba(YUVToRGBLookupTables const& tables, u8 cons
     }
 }
 
+static bool parallel_direct_nv12_rgba_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_PARALLEL_NV12_RGBA");
+    if (!raw_value)
+        return true;
+
+    return strcmp(raw_value, "0") && strcmp(raw_value, "no") && strcmp(raw_value, "false");
+}
+
+static size_t direct_nv12_parallel_job_count(u32 width, u32 height)
+{
+    if (!parallel_direct_nv12_rgba_enabled())
+        return 1;
+
+    auto pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (pixels < 1920 * 1080)
+        return 1;
+
+    // LibThreading::ThreadPool currently has four workers. Keeping this bounded
+    // avoids flooding the shared pool while still moving the large VR conversion
+    // path off a single decoder thread.
+    auto available_jobs = min(Core::System::hardware_concurrency(), static_cast<size_t>(4));
+    return max(static_cast<size_t>(1), min(available_jobs, static_cast<size_t>(height)));
+}
+
+template<typename Callback>
+static void parallel_for_nv12_rows(u32 height, size_t job_count, Callback callback)
+{
+    if (job_count <= 1) {
+        callback(0, height);
+        return;
+    }
+
+    struct WorkState {
+        Threading::Mutex mutex;
+        Threading::ConditionVariable condition { mutex };
+        size_t remaining_jobs { 0 };
+    };
+
+    WorkState state;
+    {
+        Threading::MutexLocker locker(state.mutex);
+        state.remaining_jobs = job_count;
+    }
+
+    auto rows_per_job = (height + job_count - 1) / job_count;
+    rows_per_job = (rows_per_job + 1) & ~static_cast<size_t>(1);
+    for (size_t job_index = 0; job_index < job_count; ++job_index) {
+        auto start_row = min(static_cast<u32>(job_index * rows_per_job), height);
+        auto end_row = min(static_cast<u32>((job_index + 1) * rows_per_job), height);
+        if (start_row == end_row) {
+            Threading::MutexLocker locker(state.mutex);
+            state.remaining_jobs--;
+            continue;
+        }
+
+        Threading::ThreadPool::the().submit([&state, &callback, start_row, end_row] {
+            callback(start_row, end_row);
+
+            Threading::MutexLocker locker(state.mutex);
+            state.remaining_jobs--;
+            state.condition.broadcast();
+        });
+    }
+
+    Threading::MutexLocker locker(state.mutex);
+    state.condition.wait_while([&state] {
+        return state.remaining_jobs > 0;
+    });
+}
+
 static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_nv12_frame(AVFrame const* frame, CodingIndependentCodePoints const& cicp)
 {
     VERIFY(frame->format == AV_PIX_FMT_NV12);
@@ -616,44 +690,50 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
     auto target_height = static_cast<u32>(target_size.height());
     auto coefficients = coefficients_for_cicp(cicp);
     auto lookup_tables = make_yuv_to_rgb_lookup_tables(coefficients);
+    auto job_count = direct_nv12_parallel_job_count(target_width, target_height);
 
     if (target_width == source_width && target_height == source_height) {
-        for (u32 row = 0; row < source_height; row += 2) {
-            auto const* y_row = frame->data[0] + row * frame->linesize[0];
-            auto const* uv_row = frame->data[1] + (row / 2) * frame->linesize[1];
-            auto* dst_row = bitmap->scanline_u8(row);
-            convert_nv12_row_to_rgba(lookup_tables, y_row, uv_row, dst_row, source_width);
+        parallel_for_nv12_rows(source_height, job_count, [&](u32 start_row, u32 end_row) {
+            for (u32 row = start_row; row < end_row; row += 2) {
+                auto const* y_row = frame->data[0] + row * frame->linesize[0];
+                auto const* uv_row = frame->data[1] + (row / 2) * frame->linesize[1];
+                auto* dst_row = bitmap->scanline_u8(row);
+                convert_nv12_row_to_rgba(lookup_tables, y_row, uv_row, dst_row, source_width);
 
-            if (row + 1 < source_height) {
-                auto const* next_y_row = frame->data[0] + (row + 1) * frame->linesize[0];
-                auto* next_dst_row = bitmap->scanline_u8(row + 1);
-                convert_nv12_row_to_rgba(lookup_tables, next_y_row, uv_row, next_dst_row, source_width);
+                if (row + 1 < source_height && row + 1 < end_row) {
+                    auto const* next_y_row = frame->data[0] + (row + 1) * frame->linesize[0];
+                    auto* next_dst_row = bitmap->scanline_u8(row + 1);
+                    convert_nv12_row_to_rgba(lookup_tables, next_y_row, uv_row, next_dst_row, source_width);
+                }
             }
-        }
+        });
     } else {
-        for (u32 row = 0; row < target_height; ++row) {
-            auto source_y = min((static_cast<u64>(row) * source_height) / target_height, static_cast<u64>(source_height - 1));
-            auto const* y_row = frame->data[0] + source_y * frame->linesize[0];
-            auto const* uv_row = frame->data[1] + (source_y / 2) * frame->linesize[1];
-            auto* dst_row = bitmap->scanline_u8(row);
+        parallel_for_nv12_rows(target_height, job_count, [&](u32 start_row, u32 end_row) {
+            for (u32 row = start_row; row < end_row; ++row) {
+                auto source_y = min((static_cast<u64>(row) * source_height) / target_height, static_cast<u64>(source_height - 1));
+                auto const* y_row = frame->data[0] + source_y * frame->linesize[0];
+                auto const* uv_row = frame->data[1] + (source_y / 2) * frame->linesize[1];
+                auto* dst_row = bitmap->scanline_u8(row);
 
-            for (u32 col = 0; col < target_width; ++col) {
-                auto source_x = min((static_cast<u64>(col) * source_width) / target_width, static_cast<u64>(source_width - 1));
-                auto uv_x = (source_x / 2) * 2;
-                convert_yuv_to_rgba(lookup_tables, y_row[source_x], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+                for (u32 col = 0; col < target_width; ++col) {
+                    auto source_x = min((static_cast<u64>(col) * source_width) / target_width, static_cast<u64>(source_width - 1));
+                    auto uv_x = (source_x / 2) * 2;
+                    convert_yuv_to_rgba(lookup_tables, y_row[source_x], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+                }
             }
-        }
+        });
     }
 
     static size_t s_direct_nv12_frame_count { 0 };
     auto count = ++s_direct_nv12_frame_count;
     if (count <= 8 || count % 120 == 0) {
-        dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap count={} from={}x{} to={}x{}",
+        dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap count={} from={}x{} to={}x{} jobs={}",
             count,
             frame->width,
             frame->height,
             target_size.width(),
-            target_size.height());
+            target_size.height(),
+            job_count);
     }
 
     return Gfx::ImmutableBitmap::create(move(bitmap));
