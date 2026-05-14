@@ -405,17 +405,40 @@ static int max_nvdec_video_raster_width()
     return max(value, 320);
 }
 
-static bool should_create_direct_nv12_rgba_bitmap()
+static bool direct_nv12_rgba_bitmap_enabled()
 {
-    auto const* raw_backend = getenv("MUNDO_VIDEO_BACKEND");
-    if (raw_backend && (!strcmp(raw_backend, "gpu") || !strcmp(raw_backend, "hardware")))
-        return false;
-
     auto const* raw_value = getenv("MUNDO_VIDEO_DIRECT_NV12_RGBA");
     if (!raw_value)
         return true;
 
     return strcmp(raw_value, "0") && strcmp(raw_value, "no") && strcmp(raw_value, "false");
+}
+
+static size_t max_gpu_yuv_upload_pixels()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_GPU_YUV_MAX_PIXELS");
+    if (!raw_value)
+        return 1920 * 1080;
+
+    auto value = atoll(raw_value);
+    if (value <= 0)
+        return 0;
+
+    return static_cast<size_t>(value);
+}
+
+static bool should_use_gpu_yuv_for_nv12_frame(int width, int height)
+{
+    auto const* raw_backend = getenv("MUNDO_VIDEO_BACKEND");
+    if (!raw_backend || (strcmp(raw_backend, "gpu") && strcmp(raw_backend, "hardware")))
+        return false;
+
+    auto max_pixels = max_gpu_yuv_upload_pixels();
+    if (max_pixels == 0)
+        return true;
+
+    auto pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    return pixels <= max_pixels;
 }
 
 static Gfx::IntSize target_size_for_nvdec_frame(AVFrame const* frame)
@@ -863,24 +886,30 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         auto bitmap_start = MonotonicTime::now();
         RefPtr<Gfx::ImmutableBitmap> bitmap;
         auto used_direct_nv12_bitmap = false;
-        if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12 && should_create_direct_nv12_rgba_bitmap()) {
-            auto direct_bitmap = create_bitmap_directly_from_nv12_frame(frame, cicp);
-            if (!direct_bitmap.is_error()) {
-                used_direct_nv12_bitmap = true;
-                bitmap = direct_bitmap.release_value();
+        auto should_use_gpu_yuv_for_nv12 = transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12 && should_use_gpu_yuv_for_nv12_frame(frame->width, frame->height);
+        if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12) {
+            if (!should_use_gpu_yuv_for_nv12 && direct_nv12_rgba_bitmap_enabled()) {
+                auto direct_bitmap = create_bitmap_directly_from_nv12_frame(frame, cicp);
+                if (!direct_bitmap.is_error()) {
+                    used_direct_nv12_bitmap = true;
+                    bitmap = direct_bitmap.release_value();
+                } else {
+                    dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap_fallback size={}x{} error={}", frame->width, frame->height, direct_bitmap.error().string_literal());
+                }
             } else {
-                dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap_fallback size={}x{} error={}", frame->width, frame->height, direct_bitmap.error().string_literal());
+                static size_t s_skipped_direct_nv12_frame_count { 0 };
+                auto skipped_count = ++s_skipped_direct_nv12_frame_count;
+                if (skipped_count <= 8 || skipped_count % 120 == 0) {
+                    auto reason = should_use_gpu_yuv_for_nv12 ? "gpu_yuv_backend"sv : "direct_nv12_disabled"sv;
+                    dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap_skipped count={} reason={} size={}x{} gpu_yuv_max_pixels={}",
+                        skipped_count, reason, frame->width, frame->height, max_gpu_yuv_upload_pixels());
+                }
             }
-        } else if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12) {
-            static size_t s_skipped_direct_nv12_frame_count { 0 };
-            auto skipped_count = ++s_skipped_direct_nv12_frame_count;
-            if (skipped_count <= 8 || skipped_count % 120 == 0)
-                dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap_skipped count={} reason=gpu_yuv_backend size={}x{}", skipped_count, frame->width, frame->height);
         }
 
         if (!bitmap) {
             auto yuv_data = DECODER_TRY_ALLOC(Gfx::YUVData::create(gfx_size, bit_depth, subsampling, cicp));
-            if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12)
+            if (should_use_gpu_yuv_for_nv12)
                 yuv_data->set_prefers_gpu_upload(true);
 
             auto component_size = bit_depth <= 8 ? 1 : 2;

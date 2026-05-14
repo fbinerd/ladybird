@@ -300,6 +300,29 @@ static bool is_large_video_frame(IntSize size)
     return static_cast<i64>(size.width()) * size.height() >= 1920 * 1080;
 }
 
+static size_t max_gpu_yuv_upload_pixels()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_GPU_YUV_MAX_PIXELS");
+    if (!raw_value)
+        return 1920 * 1080;
+
+    auto value = atoll(raw_value);
+    if (value <= 0)
+        return 0;
+
+    return static_cast<size_t>(value);
+}
+
+static bool exceeds_gpu_yuv_upload_size_limit(IntSize size)
+{
+    auto max_pixels = max_gpu_yuv_upload_pixels();
+    if (max_pixels == 0)
+        return false;
+
+    auto pixels = static_cast<size_t>(size.width()) * static_cast<size_t>(size.height());
+    return pixels > max_pixels;
+}
+
 static ErrorOr<NonnullRefPtr<ImmutableBitmap>> create_from_rasterized_yuv(NonnullOwnPtr<YUVData> yuv_data, ColorSpace color_space)
 {
     auto size = yuv_data->size();
@@ -467,6 +490,15 @@ ErrorOr<NonnullRefPtr<ImmutableBitmap>> ImmutableBitmap::create_from_yuv(Nonnull
     if (backend == YUVFrameBackend::Gpu) {
         if (!context)
             return create_from_rasterized_yuv(move(yuv_data), move(color_space));
+        if (yuv_data->prefers_gpu_upload() && exceeds_gpu_yuv_upload_size_limit(size)) {
+            static size_t s_size_limited_gpu_yuv_video_frame_count { 0 };
+            auto count = ++s_size_limited_gpu_yuv_video_frame_count;
+            if (count <= 8 || count % 120 == 0) {
+                dbgln("MUNDO_IMMUTABLE_BITMAP yuv_gpu_texture_skipped count={} size={}x{} reason=gpu_yuv_size_limit backend=gpu max_pixels={}",
+                    count, size.width(), size.height(), max_gpu_yuv_upload_pixels());
+            }
+            return create_from_rasterized_yuv(move(yuv_data), move(color_space));
+        }
         if (is_large_video_frame(size) && !yuv_data->prefers_gpu_upload()) {
             static size_t s_unpreferred_gpu_yuv_video_frame_count { 0 };
             auto count = ++s_unpreferred_gpu_yuv_video_frame_count;
