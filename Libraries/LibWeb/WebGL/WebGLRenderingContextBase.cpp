@@ -48,12 +48,30 @@ extern "C" {
 #include <core/SkImage.h>
 #include <core/SkPixmap.h>
 #include <core/SkSurface.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifndef GL_PIXEL_UNPACK_BUFFER
+#    define GL_PIXEL_UNPACK_BUFFER GL_PIXEL_UNPACK_BUFFER_NV
+#endif
+#ifndef GL_PIXEL_UNPACK_BUFFER_BINDING
+#    define GL_PIXEL_UNPACK_BUFFER_BINDING GL_PIXEL_UNPACK_BUFFER_BINDING_NV
+#endif
 
 namespace Web::WebGL {
 
 static bool should_log_mundo_webgl_texture_diagnostic(size_t count)
 {
     return count <= 12 || count % 120 == 0;
+}
+
+static bool mundo_webgl_video_pbo_upload_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_PBO_UPLOAD");
+    if (!raw_value)
+        return true;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
 static constexpr Optional<Gfx::ExportFormat> determine_export_format(WebIDL::UnsignedLong format, WebIDL::UnsignedLong type)
@@ -424,6 +442,57 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
     }
 
     return value;
+}
+
+bool WebGLRenderingContextBase::upload_texture_source_with_video_pbo(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Gfx::BitmapExportResult const& converted_texture, bool is_sub_image)
+{
+    if (!mundo_webgl_video_pbo_upload_enabled())
+        return false;
+    if (!source.has<GC::Root<HTML::HTMLVideoElement>>())
+        return false;
+    if (format != GL_RGBA || type != GL_UNSIGNED_BYTE)
+        return false;
+    if (converted_texture.buffer.is_empty() || converted_texture.width <= 0 || converted_texture.height <= 0)
+        return false;
+
+    auto upload_start = MonotonicTime::now();
+
+    if (!m_mundo_video_upload_pbo)
+        glGenBuffers(1, &m_mundo_video_upload_pbo);
+    if (!m_mundo_video_upload_pbo)
+        return false;
+
+    GLint previous_unpack_buffer = 0;
+    glGetIntegervRobustANGLE(GL_PIXEL_UNPACK_BUFFER_BINDING, 1, nullptr, &previous_unpack_buffer);
+
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_mundo_video_upload_pbo);
+    if (m_mundo_video_upload_pbo_size < converted_texture.buffer.size()) {
+        glBufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(converted_texture.buffer.size()), nullptr, GL_STREAM_DRAW);
+        m_mundo_video_upload_pbo_size = converted_texture.buffer.size();
+    }
+
+    glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, static_cast<GLsizeiptr>(converted_texture.buffer.size()), converted_texture.buffer.data());
+    if (is_sub_image) {
+        glTexSubImage2D(target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, nullptr);
+    } else {
+        glTexImage2D(target, level, internalformat, converted_texture.width, converted_texture.height, border, format, type, nullptr);
+    }
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, previous_unpack_buffer);
+
+    auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
+    static size_t s_video_pbo_upload_count { 0 };
+    auto upload_count = ++s_video_pbo_upload_count;
+    if (should_log_mundo_webgl_texture_diagnostic(upload_count)) {
+        dbgln("MUNDO_WEBGL_VIDEO_PBO_UPLOAD attempt={} kind={} upload_us={} size={}x{} bytes={} pbo_size={}",
+            upload_count,
+            is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
+            upload_microseconds,
+            converted_texture.width,
+            converted_texture.height,
+            converted_texture.buffer.size(),
+            m_mundo_video_upload_pbo_size);
+    }
+    return true;
 }
 
 // TODO: The glGetError spec allows for queueing errors which is something we should probably do, for now

@@ -96,6 +96,8 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
     if (!maybe_converted_texture.has_value())
         return;
     auto converted_texture = maybe_converted_texture.release_value();
+    if (upload_texture_source_with_video_pbo(source, target, level, internalformat, 0, 0, 0, format, type, converted_texture, false))
+        return;
     glTexImage2DRobustANGLE(target, level, internalformat, converted_texture.width, converted_texture.height, 0, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
 
@@ -120,6 +122,8 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
     if (!maybe_converted_texture.has_value())
         return;
     auto converted_texture = maybe_converted_texture.release_value();
+    if (upload_texture_source_with_video_pbo(source, target, level, 0, xoffset, yoffset, 0, format, type, converted_texture, true))
+        return;
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
 
@@ -131,6 +135,8 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
     if (!maybe_converted_texture.has_value())
         return;
     auto converted_texture = maybe_converted_texture.release_value();
+    if (upload_texture_source_with_video_pbo(source, target, level, internalformat, 0, 0, border, format, type, converted_texture, false))
+        return;
     glTexImage2DRobustANGLE(target, level, internalformat, converted_texture.width, converted_texture.height, border, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
 
@@ -155,6 +161,8 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
     if (!maybe_converted_texture.has_value())
         return;
     auto converted_texture = maybe_converted_texture.release_value();
+    if (upload_texture_source_with_video_pbo(source, target, level, 0, xoffset, yoffset, 0, format, type, converted_texture, true))
+        return;
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
 
