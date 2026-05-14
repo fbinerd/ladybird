@@ -94,7 +94,7 @@ private:
         template<typename Invokee>
         void invoke_on_main_thread(Invokee);
         void dispatch_frame_end_time(CodedFrame const&);
-        void queue_frame(NonnullOwnPtr<VideoFrame> const&);
+        void queue_frame(NonnullOwnPtr<VideoFrame>&&);
         AK::Duration normalized_frame_timestamp(VideoFrame const&);
         void dispatch_error(DecoderError&&);
         void wait_after_reaching_end_of_stream();

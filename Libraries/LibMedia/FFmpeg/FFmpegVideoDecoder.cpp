@@ -12,6 +12,7 @@
 #include <LibThreading/ConditionVariable.h>
 #include <LibThreading/Mutex.h>
 #include <LibThreading/ThreadPool.h>
+#include <AK/ByteBuffer.h>
 #include <AK/Time.h>
 
 #include "FFmpegHelpers.h"
@@ -417,6 +418,15 @@ static bool direct_nv12_rgba_bitmap_enabled()
     return strcmp(raw_value, "0") && strcmp(raw_value, "no") && strcmp(raw_value, "false");
 }
 
+static bool lazy_nv12_rgba_bitmap_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_LAZY_NV12_RGBA");
+    if (!raw_value)
+        return true;
+
+    return strcmp(raw_value, "0") && strcmp(raw_value, "no") && strcmp(raw_value, "false");
+}
+
 static size_t max_gpu_yuv_upload_pixels()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_GPU_YUV_MAX_PIXELS");
@@ -444,16 +454,21 @@ static bool should_use_gpu_yuv_for_nv12_frame(int width, int height)
     return pixels <= max_pixels;
 }
 
-static Gfx::IntSize target_size_for_nvdec_frame(AVFrame const* frame)
+static Gfx::IntSize target_size_for_nvdec_dimensions(int width, int height)
 {
     auto max_width = max_nvdec_video_raster_width();
-    if (max_width == 0 || frame->width <= max_width)
-        return { frame->width, frame->height };
+    if (max_width == 0 || width <= max_width)
+        return { width, height };
 
     return {
         max_width,
-        max(1, static_cast<int>((static_cast<i64>(frame->height) * max_width) / frame->width))
+        max(1, static_cast<int>((static_cast<i64>(height) * max_width) / width))
     };
+}
+
+static Gfx::IntSize target_size_for_nvdec_frame(AVFrame const* frame)
+{
+    return target_size_for_nvdec_dimensions(frame->width, frame->height);
 }
 
 static u8 clamp_to_u8(int value)
@@ -739,6 +754,100 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
     return Gfx::ImmutableBitmap::create(move(bitmap));
 }
 
+struct OwnedNV12FrameData {
+    ByteBuffer y_plane;
+    ByteBuffer uv_plane;
+    int width { 0 };
+    int height { 0 };
+    int y_stride { 0 };
+    int uv_stride { 0 };
+    CodingIndependentCodePoints cicp;
+};
+
+static ErrorOr<OwnedNV12FrameData> copy_nv12_frame_data(AVFrame const* frame, CodingIndependentCodePoints const& cicp)
+{
+    VERIFY(frame->format == AV_PIX_FMT_NV12);
+    if (frame->linesize[0] < 0 || frame->linesize[1] < 0)
+        return Error::from_string_literal("Reversed NV12 scanlines are not supported");
+    if (!frame->data[0] || !frame->data[1])
+        return Error::from_string_literal("NV12 frame had missing planes");
+
+    auto width = frame->width;
+    auto height = frame->height;
+    auto y_stride = frame->linesize[0];
+    auto uv_stride = frame->linesize[1];
+    auto uv_rows = (height + 1) / 2;
+
+    auto y_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(y_stride) * static_cast<size_t>(height)));
+    auto uv_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(uv_stride) * static_cast<size_t>(uv_rows)));
+
+    for (int row = 0; row < height; ++row)
+        __builtin_memcpy(y_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(y_stride), frame->data[0] + static_cast<size_t>(row) * static_cast<size_t>(y_stride), y_stride);
+    for (int row = 0; row < uv_rows; ++row)
+        __builtin_memcpy(uv_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(uv_stride), frame->data[1] + static_cast<size_t>(row) * static_cast<size_t>(uv_stride), uv_stride);
+
+    return OwnedNV12FrameData {
+        .y_plane = move(y_plane),
+        .uv_plane = move(uv_plane),
+        .width = width,
+        .height = height,
+        .y_stride = y_stride,
+        .uv_stride = uv_stride,
+        .cicp = cicp,
+    };
+}
+
+static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_owned_nv12_frame(OwnedNV12FrameData const& frame)
+{
+    if (frame.cicp.matrix_coefficients() == MatrixCoefficients::Identity)
+        return Error::from_string_literal("NV12 direct conversion does not support identity matrix");
+
+    auto target_size = target_size_for_nvdec_dimensions(frame.width, frame.height);
+    auto bitmap = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::RGBA8888, Gfx::AlphaType::Premultiplied, target_size));
+
+    auto source_width = static_cast<u32>(frame.width);
+    auto source_height = static_cast<u32>(frame.height);
+    auto target_width = static_cast<u32>(target_size.width());
+    auto target_height = static_cast<u32>(target_size.height());
+    auto coefficients = coefficients_for_cicp(frame.cicp);
+    auto lookup_tables = make_yuv_to_rgb_lookup_tables(coefficients);
+    auto job_count = direct_nv12_parallel_job_count(target_width, target_height);
+
+    if (target_width == source_width && target_height == source_height) {
+        parallel_for_nv12_rows(source_height, job_count, [&](u32 start_row, u32 end_row) {
+            for (u32 row = start_row; row < end_row; row += 2) {
+                auto const* y_row = frame.y_plane.data() + row * frame.y_stride;
+                auto const* uv_row = frame.uv_plane.data() + (row / 2) * frame.uv_stride;
+                auto* dst_row = bitmap->scanline_u8(row);
+                convert_nv12_row_to_rgba(lookup_tables, y_row, uv_row, dst_row, source_width);
+
+                if (row + 1 < source_height && row + 1 < end_row) {
+                    auto const* next_y_row = frame.y_plane.data() + (row + 1) * frame.y_stride;
+                    auto* next_dst_row = bitmap->scanline_u8(row + 1);
+                    convert_nv12_row_to_rgba(lookup_tables, next_y_row, uv_row, next_dst_row, source_width);
+                }
+            }
+        });
+    } else {
+        parallel_for_nv12_rows(target_height, job_count, [&](u32 start_row, u32 end_row) {
+            for (u32 row = start_row; row < end_row; ++row) {
+                auto source_y = min((static_cast<u64>(row) * source_height) / target_height, static_cast<u64>(source_height - 1));
+                auto const* y_row = frame.y_plane.data() + source_y * frame.y_stride;
+                auto const* uv_row = frame.uv_plane.data() + (source_y / 2) * frame.uv_stride;
+                auto* dst_row = bitmap->scanline_u8(row);
+
+                for (u32 col = 0; col < target_width; ++col) {
+                    auto source_x = min((static_cast<u64>(col) * source_width) / target_width, static_cast<u64>(source_width - 1));
+                    auto uv_x = (source_x / 2) * 2;
+                    convert_yuv_to_rgba(lookup_tables, y_row[source_x], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+                }
+            }
+        });
+    }
+
+    return Gfx::ImmutableBitmap::create(move(bitmap));
+}
+
 static DecoderErrorOr<void> copy_planar_frame_to_yuv_data(AVFrame const* frame, Gfx::YUVData& yuv_data, Gfx::Size<u32> size, Subsampling subsampling, size_t component_size)
 {
     auto y_plane_size = size.to_type<size_t>();
@@ -1008,15 +1117,75 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         auto bitmap_start = MonotonicTime::now();
         RefPtr<Gfx::ImmutableBitmap> bitmap;
         auto used_direct_nv12_bitmap = false;
+        auto used_lazy_nv12_bitmap = false;
         auto should_use_gpu_yuv_for_nv12 = transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12 && should_use_gpu_yuv_for_nv12_frame(frame->width, frame->height);
         if (transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12) {
             if (!should_use_gpu_yuv_for_nv12 && direct_nv12_rgba_bitmap_enabled()) {
-                auto direct_bitmap = create_bitmap_directly_from_nv12_frame(frame, cicp);
-                if (!direct_bitmap.is_error()) {
-                    used_direct_nv12_bitmap = true;
-                    bitmap = direct_bitmap.release_value();
+                if (lazy_nv12_rgba_bitmap_enabled()) {
+                    auto copy_start = MonotonicTime::now();
+                    auto owned_frame_data = copy_nv12_frame_data(frame, cicp);
+                    copy_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
+                    if (!owned_frame_data.is_error()) {
+                        auto frame_data = owned_frame_data.release_value();
+                        auto source_width = frame_data.width;
+                        auto source_height = frame_data.height;
+                        auto target_size = target_size_for_nvdec_dimensions(source_width, source_height);
+                        auto bitmap_factory = [frame_data = move(frame_data)]() mutable -> ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> {
+                            auto materialize_start = MonotonicTime::now();
+                            auto bitmap = TRY(create_bitmap_directly_from_owned_nv12_frame(frame_data));
+                            auto materialize_microseconds = (MonotonicTime::now() - materialize_start).to_microseconds();
+
+                            static size_t s_lazy_materialize_count { 0 };
+                            auto materialize_count = ++s_lazy_materialize_count;
+                            if (materialize_count <= 8 || materialize_count % 120 == 0) {
+                                auto materialized_size = bitmap->size();
+                                dbgln("MUNDO_MEDIA_FFMPEG lazy_nv12_materialize count={} materialize_us={} source_size={}x{} bitmap_size={}x{}",
+                                    materialize_count,
+                                    materialize_microseconds,
+                                    frame_data.width,
+                                    frame_data.height,
+                                    materialized_size.width(),
+                                    materialized_size.height());
+                            }
+
+                            return bitmap;
+                        };
+
+                        auto bitmap_microseconds = 0;
+                        auto pipeline_microseconds = (MonotonicTime::now() - pipeline_start).to_microseconds();
+
+                        static size_t s_video_frame_pipeline_count { 0 };
+                        auto count = ++s_video_frame_pipeline_count;
+                        if (count <= 8 || count % 120 == 0) {
+                            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{}",
+                                count,
+                                transfer_timing.transferred_from_hardware,
+                                false,
+                                true,
+                                transfer_timing.transfer_microseconds,
+                                copy_microseconds,
+                                bitmap_microseconds,
+                                pipeline_microseconds,
+                                pixel_format_name(pixel_format),
+                                target_size.width(),
+                                target_size.height(),
+                                source_width,
+                                source_height);
+                        }
+
+                        used_lazy_nv12_bitmap = true;
+                        return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap_factory)));
+                    }
+
+                    dbgln("MUNDO_MEDIA_FFMPEG lazy_nv12_bitmap_fallback size={}x{} error={}", frame->width, frame->height, owned_frame_data.error().string_literal());
                 } else {
-                    dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap_fallback size={}x{} error={}", frame->width, frame->height, direct_bitmap.error().string_literal());
+                    auto direct_bitmap = create_bitmap_directly_from_nv12_frame(frame, cicp);
+                    if (!direct_bitmap.is_error()) {
+                        used_direct_nv12_bitmap = true;
+                        bitmap = direct_bitmap.release_value();
+                    } else {
+                        dbgln("MUNDO_MEDIA_FFMPEG direct_nv12_bitmap_fallback size={}x{} error={}", frame->width, frame->height, direct_bitmap.error().string_literal());
+                    }
                 }
             } else {
                 static size_t s_skipped_direct_nv12_frame_count { 0 };
@@ -1050,10 +1219,11 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         static size_t s_video_frame_pipeline_count { 0 };
         auto count = ++s_video_frame_pipeline_count;
         if (count <= 8 || count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} hw_transfer={} direct_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{}",
+            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{}",
                 count,
                 transfer_timing.transferred_from_hardware,
                 used_direct_nv12_bitmap,
+                used_lazy_nv12_bitmap,
                 transfer_timing.transfer_microseconds,
                 copy_microseconds,
                 bitmap_microseconds,

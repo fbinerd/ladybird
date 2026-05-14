@@ -7,7 +7,10 @@
 #pragma once
 
 #include <AK/NonnullRefPtr.h>
+#include <AK/Function.h>
+#include <AK/RefPtr.h>
 #include <AK/Time.h>
+#include <AK/Error.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Size.h>
 #include <LibMedia/Color/CodingIndependentCodePoints.h>
@@ -18,6 +21,8 @@ namespace Media {
 class MEDIA_API VideoFrame final {
 
 public:
+    using BitmapFactory = Function<ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>>()>;
+
     VideoFrame(
         AK::Duration timestamp,
         AK::Duration duration,
@@ -25,6 +30,13 @@ public:
         u8 bit_depth,
         CodingIndependentCodePoints cicp,
         NonnullRefPtr<Gfx::ImmutableBitmap> bitmap);
+    VideoFrame(
+        AK::Duration timestamp,
+        AK::Duration duration,
+        Gfx::Size<u32> size,
+        u8 bit_depth,
+        CodingIndependentCodePoints cicp,
+        BitmapFactory&& bitmap_factory);
     ~VideoFrame();
 
     AK::Duration timestamp() const { return m_timestamp; }
@@ -38,6 +50,7 @@ public:
     CodingIndependentCodePoints& cicp() { return m_cicp; }
 
     NonnullRefPtr<Gfx::ImmutableBitmap> immutable_bitmap() const;
+    bool has_lazy_bitmap() const { return m_bitmap == nullptr && m_bitmap_factory; }
 
 private:
     AK::Duration m_timestamp;
@@ -45,7 +58,8 @@ private:
     Gfx::Size<u32> m_size;
     u8 m_bit_depth;
     CodingIndependentCodePoints m_cicp;
-    NonnullRefPtr<Gfx::ImmutableBitmap> m_bitmap;
+    mutable RefPtr<Gfx::ImmutableBitmap> m_bitmap;
+    mutable BitmapFactory m_bitmap_factory;
 };
 
 }

@@ -353,13 +353,13 @@ void VideoDataProvider::ThreadData::dispatch_frame_end_time(CodedFrame const& fr
     });
 }
 
-void VideoDataProvider::ThreadData::queue_frame(NonnullOwnPtr<VideoFrame> const& frame)
+void VideoDataProvider::ThreadData::queue_frame(NonnullOwnPtr<VideoFrame>&& frame)
 {
     auto timestamp = normalized_frame_timestamp(*frame);
     m_queued_frame_count++;
     if (m_queued_frame_count <= 8 || m_queued_frame_count % 60 == 0)
-        dbgln("MUNDO_MEDIA_VIDEO_PROVIDER queue_frame count={} track_id={} timestamp={}ms raw_timestamp={}ms duration={}ms size={}x{} queue_before={}", m_queued_frame_count, m_track.identifier(), timestamp.to_milliseconds(), frame->timestamp().to_milliseconds(), frame->duration().to_milliseconds(), frame->width(), frame->height(), m_queue.size());
-    m_queue.enqueue(TimedImage(timestamp, frame->immutable_bitmap()));
+        dbgln("MUNDO_MEDIA_VIDEO_PROVIDER queue_frame count={} track_id={} timestamp={}ms raw_timestamp={}ms duration={}ms size={}x{} queue_before={} lazy_bitmap={}", m_queued_frame_count, m_track.identifier(), timestamp.to_milliseconds(), frame->timestamp().to_milliseconds(), frame->duration().to_milliseconds(), frame->width(), frame->height(), m_queue.size(), frame->has_lazy_bitmap());
+    m_queue.enqueue(TimedImage(timestamp, move(frame)));
 }
 
 AK::Duration VideoDataProvider::ThreadData::normalized_frame_timestamp(VideoFrame const& frame)
@@ -554,9 +554,8 @@ bool VideoDataProvider::ThreadData::handle_seek()
                     if (last_frame != nullptr)
                         queue_frame(last_frame.release_nonnull());
 
-                    queue_frame(current_frame);
-
                     resolve_seek(seek_id, resolved_time(*current_frame));
+                    queue_frame(move(current_frame));
                     return true;
                 }
 
@@ -710,7 +709,7 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
             }
 
             auto locker = take_lock();
-            queue_frame(frame);
+            queue_frame(move(frame));
         }
     }
 }
