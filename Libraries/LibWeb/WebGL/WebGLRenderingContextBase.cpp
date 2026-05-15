@@ -588,10 +588,8 @@ static bool upload_mundo_video_nv12_plane_texture(GLuint texture, GLenum unit, G
         if (pbo) {
             glGetIntegervRobustANGLE(GL_PIXEL_UNPACK_BUFFER_BINDING, 1, nullptr, &previous_unpack_buffer);
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-            if (pbo_size < byte_count) {
-                glBufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(byte_count), nullptr, GL_STREAM_DRAW);
-                pbo_size = byte_count;
-            }
+            glBufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(byte_count), nullptr, GL_STREAM_DRAW);
+            pbo_size = byte_count;
             glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, static_cast<GLsizeiptr>(byte_count), data);
             data = nullptr;
             used_pbo = true;
