@@ -2964,6 +2964,11 @@ void HTMLMediaElement::notify_about_playing()
 
     // 2. Queue a media element task given the element and the following steps:
     queue_a_media_element_task([this, promises = move(promises)]() {
+        if (paused()) {
+            reject_pending_play_promises<WebIDL::AbortError>(promises, "Media playback was paused"_utf16);
+            return;
+        }
+
         dbgln("MUNDO_MEDIA_ELEMENT element={} event=playing ready_state={} paused={} current_time={} duration={} page_url={} current_src={}",
             static_cast<void const*>(this),
             to_underlying(m_ready_state),
