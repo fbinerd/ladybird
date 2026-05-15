@@ -5,16 +5,38 @@
  */
 
 #include <AK/NonnullOwnPtr.h>
+#include <AK/StringView.h>
 #include <LibGfx/Bitmap.h>
 #include <LibWeb/Bindings/ImageBitmap.h>
 #include <LibWeb/HTML/ImageBitmap.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/WebIDL/DOMException.h>
 #include <LibWeb/WebIDL/ExceptionOr.h>
+#include <stdlib.h>
+#include <string.h>
 
 namespace Web::HTML {
 
 GC_DEFINE_ALLOCATOR(ImageBitmap);
+
+static bool mundo_imagebitmap_diagnostics_enabled()
+{
+    static bool enabled = [] {
+        auto const* raw_value = getenv("MUNDO_IMAGEBITMAP_DIAGNOSTICS");
+        if (!raw_value)
+            return false;
+        auto value = StringView { raw_value, strlen(raw_value) };
+        return value != "0"sv && !value.equals_ignoring_ascii_case("false"sv) && !value.equals_ignoring_ascii_case("no"sv);
+    }();
+    return enabled;
+}
+
+static bool should_log_mundo_imagebitmap_diagnostic()
+{
+    static size_t count = 0;
+    ++count;
+    return mundo_imagebitmap_diagnostics_enabled() && (count <= 12 || count % 120 == 0);
+}
 
 [[nodiscard]] static ErrorOr<NonnullRefPtr<Gfx::Bitmap>> create_bitmap_from_bitmap_data(Gfx::BitmapFormat const format, Gfx::AlphaType const alpha_type, u32 const width, u32 const height, u32 const pitch, ByteBuffer data)
 {
@@ -160,13 +182,15 @@ void ImageBitmap::set_bitmap(RefPtr<Gfx::Bitmap> bitmap)
     if (bitmap) {
         auto snapshot = bitmap->clone();
         if (!snapshot.is_error()) {
-            dbgln("MUNDO_IMAGEBITMAP set_bitmap snapshot source={} snapshot={} size={}x{} pitch={} format={}",
-                static_cast<void const*>(bitmap.ptr()),
-                static_cast<void const*>(snapshot.value().ptr()),
-                snapshot.value()->width(),
-                snapshot.value()->height(),
-                snapshot.value()->pitch(),
-                Gfx::bitmap_format_name(snapshot.value()->format()));
+            if (should_log_mundo_imagebitmap_diagnostic()) {
+                dbgln("MUNDO_IMAGEBITMAP set_bitmap snapshot source={} snapshot={} size={}x{} pitch={} format={}",
+                    static_cast<void const*>(bitmap.ptr()),
+                    static_cast<void const*>(snapshot.value().ptr()),
+                    snapshot.value()->width(),
+                    snapshot.value()->height(),
+                    snapshot.value()->pitch(),
+                    Gfx::bitmap_format_name(snapshot.value()->format()));
+            }
             m_bitmap = snapshot.release_value();
         } else {
             dbgln("MUNDO_IMAGEBITMAP set_bitmap snapshot failed source={} size={}x{} error={}",
@@ -185,7 +209,7 @@ void ImageBitmap::set_bitmap(RefPtr<Gfx::Bitmap> bitmap)
 
 void ImageBitmap::set_transferred_bitmap(RefPtr<Gfx::Bitmap> bitmap)
 {
-    if (bitmap) {
+    if (bitmap && should_log_mundo_imagebitmap_diagnostic()) {
         dbgln("MUNDO_IMAGEBITMAP set_transferred_bitmap bitmap={} size={}x{} pitch={} format={}",
             static_cast<void const*>(bitmap.ptr()),
             bitmap->width(),
