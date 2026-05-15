@@ -620,11 +620,39 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     static size_t s_video_nv12_shader_attempt_count { 0 };
     auto attempt_count = ++s_video_nv12_shader_attempt_count;
     auto reject = [&](StringView reason) {
-        if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-            dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
+        auto source_is_video = source.has<GC::Root<HTML::HTMLVideoElement>>();
+        auto has_nv12_frame = false;
+        auto nv12_width = -1;
+        auto nv12_height = -1;
+        auto nv12_y_stride = -1;
+        auto nv12_uv_stride = -1;
+        size_t nv12_y_bytes = 0;
+        size_t nv12_uv_bytes = 0;
+        if (source_is_video) {
+            auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
+            if (auto const* media_frame = video->current_media_frame(); media_frame && media_frame->nv12_data()) {
+                auto const* nv12_data = media_frame->nv12_data();
+                has_nv12_frame = true;
+                nv12_width = nv12_data->width;
+                nv12_height = nv12_data->height;
+                nv12_y_stride = nv12_data->y_stride;
+                nv12_uv_stride = nv12_data->uv_stride;
+                nv12_y_bytes = nv12_data->y_plane.size();
+                nv12_uv_bytes = nv12_data->uv_plane.size();
+            }
+        }
+        if (has_nv12_frame || should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+            dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} has_nv12={} nv12_size={}x{} nv12_stride={}x{} nv12_bytes={}+{} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
                 attempt_count,
                 reason,
-                source.has<GC::Root<HTML::HTMLVideoElement>>(),
+                source_is_video,
+                has_nv12_frame,
+                nv12_width,
+                nv12_height,
+                nv12_y_stride,
+                nv12_uv_stride,
+                nv12_y_bytes,
+                nv12_uv_bytes,
                 target,
                 level,
                 format,
