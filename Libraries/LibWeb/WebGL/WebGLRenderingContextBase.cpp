@@ -106,7 +106,7 @@ static bool mundo_webgl_video_nv12_shader_black_probe_enabled()
 {
     auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_NV12_SHADER_BLACK_PROBE");
     if (!raw_value)
-        return true;
+        return false;
 
     return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
