@@ -13,6 +13,78 @@
 
 namespace Web::HTML {
 
+static u8 clamp_to_u8(int value)
+{
+    if (value < 0)
+        return 0;
+    if (value > 255)
+        return 255;
+    return static_cast<u8>(value);
+}
+
+static void convert_nv12_pixel_to_rgba(Media::CodingIndependentCodePoints const& cicp, u8 y, u8 u, u8 v, u8* dst)
+{
+    auto y_value = static_cast<int>(y);
+    auto u_offset = static_cast<int>(u) - 128;
+    auto v_offset = static_cast<int>(v) - 128;
+
+    int r;
+    int g;
+    int b;
+
+    if (cicp.video_full_range_flag() == Media::VideoFullRangeFlag::Full) {
+        switch (cicp.matrix_coefficients()) {
+        case Media::MatrixCoefficients::BT601:
+        case Media::MatrixCoefficients::BT470BG:
+            r = y_value + ((359 * v_offset) >> 8);
+            g = y_value - ((88 * u_offset + 183 * v_offset) >> 8);
+            b = y_value + ((454 * u_offset) >> 8);
+            break;
+        case Media::MatrixCoefficients::BT2020NonConstantLuminance:
+        case Media::MatrixCoefficients::BT2020ConstantLuminance:
+            r = y_value + ((377 * v_offset) >> 8);
+            g = y_value - ((42 * u_offset + 146 * v_offset) >> 8);
+            b = y_value + ((482 * u_offset) >> 8);
+            break;
+        case Media::MatrixCoefficients::BT709:
+        case Media::MatrixCoefficients::Unspecified:
+        default:
+            r = y_value + ((403 * v_offset) >> 8);
+            g = y_value - ((48 * u_offset + 120 * v_offset) >> 8);
+            b = y_value + ((475 * u_offset) >> 8);
+            break;
+        }
+    } else {
+        auto c = max(0, y_value - 16);
+        switch (cicp.matrix_coefficients()) {
+        case Media::MatrixCoefficients::BT601:
+        case Media::MatrixCoefficients::BT470BG:
+            r = (298 * c + 409 * v_offset + 128) >> 8;
+            g = (298 * c - 100 * u_offset - 208 * v_offset + 128) >> 8;
+            b = (298 * c + 516 * u_offset + 128) >> 8;
+            break;
+        case Media::MatrixCoefficients::BT2020NonConstantLuminance:
+        case Media::MatrixCoefficients::BT2020ConstantLuminance:
+            r = (298 * c + 430 * v_offset + 128) >> 8;
+            g = (298 * c - 48 * u_offset - 167 * v_offset + 128) >> 8;
+            b = (298 * c + 548 * u_offset + 128) >> 8;
+            break;
+        case Media::MatrixCoefficients::BT709:
+        case Media::MatrixCoefficients::Unspecified:
+        default:
+            r = (298 * c + 459 * v_offset + 128) >> 8;
+            g = (298 * c - 55 * u_offset - 136 * v_offset + 128) >> 8;
+            b = (298 * c + 541 * u_offset + 128) >> 8;
+            break;
+        }
+    }
+
+    dst[0] = clamp_to_u8(r);
+    dst[1] = clamp_to_u8(g);
+    dst[2] = clamp_to_u8(b);
+    dst[3] = 255;
+}
+
 Gfx::IntSize canvas_image_source_dimensions(CanvasImageSource const& image)
 {
     return image.visit(
@@ -74,6 +146,49 @@ RefPtr<Gfx::ImmutableBitmap> canvas_image_source_bitmap(CanvasImageSource const&
         [](GC::Root<HTMLVideoElement> const& source) -> RefPtr<Gfx::ImmutableBitmap> {
             return source->bitmap();
         });
+}
+
+Media::VideoFrame const* canvas_image_source_video_frame(CanvasImageSource const& image)
+{
+    return image.visit(
+        [](GC::Root<HTMLVideoElement> const& source) -> Media::VideoFrame const* {
+            return source->current_media_frame();
+        },
+        [](auto const&) -> Media::VideoFrame const* {
+            return nullptr;
+        });
+}
+
+ErrorOr<NonnullRefPtr<Gfx::Bitmap>> create_scaled_bitmap_from_video_frame(Media::VideoFrame const& frame, Gfx::IntRect const& source_rect, Gfx::IntSize const& target_size)
+{
+    auto const* nv12_data = frame.nv12_data();
+    if (!nv12_data)
+        return Error::from_string_literal("Video frame does not have NV12 data");
+    if (source_rect.is_empty() || target_size.is_empty())
+        return Error::from_string_literal("Video frame draw target is empty");
+
+    auto bitmap = TRY(Gfx::Bitmap::create(Gfx::BitmapFormat::RGBA8888, Gfx::AlphaType::Premultiplied, target_size));
+    auto const source_width = static_cast<u32>(source_rect.width());
+    auto const source_height = static_cast<u32>(source_rect.height());
+    auto const target_width = static_cast<u32>(target_size.width());
+    auto const target_height = static_cast<u32>(target_size.height());
+
+    for (u32 row = 0; row < target_height; ++row) {
+        auto source_y = source_rect.y() + static_cast<int>((static_cast<u64>(row) * source_height) / target_height);
+        source_y = clamp(source_y, 0, nv12_data->height - 1);
+        auto* dst_row = bitmap->scanline_u8(row);
+        auto const* y_row = nv12_data->y_plane.data() + static_cast<size_t>(source_y) * static_cast<size_t>(nv12_data->y_stride);
+        auto const* uv_row = nv12_data->uv_plane.data() + static_cast<size_t>(source_y / 2) * static_cast<size_t>(nv12_data->uv_stride);
+
+        for (u32 col = 0; col < target_width; ++col) {
+            auto source_x = source_rect.x() + static_cast<int>((static_cast<u64>(col) * source_width) / target_width);
+            source_x = clamp(source_x, 0, nv12_data->width - 1);
+            auto uv_x = (source_x / 2) * 2;
+            convert_nv12_pixel_to_rgba(nv12_data->cicp, y_row[source_x], uv_row[uv_x], uv_row[uv_x + 1], dst_row + col * 4);
+        }
+    }
+
+    return bitmap;
 }
 
 WebIDL::ExceptionOr<void> CanvasDrawImage::draw_image(CanvasImageSource const& image, float destination_x, float destination_y)

@@ -143,10 +143,6 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::draw_image_internal(CanvasIm
     if (usability == CanvasImageSourceUsability::Bad)
         return {};
 
-    auto bitmap = canvas_image_source_bitmap(image);
-    if (!bitmap)
-        return {};
-
     // 4. Establish the source and destination rectangles as follows:
     //    If not specified, the dw and dh arguments must default to the values of sw and sh, interpreted such that one CSS pixel in the image is treated as one unit in the output bitmap's coordinate space.
     //    If the sx, sy, sw, and sh arguments are omitted, then they must default to 0, 0, the image's intrinsic width in image pixels, and the image's intrinsic height in image pixels, respectively.
@@ -172,13 +168,17 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::draw_image_internal(CanvasIm
         destination_height = abs(destination_height);
     }
 
+    auto image_size = canvas_image_source_dimensions(image);
+    if (image_size.is_empty())
+        return {};
+
     //    The source rectangle is the rectangle whose corners are the four points (sx, sy), (sx+sw, sy), (sx+sw, sy+sh), (sx, sy+sh).
     auto source_rect = Gfx::FloatRect { source_x, source_y, source_width, source_height };
     //    The destination rectangle is the rectangle whose corners are the four points (dx, dy), (dx+dw, dy), (dx+dw, dy+dh), (dx, dy+dh).
     auto destination_rect = Gfx::FloatRect { destination_x, destination_y, destination_width, destination_height };
     //    When the source rectangle is outside the source image, the source rectangle must be clipped
     //    to the source image and the destination rectangle must be clipped in the same proportion.
-    auto clipped_source = source_rect.intersected(bitmap->rect().to_type<float>());
+    auto clipped_source = source_rect.intersected(Gfx::IntRect { {}, image_size }.to_type<float>());
     auto clipped_destination = destination_rect;
     if (clipped_source != source_rect) {
         clipped_destination.set_width(clipped_destination.width() * (clipped_source.width() / source_rect.width()));
@@ -197,6 +197,29 @@ WebIDL::ExceptionOr<void> CanvasRenderingContext2D::draw_image_internal(CanvasIm
     }
 
     if (auto* painter = this->painter()) {
+        if (auto const* frame = canvas_image_source_video_frame(image); frame && frame->nv12_data()) {
+            auto target_size = clipped_destination.to_rounded<int>().size();
+            if (!target_size.is_empty()) {
+                auto scaled_bitmap = create_scaled_bitmap_from_video_frame(*frame, clipped_source.to_rounded<int>(), target_size);
+                if (!scaled_bitmap.is_error()) {
+                    static size_t s_nv12_canvas_draw_count = 0;
+                    s_nv12_canvas_draw_count++;
+                    if (s_nv12_canvas_draw_count <= 8 || s_nv12_canvas_draw_count % 120 == 0)
+                        dbgln("MUNDO_CANVAS_VIDEO_NV12_DRAW count={} target={}x{} source={}x{} destination={}x{}", s_nv12_canvas_draw_count, target_size.width(), target_size.height(), clipped_source.width(), clipped_source.height(), clipped_destination.width(), clipped_destination.height());
+                    auto immutable = Gfx::ImmutableBitmap::create(scaled_bitmap.release_value());
+                    painter->draw_bitmap(clipped_destination, *immutable, immutable->rect(), Gfx::ScalingMode::NearestNeighbor, drawing_state().filter, drawing_state().global_alpha, drawing_state().current_compositing_and_blending_operator);
+                    did_draw(clipped_destination);
+                    if (image_is_not_origin_clean(image))
+                        m_origin_clean = false;
+                    return {};
+                }
+                dbgln("MUNDO_CANVAS_VIDEO_NV12_DRAW failed target={}x{} error={}", target_size.width(), target_size.height(), scaled_bitmap.error());
+            }
+        }
+
+        auto bitmap = canvas_image_source_bitmap(image);
+        if (!bitmap)
+            return {};
         painter->draw_bitmap(destination_rect, *bitmap, source_rect.to_rounded<int>(), scaling_mode, drawing_state().filter, drawing_state().global_alpha, drawing_state().current_compositing_and_blending_operator);
         did_draw(destination_rect);
     }

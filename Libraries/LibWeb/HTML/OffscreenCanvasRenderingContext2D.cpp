@@ -220,10 +220,6 @@ WebIDL::ExceptionOr<void> OffscreenCanvasRenderingContext2D::draw_image_internal
     if (usability == CanvasImageSourceUsability::Bad)
         return {};
 
-    auto bitmap = canvas_image_source_bitmap(image);
-    if (!bitmap)
-        return {};
-
     if (source_width < 0) {
         source_x += source_width;
         source_width = abs(source_width);
@@ -241,19 +237,45 @@ WebIDL::ExceptionOr<void> OffscreenCanvasRenderingContext2D::draw_image_internal
         destination_height = abs(destination_height);
     }
 
+    auto image_size = canvas_image_source_dimensions(image);
+    if (image_size.is_empty())
+        return {};
+
     if (source_width == 0 || source_height == 0)
         return {};
 
     auto source_rect = Gfx::FloatRect { source_x, source_y, source_width, source_height };
     auto destination_rect = Gfx::FloatRect { destination_x, destination_y, destination_width, destination_height };
-    auto clipped_source = source_rect.intersected(bitmap->rect().to_type<float>());
+    auto clipped_source = source_rect.intersected(Gfx::IntRect { {}, image_size }.to_type<float>());
+    auto clipped_destination = destination_rect;
     if (clipped_source != source_rect) {
-        destination_rect.set_width(destination_rect.width() * (clipped_source.width() / source_rect.width()));
-        destination_rect.set_height(destination_rect.height() * (clipped_source.height() / source_rect.height()));
+        clipped_destination.set_width(clipped_destination.width() * (clipped_source.width() / source_rect.width()));
+        clipped_destination.set_height(clipped_destination.height() * (clipped_source.height() / source_rect.height()));
     }
 
     auto scaling_mode = drawing_state().image_smoothing_enabled ? Gfx::ScalingMode::BilinearMipmap : Gfx::ScalingMode::NearestNeighbor;
     if (auto* painter = this->painter()) {
+        if (auto const* frame = canvas_image_source_video_frame(image); frame && frame->nv12_data()) {
+            auto target_size = clipped_destination.to_rounded<int>().size();
+            if (!target_size.is_empty()) {
+                auto scaled_bitmap = create_scaled_bitmap_from_video_frame(*frame, clipped_source.to_rounded<int>(), target_size);
+                if (!scaled_bitmap.is_error()) {
+                    static size_t s_nv12_offscreen_canvas_draw_count = 0;
+                    s_nv12_offscreen_canvas_draw_count++;
+                    if (s_nv12_offscreen_canvas_draw_count <= 8 || s_nv12_offscreen_canvas_draw_count % 120 == 0)
+                        dbgln("MUNDO_OFFSCREEN_CANVAS_VIDEO_NV12_DRAW count={} target={}x{} source={}x{} destination={}x{}", s_nv12_offscreen_canvas_draw_count, target_size.width(), target_size.height(), clipped_source.width(), clipped_source.height(), clipped_destination.width(), clipped_destination.height());
+                    auto immutable = Gfx::ImmutableBitmap::create(scaled_bitmap.release_value());
+                    painter->draw_bitmap(clipped_destination, *immutable, immutable->rect(), Gfx::ScalingMode::NearestNeighbor, drawing_state().filter, drawing_state().global_alpha, drawing_state().current_compositing_and_blending_operator);
+                    did_draw(clipped_destination);
+                    return {};
+                }
+                dbgln("MUNDO_OFFSCREEN_CANVAS_VIDEO_NV12_DRAW failed target={}x{} error={}", target_size.width(), target_size.height(), scaled_bitmap.error());
+            }
+        }
+
+        auto bitmap = canvas_image_source_bitmap(image);
+        if (!bitmap)
+            return {};
         painter->draw_bitmap(destination_rect, *bitmap, source_rect.to_rounded<int>(), scaling_mode, drawing_state().filter, drawing_state().global_alpha, drawing_state().current_compositing_and_blending_operator);
         did_draw(destination_rect);
     }

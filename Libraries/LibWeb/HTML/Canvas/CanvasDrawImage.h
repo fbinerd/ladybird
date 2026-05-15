@@ -8,6 +8,7 @@
 #pragma once
 
 #include <LibGfx/Size.h>
+#include <LibMedia/VideoFrame.h>
 #include <LibWeb/Forward.h>
 #include <LibWeb/HTML/HTMLCanvasElement.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
@@ -24,6 +25,8 @@ using CanvasImageSource = Variant<GC::Root<HTMLImageElement>, GC::Root<SVG::SVGI
 
 Gfx::IntSize canvas_image_source_dimensions(CanvasImageSource const&);
 RefPtr<Gfx::ImmutableBitmap> canvas_image_source_bitmap(CanvasImageSource const&);
+Media::VideoFrame const* canvas_image_source_video_frame(CanvasImageSource const&);
+ErrorOr<NonnullRefPtr<Gfx::Bitmap>> create_scaled_bitmap_from_video_frame(Media::VideoFrame const&, Gfx::IntRect const& source_rect, Gfx::IntSize const& target_size);
 
 // https://html.spec.whatwg.org/multipage/canvas.html#canvasdrawimage
 class CanvasDrawImage {
