@@ -170,6 +170,10 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
 
     if (upload_texture_source_with_video_nv12_shader_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
         return;
+    if (texture_source_is_video_with_nv12_frame(source)) {
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SKIP_BITMAP_FALLBACK kind=texImage2D reason=nv12_shader_rejected target={} level={} format={} type={}", target, level, format, type);
+        return;
+    }
     if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
         return;
 
@@ -196,6 +200,10 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
 
     if (upload_texture_source_with_video_nv12_shader_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, OptionalNone {}, OptionalNone {}, true))
         return;
+    if (texture_source_is_video_with_nv12_frame(source)) {
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SKIP_BITMAP_FALLBACK kind=texSubImage2D reason=nv12_shader_rejected target={} level={} offset={}x{} format={} type={}", target, level, xoffset, yoffset, format, type);
+        return;
+    }
     if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, OptionalNone {}, OptionalNone {}, true))
         return;
 

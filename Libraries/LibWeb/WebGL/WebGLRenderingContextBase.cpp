@@ -472,6 +472,15 @@ Optional<Gfx::BitmapExportResult> WebGLRenderingContextBase::read_and_pixel_conv
     return value;
 }
 
+bool WebGLRenderingContextBase::texture_source_is_video_with_nv12_frame(TexImageSource const& source) const
+{
+    if (!source.has<GC::Root<HTML::HTMLVideoElement>>())
+        return false;
+    auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
+    auto const* media_frame = video->current_media_frame();
+    return media_frame && media_frame->nv12_data();
+}
+
 bool WebGLRenderingContextBase::upload_texture_source_with_video_pbo(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Gfx::BitmapExportResult const& converted_texture, bool is_sub_image)
 {
     if (!mundo_webgl_video_pbo_upload_enabled())

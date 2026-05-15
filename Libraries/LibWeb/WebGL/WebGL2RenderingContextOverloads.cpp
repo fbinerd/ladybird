@@ -94,6 +94,10 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
 
     if (upload_texture_source_with_video_nv12_shader_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
         return;
+    if (texture_source_is_video_with_nv12_frame(source)) {
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SKIP_BITMAP_FALLBACK kind=texImage2D reason=nv12_shader_rejected target={} level={} format={} type={}", target, level, format, type);
+        return;
+    }
     if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
         return;
 
@@ -143,6 +147,10 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
 
     if (upload_texture_source_with_video_nv12_shader_fast_path(source, target, level, internalformat, 0, 0, border, format, type, width, height, false))
         return;
+    if (texture_source_is_video_with_nv12_frame(source)) {
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SKIP_BITMAP_FALLBACK kind=texImage2D reason=nv12_shader_rejected target={} level={} size={}x{} format={} type={}", target, level, width, height, format, type);
+        return;
+    }
     if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, internalformat, 0, 0, border, format, type, width, height, false))
         return;
 
@@ -173,6 +181,10 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
 
     if (upload_texture_source_with_video_nv12_shader_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, width, height, true))
         return;
+    if (texture_source_is_video_with_nv12_frame(source)) {
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SKIP_BITMAP_FALLBACK kind=texSubImage2D reason=nv12_shader_rejected target={} level={} offset={}x{} size={}x{} format={} type={}", target, level, xoffset, yoffset, width, height, format, type);
+        return;
+    }
     if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, width, height, true))
         return;
 
