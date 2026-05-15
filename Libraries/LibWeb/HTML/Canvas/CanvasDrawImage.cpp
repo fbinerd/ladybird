@@ -7,6 +7,7 @@
 
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/ImmutableBitmap.h>
+#include <LibMedia/VideoFrame.h>
 #include <LibWeb/HTML/Canvas/CanvasDrawImage.h>
 #include <LibWeb/HTML/ImageBitmap.h>
 
@@ -45,8 +46,8 @@ Gfx::IntSize canvas_image_source_dimensions(CanvasImageSource const& image)
             return {};
         },
         [](GC::Root<HTMLVideoElement> const& source) -> Gfx::IntSize {
-            if (auto bitmap = source->bitmap())
-                return bitmap->size();
+            if (auto const* frame = source->current_media_frame())
+                return frame->size().to_type<int>();
             return { source->video_width(), source->video_height() };
         });
 }
