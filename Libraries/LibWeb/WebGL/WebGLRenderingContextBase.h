@@ -202,6 +202,23 @@ private:
     unsigned m_mundo_video_nv12_uv_texture { 0 };
     unsigned m_mundo_video_nv12_framebuffer { 0 };
     unsigned m_mundo_video_nv12_vertex_buffer { 0 };
+    struct MundoVideoNV12PlaneTextureState {
+        int width { 0 };
+        int height { 0 };
+        unsigned format { 0 };
+    };
+    MundoVideoNV12PlaneTextureState m_mundo_video_nv12_y_texture_state;
+    MundoVideoNV12PlaneTextureState m_mundo_video_nv12_uv_texture_state;
+    struct MundoVideoNV12UniformLocations {
+        int y_plane { -1 };
+        int uv_plane { -1 };
+        int y_offset { -1 };
+        int y_scale { -1 };
+        int r_coefficients { -1 };
+        int g_coefficients { -1 };
+        int b_coefficients { -1 };
+    };
+    MundoVideoNV12UniformLocations m_mundo_video_nv12_uniform_locations;
     struct MundoVideoNV12TargetTextureState {
         int width { 0 };
         int height { 0 };
