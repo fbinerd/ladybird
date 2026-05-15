@@ -431,7 +431,7 @@ static bool parallel_nv12_frame_copy_enabled()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_PARALLEL_NV12_COPY");
     if (!raw_value)
-        return true;
+        return false;
 
     return strcmp(raw_value, "0") && strcmp(raw_value, "no") && strcmp(raw_value, "false");
 }
@@ -765,6 +765,7 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
 
 static ErrorOr<NonnullRefPtr<NV12VideoFrameData>> copy_nv12_frame_data(AVFrame const* frame, CodingIndependentCodePoints const& cicp)
 {
+    auto copy_start = MonotonicTime::now();
     VERIFY(frame->format == AV_PIX_FMT_NV12);
     if (frame->linesize[0] < 0 || frame->linesize[1] < 0)
         return Error::from_string_literal("Reversed NV12 scanlines are not supported");
@@ -779,13 +780,16 @@ static ErrorOr<NonnullRefPtr<NV12VideoFrameData>> copy_nv12_frame_data(AVFrame c
     auto uv_stride = ((width + 1) / 2) * 2;
     auto uv_rows = (height + 1) / 2;
 
+    auto allocation_start = MonotonicTime::now();
     auto y_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(y_stride) * static_cast<size_t>(height)));
     auto uv_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(uv_stride) * static_cast<size_t>(uv_rows)));
+    auto allocation_microseconds = (MonotonicTime::now() - allocation_start).to_microseconds();
 
     auto pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
     auto job_count = parallel_nv12_frame_copy_enabled() && pixels >= 1920 * 1080
         ? direct_nv12_parallel_job_count(width, height)
         : 1;
+    auto copy_body_start = MonotonicTime::now();
     if (source_y_stride == y_stride)
         __builtin_memcpy(y_plane.data(), frame->data[0], static_cast<size_t>(y_stride) * static_cast<size_t>(height));
     else {
@@ -804,6 +808,27 @@ static ErrorOr<NonnullRefPtr<NV12VideoFrameData>> copy_nv12_frame_data(AVFrame c
             for (auto row = start_uv_row; row < end_uv_row; ++row)
                 __builtin_memcpy(uv_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(uv_stride), frame->data[1] + static_cast<size_t>(row) * static_cast<size_t>(source_uv_stride), uv_stride);
         });
+    }
+    auto copy_body_microseconds = (MonotonicTime::now() - copy_body_start).to_microseconds();
+    auto total_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
+
+    static size_t s_nv12_frame_copy_count { 0 };
+    auto count = ++s_nv12_frame_copy_count;
+    if (count <= 8 || count % 120 == 0) {
+        dbgln("MUNDO_MEDIA_FFMPEG nv12_frame_copy count={} total_us={} alloc_us={} copy_body_us={} jobs={} size={}x{} y_stride={}/{} uv_stride={}/{} compact={}/{}",
+            count,
+            total_microseconds,
+            allocation_microseconds,
+            copy_body_microseconds,
+            job_count,
+            width,
+            height,
+            y_stride,
+            source_y_stride,
+            uv_stride,
+            source_uv_stride,
+            source_y_stride == y_stride,
+            source_uv_stride == uv_stride);
     }
 
     auto data = make_ref_counted<NV12VideoFrameData>();
