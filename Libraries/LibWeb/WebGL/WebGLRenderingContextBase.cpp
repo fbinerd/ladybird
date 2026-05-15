@@ -752,6 +752,16 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     if (!m_mundo_video_nv12_y_texture || !m_mundo_video_nv12_uv_texture || !m_mundo_video_nv12_framebuffer || !m_mundo_video_nv12_vertex_buffer)
         return reject("resource_create_failed"sv);
 
+    auto preserved_pending_gl_errors = 0;
+    for (;;) {
+        auto pending_error = glGetError();
+        if (pending_error == GL_NO_ERROR)
+            break;
+        if (m_error == GL_NO_ERROR)
+            m_error = pending_error;
+        ++preserved_pending_gl_errors;
+    }
+
     GLint previous_program = 0;
     GLint previous_active_texture = 0;
     GLint previous_texture_2d = 0;
@@ -923,7 +933,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} upload_us={} size={}x{} offset={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} upload_us={} size={}x{} offset={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
             attempt_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             upload_microseconds,
@@ -935,6 +945,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             nv12_data->uv_plane.size(),
             m_unpack_flip_y,
             is_full_range,
+            preserved_pending_gl_errors,
             draw_error,
             sampled_y,
             sampled_u,
