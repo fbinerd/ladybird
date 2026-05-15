@@ -633,7 +633,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         return reject("disabled"sv);
     if (!source.has<GC::Root<HTML::HTMLVideoElement>>())
         return reject("not_video"sv);
-    if (target != GL_TEXTURE_2D || level != 0 || border != 0 || is_sub_image || xoffset != 0 || yoffset != 0)
+    if (target != GL_TEXTURE_2D || level != 0 || border != 0)
         return reject("unsupported_target_or_sub_image"sv);
     if (format != GL_RGBA || type != GL_UNSIGNED_BYTE)
         return reject("unsupported_format_or_type"sv);
@@ -797,7 +797,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto upload_start = MonotonicTime::now();
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(target, level, internalformat, nv12_data->width, nv12_data->height, border, format, type, nullptr);
+    if (!is_sub_image)
+        glTexImage2D(target, level, internalformat, nv12_data->width, nv12_data->height, border, format, type, nullptr);
     upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, nv12_data->width, nv12_data->height, nv12_data->y_plane.data());
     upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, nv12_data->uv_stride / 2, (nv12_data->height + 1) / 2, nv12_data->uv_plane.data());
 
@@ -837,7 +838,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         vertices[15] = 1.0f;
     }
 
-    glViewport(0, 0, nv12_data->width, nv12_data->height);
+    glViewport(is_sub_image ? xoffset : 0, is_sub_image ? yoffset : 0, nv12_data->width, nv12_data->height);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
@@ -885,11 +886,14 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} upload_us={} size={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} upload_us={} size={}x{} offset={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
             attempt_count,
+            is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             upload_microseconds,
             nv12_data->width,
             nv12_data->height,
+            is_sub_image ? xoffset : 0,
+            is_sub_image ? yoffset : 0,
             nv12_data->y_plane.size(),
             nv12_data->uv_plane.size(),
             m_unpack_flip_y,
