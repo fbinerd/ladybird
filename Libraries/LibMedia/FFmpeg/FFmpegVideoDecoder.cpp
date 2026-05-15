@@ -427,6 +427,15 @@ static bool lazy_nv12_rgba_bitmap_enabled()
     return strcmp(raw_value, "0") && strcmp(raw_value, "no") && strcmp(raw_value, "false");
 }
 
+static bool parallel_nv12_frame_copy_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_PARALLEL_NV12_COPY");
+    if (!raw_value)
+        return true;
+
+    return strcmp(raw_value, "0") && strcmp(raw_value, "no") && strcmp(raw_value, "false");
+}
+
 static size_t max_gpu_yuv_upload_pixels()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_GPU_YUV_MAX_PIXELS");
@@ -773,10 +782,29 @@ static ErrorOr<NonnullRefPtr<NV12VideoFrameData>> copy_nv12_frame_data(AVFrame c
     auto y_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(y_stride) * static_cast<size_t>(height)));
     auto uv_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(uv_stride) * static_cast<size_t>(uv_rows)));
 
-    for (int row = 0; row < height; ++row)
-        __builtin_memcpy(y_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(y_stride), frame->data[0] + static_cast<size_t>(row) * static_cast<size_t>(source_y_stride), y_stride);
-    for (int row = 0; row < uv_rows; ++row)
-        __builtin_memcpy(uv_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(uv_stride), frame->data[1] + static_cast<size_t>(row) * static_cast<size_t>(source_uv_stride), uv_stride);
+    auto pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
+    auto job_count = parallel_nv12_frame_copy_enabled() && pixels >= 1920 * 1080
+        ? direct_nv12_parallel_job_count(width, height)
+        : 1;
+    if (source_y_stride == y_stride)
+        __builtin_memcpy(y_plane.data(), frame->data[0], static_cast<size_t>(y_stride) * static_cast<size_t>(height));
+    else {
+        parallel_for_nv12_rows(height, job_count, [&](u32 start_row, u32 end_row) {
+            for (auto row = start_row; row < end_row; ++row)
+                __builtin_memcpy(y_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(y_stride), frame->data[0] + static_cast<size_t>(row) * static_cast<size_t>(source_y_stride), y_stride);
+        });
+    }
+
+    if (source_uv_stride == uv_stride)
+        __builtin_memcpy(uv_plane.data(), frame->data[1], static_cast<size_t>(uv_stride) * static_cast<size_t>(uv_rows));
+    else {
+        parallel_for_nv12_rows(height, job_count, [&](u32 start_row, u32 end_row) {
+            auto start_uv_row = start_row / 2;
+            auto end_uv_row = min(static_cast<u32>(uv_rows), (end_row + 1) / 2);
+            for (auto row = start_uv_row; row < end_uv_row; ++row)
+                __builtin_memcpy(uv_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(uv_stride), frame->data[1] + static_cast<size_t>(row) * static_cast<size_t>(source_uv_stride), uv_stride);
+        });
+    }
 
     auto data = make_ref_counted<NV12VideoFrameData>();
     data->y_plane = move(y_plane);
