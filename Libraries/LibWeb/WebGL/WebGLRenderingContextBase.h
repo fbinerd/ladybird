@@ -209,6 +209,13 @@ private:
     };
     MundoVideoNV12PlaneTextureState m_mundo_video_nv12_y_texture_state;
     MundoVideoNV12PlaneTextureState m_mundo_video_nv12_uv_texture_state;
+    struct MundoVideoNV12PlaneUploadPBOs {
+        unsigned buffers[3] {};
+        size_t sizes[3] {};
+        size_t index { 0 };
+    };
+    MundoVideoNV12PlaneUploadPBOs m_mundo_video_nv12_y_upload_pbos;
+    MundoVideoNV12PlaneUploadPBOs m_mundo_video_nv12_uv_upload_pbos;
     struct MundoVideoNV12UniformLocations {
         int y_plane { -1 };
         int uv_plane { -1 };
