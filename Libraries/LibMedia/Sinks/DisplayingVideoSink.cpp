@@ -153,6 +153,18 @@ RefPtr<Gfx::ImmutableBitmap> DisplayingVideoSink::current_frame()
 {
     if (!m_current_frame.is_valid())
         return nullptr;
+    static size_t s_current_frame_request_count { 0 };
+    auto count = ++s_current_frame_request_count;
+    if (count <= 16 || count % 120 == 0) {
+        auto size = m_current_frame.size();
+        dbgln("MUNDO_MEDIA_VIDEO_SINK current_frame_request count={} track_id={} timestamp={}ms size={}x{} lazy_bitmap={}",
+            count,
+            m_track.has_value() ? m_track.value().identifier() : 0,
+            m_current_frame.timestamp().to_milliseconds(),
+            size.width(),
+            size.height(),
+            m_current_frame.has_lazy_bitmap());
+    }
     return m_current_frame.image();
 }
 

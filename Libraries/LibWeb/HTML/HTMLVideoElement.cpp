@@ -350,6 +350,20 @@ RefPtr<Gfx::ImmutableBitmap> HTMLVideoElement::bitmap() const
     auto const& sink = selected_video_track_sink();
     if (sink == nullptr)
         return nullptr;
+    static size_t s_bitmap_request_count { 0 };
+    auto count = ++s_bitmap_request_count;
+    if (should_log_mundo_video_frame_diagnostic(count)) {
+        auto const* media_frame = sink->current_video_frame();
+        dbgln("MUNDO_VIDEO_ELEMENT_BITMAP request count={} element={} current_src={} ready_state={} media_frame={} lazy_bitmap={} size={}x{}",
+            count,
+            static_cast<void const*>(this),
+            current_src(),
+            to_underlying(ready_state()),
+            static_cast<void const*>(media_frame),
+            media_frame ? media_frame->has_lazy_bitmap() : false,
+            media_frame ? media_frame->width() : 0,
+            media_frame ? media_frame->height() : 0);
+    }
     return sink->current_frame();
 }
 
