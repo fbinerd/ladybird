@@ -950,6 +950,17 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         if (input_luma_is_visible && output_is_black)
             return reject("black_probe"sv);
     }
+    if (draw_error != GL_NO_ERROR) {
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_DRAW_ERROR attempt={} kind={} gl_error={} size={}x{} offset={}x{}",
+            attempt_count,
+            is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
+            draw_error,
+            nv12_data->width,
+            nv12_data->height,
+            is_sub_image ? xoffset : 0,
+            is_sub_image ? yoffset : 0);
+        return reject("draw_error"sv);
+    }
     return draw_error == GL_NO_ERROR;
 }
 
