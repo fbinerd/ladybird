@@ -39,6 +39,19 @@ static size_t video_frame_queue_size(Track const& track)
     return clamp(static_cast<size_t>(value), static_cast<size_t>(1), VideoDataProvider::QUEUE_CAPACITY);
 }
 
+static AK::Duration stale_decoded_frame_drop_threshold()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_PROVIDER_STALE_DROP_MS");
+    if (!raw_value)
+        return AK::Duration::from_milliseconds(500);
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return AK::Duration::max();
+
+    return AK::Duration::from_milliseconds(max(value, 16));
+}
+
 DecoderErrorOr<NonnullRefPtr<VideoDataProvider>> VideoDataProvider::try_create(NonnullRefPtr<Core::WeakEventLoopReference> const& main_thread_event_loop, NonnullRefPtr<Demuxer> const& demuxer, Track const& track, RefPtr<MediaTimeProvider> const& time_provider)
 {
     dbgln("MUNDO_MEDIA_VIDEO_PROVIDER start track_id={} size={}x{}", track.identifier(), track.video_data().pixel_width, track.video_data().pixel_height);
@@ -356,6 +369,24 @@ void VideoDataProvider::ThreadData::dispatch_frame_end_time(CodedFrame const& fr
 void VideoDataProvider::ThreadData::queue_frame(NonnullOwnPtr<VideoFrame>&& frame)
 {
     auto timestamp = normalized_frame_timestamp(*frame);
+    auto stale_threshold = stale_decoded_frame_drop_threshold();
+    if (m_time_provider && stale_threshold != AK::Duration::max()) {
+        auto playback_time = m_time_provider->current_time();
+        if (playback_time > timestamp && playback_time - timestamp > stale_threshold) {
+            m_dropped_stale_decoded_frame_count++;
+            if (m_dropped_stale_decoded_frame_count <= 8 || m_dropped_stale_decoded_frame_count % 60 == 0) {
+                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER drop_stale_decoded_frame count={} track_id={} playback_time={}ms timestamp={}ms age={}ms threshold={}ms queue_size={}",
+                    m_dropped_stale_decoded_frame_count,
+                    m_track.identifier(),
+                    playback_time.to_milliseconds(),
+                    timestamp.to_milliseconds(),
+                    (playback_time - timestamp).to_milliseconds(),
+                    stale_threshold.to_milliseconds(),
+                    m_queue.size());
+            }
+            return;
+        }
+    }
     m_queued_frame_count++;
     if (m_queued_frame_count <= 8 || m_queued_frame_count % 60 == 0)
         dbgln("MUNDO_MEDIA_VIDEO_PROVIDER queue_frame count={} track_id={} timestamp={}ms raw_timestamp={}ms duration={}ms size={}x{} queue_before={} lazy_bitmap={}", m_queued_frame_count, m_track.identifier(), timestamp.to_milliseconds(), frame->timestamp().to_milliseconds(), frame->duration().to_milliseconds(), frame->width(), frame->height(), m_queue.size(), frame->has_lazy_bitmap());
