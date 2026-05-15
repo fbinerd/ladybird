@@ -6,8 +6,10 @@
 
 #pragma once
 
-#include <AK/NonnullRefPtr.h>
+#include <AK/ByteBuffer.h>
 #include <AK/Function.h>
+#include <AK/NonnullRefPtr.h>
+#include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
 #include <AK/Time.h>
 #include <AK/Error.h>
@@ -17,6 +19,16 @@
 #include <LibMedia/Export.h>
 
 namespace Media {
+
+struct MEDIA_API NV12VideoFrameData : public RefCounted<NV12VideoFrameData> {
+    ByteBuffer y_plane;
+    ByteBuffer uv_plane;
+    int width { 0 };
+    int height { 0 };
+    int y_stride { 0 };
+    int uv_stride { 0 };
+    CodingIndependentCodePoints cicp;
+};
 
 class MEDIA_API VideoFrame final {
 
@@ -37,6 +49,14 @@ public:
         u8 bit_depth,
         CodingIndependentCodePoints cicp,
         BitmapFactory&& bitmap_factory);
+    VideoFrame(
+        AK::Duration timestamp,
+        AK::Duration duration,
+        Gfx::Size<u32> size,
+        u8 bit_depth,
+        CodingIndependentCodePoints cicp,
+        BitmapFactory&& bitmap_factory,
+        NonnullRefPtr<NV12VideoFrameData>);
     ~VideoFrame();
 
     AK::Duration timestamp() const { return m_timestamp; }
@@ -51,6 +71,7 @@ public:
 
     NonnullRefPtr<Gfx::ImmutableBitmap> immutable_bitmap() const;
     bool has_lazy_bitmap() const { return m_bitmap == nullptr && m_bitmap_factory; }
+    NV12VideoFrameData const* nv12_data() const { return m_nv12_data.ptr(); }
 
 private:
     AK::Duration m_timestamp;
@@ -60,6 +81,7 @@ private:
     CodingIndependentCodePoints m_cicp;
     mutable RefPtr<Gfx::ImmutableBitmap> m_bitmap;
     mutable BitmapFactory m_bitmap_factory;
+    RefPtr<NV12VideoFrameData> m_nv12_data;
 };
 
 }

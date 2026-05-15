@@ -353,6 +353,14 @@ RefPtr<Gfx::ImmutableBitmap> HTMLVideoElement::bitmap() const
     return sink->current_frame();
 }
 
+Media::VideoFrame const* HTMLVideoElement::current_media_frame() const
+{
+    auto const& sink = selected_video_track_sink();
+    if (sink == nullptr)
+        return nullptr;
+    return sink->current_video_frame();
+}
+
 WebIDL::UnsignedLong HTMLVideoElement::request_video_frame_callback(GC::Ref<WebIDL::CallbackType> callback)
 {
     auto handle = m_next_video_frame_callback_handle++;

@@ -31,6 +31,7 @@ public:
     AK::Duration const& timestamp() const;
     Gfx::Size<u32> size() const;
     bool has_lazy_bitmap() const;
+    VideoFrame const* video_frame() const { return m_frame.ptr(); }
     NonnullRefPtr<Gfx::ImmutableBitmap> image() const;
     NonnullRefPtr<Gfx::ImmutableBitmap> release_image();
     void clear();

@@ -156,6 +156,13 @@ RefPtr<Gfx::ImmutableBitmap> DisplayingVideoSink::current_frame()
     return m_current_frame.image();
 }
 
+VideoFrame const* DisplayingVideoSink::current_video_frame() const
+{
+    if (!m_current_frame.is_valid())
+        return nullptr;
+    return m_current_frame.video_frame();
+}
+
 Optional<Gfx::Size<u32>> DisplayingVideoSink::current_frame_size() const
 {
     if (!m_current_frame.is_valid())

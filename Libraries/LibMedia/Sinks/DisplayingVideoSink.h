@@ -42,6 +42,7 @@ public:
     DisplayingVideoSinkUpdateResult update();
     void prepare_current_frame_for_next_update();
     RefPtr<Gfx::ImmutableBitmap> current_frame();
+    VideoFrame const* current_video_frame() const;
     Optional<Gfx::Size<u32>> current_frame_size() const;
 
     void pause_updates();

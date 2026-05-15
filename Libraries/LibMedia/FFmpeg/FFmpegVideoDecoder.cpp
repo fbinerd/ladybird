@@ -754,17 +754,7 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
     return Gfx::ImmutableBitmap::create(move(bitmap));
 }
 
-struct OwnedNV12FrameData {
-    ByteBuffer y_plane;
-    ByteBuffer uv_plane;
-    int width { 0 };
-    int height { 0 };
-    int y_stride { 0 };
-    int uv_stride { 0 };
-    CodingIndependentCodePoints cicp;
-};
-
-static ErrorOr<OwnedNV12FrameData> copy_nv12_frame_data(AVFrame const* frame, CodingIndependentCodePoints const& cicp)
+static ErrorOr<NonnullRefPtr<NV12VideoFrameData>> copy_nv12_frame_data(AVFrame const* frame, CodingIndependentCodePoints const& cicp)
 {
     VERIFY(frame->format == AV_PIX_FMT_NV12);
     if (frame->linesize[0] < 0 || frame->linesize[1] < 0)
@@ -788,18 +778,18 @@ static ErrorOr<OwnedNV12FrameData> copy_nv12_frame_data(AVFrame const* frame, Co
     for (int row = 0; row < uv_rows; ++row)
         __builtin_memcpy(uv_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(uv_stride), frame->data[1] + static_cast<size_t>(row) * static_cast<size_t>(source_uv_stride), uv_stride);
 
-    return OwnedNV12FrameData {
-        .y_plane = move(y_plane),
-        .uv_plane = move(uv_plane),
-        .width = width,
-        .height = height,
-        .y_stride = y_stride,
-        .uv_stride = uv_stride,
-        .cicp = cicp,
-    };
+    auto data = make_ref_counted<NV12VideoFrameData>();
+    data->y_plane = move(y_plane);
+    data->uv_plane = move(uv_plane);
+    data->width = width;
+    data->height = height;
+    data->y_stride = y_stride;
+    data->uv_stride = uv_stride;
+    data->cicp = cicp;
+    return data;
 }
 
-static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_owned_nv12_frame(OwnedNV12FrameData const& frame)
+static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_nv12_frame_data(NV12VideoFrameData const& frame)
 {
     if (frame.cicp.matrix_coefficients() == MatrixCoefficients::Identity)
         return Error::from_string_literal("NV12 direct conversion does not support identity matrix");
@@ -1129,12 +1119,12 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                     copy_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
                     if (!owned_frame_data.is_error()) {
                         auto frame_data = owned_frame_data.release_value();
-                        auto source_width = frame_data.width;
-                        auto source_height = frame_data.height;
+                        auto source_width = frame_data->width;
+                        auto source_height = frame_data->height;
                         auto target_size = target_size_for_nvdec_dimensions(source_width, source_height);
-                        auto bitmap_factory = [frame_data = move(frame_data)]() mutable -> ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> {
+                        auto bitmap_factory = [frame_data]() mutable -> ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> {
                             auto materialize_start = MonotonicTime::now();
-                            auto bitmap = TRY(create_bitmap_directly_from_owned_nv12_frame(frame_data));
+                            auto bitmap = TRY(create_bitmap_directly_from_nv12_frame_data(*frame_data));
                             auto materialize_microseconds = (MonotonicTime::now() - materialize_start).to_microseconds();
 
                             static size_t s_lazy_materialize_count { 0 };
@@ -1144,8 +1134,8 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                                 dbgln("MUNDO_MEDIA_FFMPEG lazy_nv12_materialize count={} materialize_us={} source_size={}x{} bitmap_size={}x{}",
                                     materialize_count,
                                     materialize_microseconds,
-                                    frame_data.width,
-                                    frame_data.height,
+                                    frame_data->width,
+                                    frame_data->height,
                                     materialized_size.width(),
                                     materialized_size.height());
                             }
@@ -1176,7 +1166,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                         }
 
                         used_lazy_nv12_bitmap = true;
-                        return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap_factory)));
+                        return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap_factory), frame_data));
                     }
 
                     dbgln("MUNDO_MEDIA_FFMPEG lazy_nv12_bitmap_fallback size={}x{} error={}", frame->width, frame->height, owned_frame_data.error().string_literal());

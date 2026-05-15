@@ -17,6 +17,7 @@ extern "C" {
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/ImmutableBitmap.h>
 #include <LibGfx/SkiaUtils.h>
+#include <LibMedia/VideoFrame.h>
 #include <LibWeb/HTML/EventLoop/Task.h>
 #include <LibWeb/HTML/HTMLCanvasElement.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
@@ -550,7 +551,23 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_pat
     if (m_unpack_premultiply_alpha)
         return reject("unpack_transform"sv);
 
-    bitmap = source.get<GC::Root<HTML::HTMLVideoElement>>()->bitmap();
+    auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
+    if (auto const* media_frame = video->current_media_frame(); media_frame && media_frame->nv12_data()) {
+        auto const* nv12_data = media_frame->nv12_data();
+        if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+            dbgln("MUNDO_WEBGL_VIDEO_NV12_SOURCE attempt={} source_size={}x{} y_stride={} uv_stride={} y_bytes={} uv_bytes={} flip_y={} note=materializes_before_upload",
+                attempt_count,
+                nv12_data->width,
+                nv12_data->height,
+                nv12_data->y_stride,
+                nv12_data->uv_stride,
+                nv12_data->y_plane.size(),
+                nv12_data->uv_plane.size(),
+                m_unpack_flip_y);
+        }
+    }
+
+    bitmap = video->bitmap();
     if (!bitmap)
         return reject("missing_bitmap"sv);
 

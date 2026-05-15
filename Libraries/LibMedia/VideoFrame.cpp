@@ -41,6 +41,23 @@ VideoFrame::VideoFrame(
 {
 }
 
+VideoFrame::VideoFrame(
+    AK::Duration timestamp,
+    AK::Duration duration,
+    Gfx::Size<u32> size,
+    u8 bit_depth, CodingIndependentCodePoints cicp,
+    BitmapFactory&& bitmap_factory,
+    NonnullRefPtr<NV12VideoFrameData> nv12_data)
+    : m_timestamp(timestamp)
+    , m_duration(duration)
+    , m_size(size)
+    , m_bit_depth(bit_depth)
+    , m_cicp(cicp)
+    , m_bitmap_factory(move(bitmap_factory))
+    , m_nv12_data(move(nv12_data))
+{
+}
+
 VideoFrame::~VideoFrame() = default;
 
 NonnullRefPtr<Gfx::ImmutableBitmap> VideoFrame::immutable_bitmap() const

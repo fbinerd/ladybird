@@ -16,6 +16,10 @@
 #include <LibWeb/WebIDL/ExceptionOr.h>
 #include <LibWeb/WebIDL/Types.h>
 
+namespace Media {
+class VideoFrame;
+}
+
 namespace Web::HTML {
 
 struct VideoFrame {
@@ -63,6 +67,7 @@ public:
 
     // FIXME: This is a hack for images used as CanvasImageSource. Do something more elegant.
     RefPtr<Gfx::ImmutableBitmap> bitmap() const;
+    Media::VideoFrame const* current_media_frame() const;
 
     WebIDL::UnsignedLong request_video_frame_callback(GC::Ref<WebIDL::CallbackType>);
     void cancel_video_frame_callback(WebIDL::UnsignedLong handle);
