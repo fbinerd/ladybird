@@ -93,6 +93,15 @@ static bool mundo_webgl_video_nv12_shader_upload_enabled()
     return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
+static bool mundo_webgl_video_nv12_shader_black_probe_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_NV12_SHADER_BLACK_PROBE");
+    if (!raw_value)
+        return true;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
 static constexpr Optional<Gfx::ExportFormat> determine_export_format(WebIDL::UnsignedLong format, WebIDL::UnsignedLong type)
 {
     switch (format) {
@@ -855,11 +864,27 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     auto draw_error = glGetError();
 
+    u8 sampled_rgba[4] {};
+    auto sampled_y = 0;
+    auto sampled_u = 0;
+    auto sampled_v = 0;
+    auto sampled_x = nv12_data->width / 2;
+    auto sampled_y_row = nv12_data->height / 2;
+    if (mundo_webgl_video_nv12_shader_black_probe_enabled() && draw_error == GL_NO_ERROR) {
+        glReadPixels(sampled_x, sampled_y_row, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sampled_rgba);
+        draw_error = glGetError();
+        sampled_y = nv12_data->y_plane[static_cast<size_t>(sampled_y_row) * static_cast<size_t>(nv12_data->y_stride) + static_cast<size_t>(sampled_x)];
+        auto uv_x = (sampled_x / 2) * 2;
+        auto uv_y = sampled_y_row / 2;
+        sampled_u = nv12_data->uv_plane[static_cast<size_t>(uv_y) * static_cast<size_t>(nv12_data->uv_stride) + static_cast<size_t>(uv_x)];
+        sampled_v = nv12_data->uv_plane[static_cast<size_t>(uv_y) * static_cast<size_t>(nv12_data->uv_stride) + static_cast<size_t>(uv_x) + 1];
+    }
+
     restore_state();
 
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} upload_us={} size={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={} gl_error={}",
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} upload_us={} size={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
             attempt_count,
             upload_microseconds,
             nv12_data->width,
@@ -868,7 +893,20 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             nv12_data->uv_plane.size(),
             m_unpack_flip_y,
             is_full_range,
-            draw_error);
+            draw_error,
+            sampled_y,
+            sampled_u,
+            sampled_v,
+            sampled_rgba[0],
+            sampled_rgba[1],
+            sampled_rgba[2],
+            sampled_rgba[3]);
+    }
+    if (draw_error == GL_NO_ERROR && mundo_webgl_video_nv12_shader_black_probe_enabled()) {
+        auto input_luma_is_visible = sampled_y > 24;
+        auto output_is_black = sampled_rgba[0] < 4 && sampled_rgba[1] < 4 && sampled_rgba[2] < 4;
+        if (input_luma_is_visible && output_is_black)
+            return reject("black_probe"sv);
     }
     return draw_error == GL_NO_ERROR;
 }
