@@ -60,6 +60,23 @@
 
 namespace Web::HTML {
 
+static bool mundo_video_frame_diagnostics_enabled()
+{
+    static bool enabled = [] {
+        auto const* raw_value = getenv("MUNDO_VIDEO_FRAME_DIAGNOSTICS");
+        if (!raw_value)
+            return false;
+        auto value = StringView { raw_value, strlen(raw_value) };
+        return value != "0"sv && !value.equals_ignoring_ascii_case("false"sv) && !value.equals_ignoring_ascii_case("no"sv);
+    }();
+    return enabled;
+}
+
+static bool should_log_mundo_video_frame_diagnostic(size_t count)
+{
+    return mundo_video_frame_diagnostics_enabled() && (count <= 12 || count % 120 == 0);
+}
+
 static bool mundo_codec_list_contains_unsupported_codec(StringView codecs, bool video)
 {
     bool unsupported = false;
@@ -1966,7 +1983,7 @@ void HTMLMediaElement::update_video_frame_and_timeline()
                     current_frame_size = current_frame->size();
             }
             m_mundo_video_frame_update_log_count++;
-            if (m_mundo_video_frame_update_log_count <= 12 || m_mundo_video_frame_update_log_count % 60 == 0) {
+            if (should_log_mundo_video_frame_diagnostic(m_mundo_video_frame_update_log_count)) {
                 auto track_id = m_selected_video_track ? m_selected_video_track->track_in_playback_manager().identifier() : 0;
                 dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} video_frame_updated count={} track_id={} current_time={} ready_state={} frame={} external_source={} size={}x{} src={}",
                     static_cast<void const*>(this),

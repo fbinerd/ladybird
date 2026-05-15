@@ -29,14 +29,28 @@
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Platform/ImageCodecPlugin.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
+#include <stdlib.h>
+#include <string.h>
 
 namespace Web::HTML {
 
 GC_DEFINE_ALLOCATOR(HTMLVideoElement);
 
+static bool mundo_video_frame_diagnostics_enabled()
+{
+    static bool enabled = [] {
+        auto const* raw_value = getenv("MUNDO_VIDEO_FRAME_DIAGNOSTICS");
+        if (!raw_value)
+            return false;
+        auto value = StringView { raw_value, strlen(raw_value) };
+        return value != "0"sv && !value.equals_ignoring_ascii_case("false"sv) && !value.equals_ignoring_ascii_case("no"sv);
+    }();
+    return enabled;
+}
+
 static bool should_log_mundo_video_frame_diagnostic(size_t count)
 {
-    return count <= 12 || count % 120 == 0;
+    return mundo_video_frame_diagnostics_enabled() && (count <= 12 || count % 120 == 0);
 }
 
 HTMLVideoElement::HTMLVideoElement(DOM::Document& document, DOM::QualifiedName qualified_name)
