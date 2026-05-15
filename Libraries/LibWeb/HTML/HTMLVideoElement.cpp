@@ -392,9 +392,12 @@ void HTMLVideoElement::notify_about_new_video_frame()
         callbacks.append(callback.callback);
     m_video_frame_callbacks.clear();
 
-    auto frame = bitmap();
-    auto width = frame ? frame->size().width() : video_width();
-    auto height = frame ? frame->size().height() : video_height();
+    auto width = video_width();
+    auto height = video_height();
+    if (auto const* frame = current_media_frame()) {
+        width = frame->width();
+        height = frame->height();
+    }
     auto now = HighResolutionTime::current_high_resolution_time(realm().global_object());
     m_presented_video_frame_count++;
 

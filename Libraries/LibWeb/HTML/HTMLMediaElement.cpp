@@ -1924,7 +1924,8 @@ void HTMLMediaElement::set_selected_video_track(Badge<VideoTrack>, GC::Ptr<HTML:
         m_selected_video_track_sink = m_playback_manager->get_or_create_the_displaying_video_sink_for_track(video_track->track_in_playback_manager());
         auto sink_update_result = m_selected_video_track_sink->update();
         if (sink_update_result == Media::DisplayingVideoSinkUpdateResult::NewFrameAvailable) {
-            ensure_external_content_source().update(m_selected_video_track_sink->current_frame());
+            if (m_external_content_source)
+                m_external_content_source->update(m_selected_video_track_sink->current_frame());
             dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} selected_video_track initial_frame id={} src={}", static_cast<void const*>(this), document().url_string(), video_track->track_in_playback_manager().identifier(), m_current_src);
             update_intrinsic_video_dimensions();
             set_needs_repaint();
@@ -1950,12 +1951,18 @@ void HTMLMediaElement::update_video_frame_and_timeline()
     if (m_selected_video_track_sink) {
         auto sink_update_result = m_selected_video_track_sink->update();
         if (sink_update_result == Media::DisplayingVideoSinkUpdateResult::NewFrameAvailable) {
-            auto current_frame = m_selected_video_track_sink->current_frame();
-            ensure_external_content_source().update(current_frame);
+            RefPtr<Gfx::ImmutableBitmap> current_frame;
+            auto current_frame_size = m_selected_video_track_sink->current_frame_size();
+            if (m_external_content_source) {
+                current_frame = m_selected_video_track_sink->current_frame();
+                m_external_content_source->update(current_frame);
+                if (current_frame)
+                    current_frame_size = current_frame->size();
+            }
             m_mundo_video_frame_update_log_count++;
             if (m_mundo_video_frame_update_log_count <= 12 || m_mundo_video_frame_update_log_count % 60 == 0) {
                 auto track_id = m_selected_video_track ? m_selected_video_track->track_in_playback_manager().identifier() : 0;
-                dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} video_frame_updated count={} track_id={} current_time={} ready_state={} frame={} size={}x{} src={}",
+                dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} video_frame_updated count={} track_id={} current_time={} ready_state={} frame={} external_source={} size={}x{} src={}",
                     static_cast<void const*>(this),
                     document().url_string(),
                     m_mundo_video_frame_update_log_count,
@@ -1963,8 +1970,9 @@ void HTMLMediaElement::update_video_frame_and_timeline()
                     m_current_playback_position,
                     to_underlying(m_ready_state),
                     static_cast<void const*>(current_frame.ptr()),
-                    current_frame ? current_frame->size().width() : 0,
-                    current_frame ? current_frame->size().height() : 0,
+                    m_external_content_source.ptr(),
+                    current_frame_size.has_value() ? current_frame_size->width() : 0,
+                    current_frame_size.has_value() ? current_frame_size->height() : 0,
                     m_current_src);
             }
             update_intrinsic_video_dimensions();
