@@ -577,15 +577,16 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_pat
     auto upload_start = MonotonicTime::now();
     auto copy_microseconds = 0;
     if (m_unpack_flip_y) {
-        auto copy_start = MonotonicTime::now();
-        auto flipped_buffer = MUST(ByteBuffer::create_uninitialized(data_size));
-        for (int y = 0; y < raster_bitmap->height(); ++y)
-            memcpy(flipped_buffer.data() + static_cast<size_t>(y) * row_bytes, raster_bitmap->scanline_u8(raster_bitmap->height() - 1 - y), row_bytes);
-        copy_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
-
         auto pbo_index = m_mundo_video_upload_pbo_index++ % 3;
         auto& pbo = m_mundo_video_upload_pbos[pbo_index];
         auto& pbo_size = m_mundo_video_upload_pbo_sizes[pbo_index];
+        auto& flipped_buffer = m_mundo_video_upload_staging_buffers[pbo_index];
+
+        auto copy_start = MonotonicTime::now();
+        MUST(flipped_buffer.try_resize(data_size));
+        for (int y = 0; y < raster_bitmap->height(); ++y)
+            memcpy(flipped_buffer.data() + static_cast<size_t>(y) * row_bytes, raster_bitmap->scanline_u8(raster_bitmap->height() - 1 - y), row_bytes);
+        copy_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
 
         if (!pbo)
             glGenBuffers(1, &pbo);
@@ -617,7 +618,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_pat
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
 
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_DIRECT_BITMAP_UPLOAD attempt={} kind={} upload_us={} copy_us={} size={}x{} bytes={} flip_y={} bitmap={} raster={}",
+        dbgln("MUNDO_WEBGL_VIDEO_DIRECT_BITMAP_UPLOAD attempt={} kind={} upload_us={} copy_us={} size={}x{} bytes={} flip_y={} staging_buffers={} bitmap={} raster={}",
             attempt_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             upload_microseconds,
@@ -626,6 +627,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_pat
             raster_bitmap->height(),
             data_size,
             m_unpack_flip_y,
+            m_unpack_flip_y ? "reused"sv : "none"sv,
             static_cast<void const*>(bitmap.ptr()),
             static_cast<void const*>(raster_bitmap.ptr()));
     }

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/ByteBuffer.h>
 #include <LibGfx/BitmapExportResult.h>
 #include <LibJS/Runtime/DataView.h>
 #include <LibJS/Runtime/TypedArray.h>
@@ -192,6 +193,7 @@ private:
     Vector<WebIDL::UnsignedLong> m_enabled_compressed_texture_formats;
     unsigned m_mundo_video_upload_pbos[3] {};
     size_t m_mundo_video_upload_pbo_sizes[3] {};
+    ByteBuffer m_mundo_video_upload_staging_buffers[3];
     size_t m_mundo_video_upload_pbo_index { 0 };
 
     // Extensions
