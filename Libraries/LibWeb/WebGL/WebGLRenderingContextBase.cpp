@@ -701,7 +701,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         glGenTextures(1, &m_mundo_video_nv12_uv_texture);
     if (!m_mundo_video_nv12_framebuffer)
         glGenFramebuffers(1, &m_mundo_video_nv12_framebuffer);
-    if (!m_mundo_video_nv12_y_texture || !m_mundo_video_nv12_uv_texture || !m_mundo_video_nv12_framebuffer)
+    if (!m_mundo_video_nv12_vertex_buffer)
+        glGenBuffers(1, &m_mundo_video_nv12_vertex_buffer);
+    if (!m_mundo_video_nv12_y_texture || !m_mundo_video_nv12_uv_texture || !m_mundo_video_nv12_framebuffer || !m_mundo_video_nv12_vertex_buffer)
         return reject("resource_create_failed"sv);
 
     GLint previous_program = 0;
@@ -758,40 +760,43 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         return reject("framebuffer_incomplete"sv);
     }
 
-    constexpr GLfloat positions[] {
-        -1.0f, -1.0f,
-        1.0f, -1.0f,
-        -1.0f, 1.0f,
-        1.0f, 1.0f,
-    };
-    GLfloat texture_coordinates[8];
+    GLfloat vertices[16];
+    vertices[0] = -1.0f;
+    vertices[1] = -1.0f;
+    vertices[4] = 1.0f;
+    vertices[5] = -1.0f;
+    vertices[8] = -1.0f;
+    vertices[9] = 1.0f;
+    vertices[12] = 1.0f;
+    vertices[13] = 1.0f;
     if (m_unpack_flip_y) {
-        texture_coordinates[0] = 0.0f;
-        texture_coordinates[1] = 1.0f;
-        texture_coordinates[2] = 1.0f;
-        texture_coordinates[3] = 1.0f;
-        texture_coordinates[4] = 0.0f;
-        texture_coordinates[5] = 0.0f;
-        texture_coordinates[6] = 1.0f;
-        texture_coordinates[7] = 0.0f;
+        vertices[2] = 0.0f;
+        vertices[3] = 1.0f;
+        vertices[6] = 1.0f;
+        vertices[7] = 1.0f;
+        vertices[10] = 0.0f;
+        vertices[11] = 0.0f;
+        vertices[14] = 1.0f;
+        vertices[15] = 0.0f;
     } else {
-        texture_coordinates[0] = 0.0f;
-        texture_coordinates[1] = 0.0f;
-        texture_coordinates[2] = 1.0f;
-        texture_coordinates[3] = 0.0f;
-        texture_coordinates[4] = 0.0f;
-        texture_coordinates[5] = 1.0f;
-        texture_coordinates[6] = 1.0f;
-        texture_coordinates[7] = 1.0f;
+        vertices[2] = 0.0f;
+        vertices[3] = 0.0f;
+        vertices[6] = 1.0f;
+        vertices[7] = 0.0f;
+        vertices[10] = 0.0f;
+        vertices[11] = 1.0f;
+        vertices[14] = 1.0f;
+        vertices[15] = 1.0f;
     }
 
     glViewport(0, 0, nv12_data->width, nv12_data->height);
     glUseProgram(m_mundo_video_nv12_program);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, m_mundo_video_nv12_vertex_buffer);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, positions);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, texture_coordinates);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), reinterpret_cast<void*>(0));
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), reinterpret_cast<void*>(2 * sizeof(GLfloat)));
     glUniform1i(glGetUniformLocation(m_mundo_video_nv12_program, "u_y_plane"), 0);
     glUniform1i(glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_plane"), 1);
 
@@ -802,12 +807,13 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     glUniform3f(glGetUniformLocation(m_mundo_video_nv12_program, "u_g_coefficients"), 1.0f, -0.1873f, -0.4681f);
     glUniform3f(glGetUniformLocation(m_mundo_video_nv12_program, "u_b_coefficients"), 1.0f, 1.8556f, 0.0f);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    auto draw_error = glGetError();
 
     restore_state();
 
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} upload_us={} size={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={}",
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} upload_us={} size={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={} gl_error={}",
             attempt_count,
             upload_microseconds,
             nv12_data->width,
@@ -815,9 +821,10 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             nv12_data->y_plane.size(),
             nv12_data->uv_plane.size(),
             m_unpack_flip_y,
-            is_full_range);
+            is_full_range,
+            draw_error);
     }
-    return true;
+    return draw_error == GL_NO_ERROR;
 }
 
 bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_path(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width, Optional<int> destination_height, bool is_sub_image)

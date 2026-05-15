@@ -200,6 +200,7 @@ private:
     unsigned m_mundo_video_nv12_y_texture { 0 };
     unsigned m_mundo_video_nv12_uv_texture { 0 };
     unsigned m_mundo_video_nv12_framebuffer { 0 };
+    unsigned m_mundo_video_nv12_vertex_buffer { 0 };
 
     // Extensions
     // "Multiple calls to getExtension with the same extension string, taking into account case-insensitive comparison, must return the same object as long as the extension is enabled."
