@@ -870,7 +870,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto sampled_v = 0;
     auto sampled_x = nv12_data->width / 2;
     auto sampled_y_row = nv12_data->height / 2;
-    if (mundo_webgl_video_nv12_shader_black_probe_enabled() && draw_error == GL_NO_ERROR) {
+    auto should_probe_black_frame = mundo_webgl_video_nv12_shader_black_probe_enabled() && should_log_mundo_webgl_texture_diagnostic(attempt_count);
+    if (should_probe_black_frame && draw_error == GL_NO_ERROR) {
         glReadPixels(sampled_x, sampled_y_row, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sampled_rgba);
         draw_error = glGetError();
         sampled_y = nv12_data->y_plane[static_cast<size_t>(sampled_y_row) * static_cast<size_t>(nv12_data->y_stride) + static_cast<size_t>(sampled_x)];
@@ -902,7 +903,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             sampled_rgba[2],
             sampled_rgba[3]);
     }
-    if (draw_error == GL_NO_ERROR && mundo_webgl_video_nv12_shader_black_probe_enabled()) {
+    if (draw_error == GL_NO_ERROR && should_probe_black_frame) {
         auto input_luma_is_visible = sampled_y > 24;
         auto output_is_black = sampled_rgba[0] < 4 && sampled_rgba[1] < 4 && sampled_rgba[2] < 4;
         if (input_luma_is_visible && output_is_black)
