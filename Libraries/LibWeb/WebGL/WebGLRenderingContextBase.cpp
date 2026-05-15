@@ -84,6 +84,15 @@ static bool mundo_webgl_video_direct_bitmap_upload_enabled()
     return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
+static bool mundo_webgl_video_nv12_shader_upload_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD");
+    if (!raw_value)
+        return true;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
 static constexpr Optional<Gfx::ExportFormat> determine_export_format(WebIDL::UnsignedLong format, WebIDL::UnsignedLong type)
 {
     switch (format) {
@@ -506,6 +515,307 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_pbo(TexImageSou
             converted_texture.buffer.size(),
             pbo_index,
             pbo_size);
+    }
+    return true;
+}
+
+static GLuint compile_mundo_video_nv12_shader(GLenum type, StringView source)
+{
+    auto shader = glCreateShader(type);
+    if (!shader)
+        return 0;
+
+    Vector<GLchar> shader_source;
+    shader_source.ensure_capacity(source.length() + 1);
+    for (auto c : source.bytes())
+        shader_source.append(c);
+    shader_source.append('\0');
+    auto const* shader_source_ptr = shader_source.data();
+    glShaderSource(shader, 1, &shader_source_ptr, nullptr);
+    glCompileShader(shader);
+
+    GLint compile_status = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compile_status);
+    if (compile_status != GL_TRUE) {
+        glDeleteShader(shader);
+        return 0;
+    }
+
+    return shader;
+}
+
+static bool link_mundo_video_nv12_program(GLuint program)
+{
+    glLinkProgram(program);
+
+    GLint link_status = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &link_status);
+    return link_status == GL_TRUE;
+}
+
+static void upload_mundo_video_nv12_plane_texture(GLuint texture, GLenum unit, GLenum format, int width, int height, void const* data)
+{
+    glActiveTexture(unit);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+}
+
+struct MundoVideoVertexAttribState {
+    GLint enabled { 0 };
+    GLint size { 4 };
+    GLint type { GL_FLOAT };
+    GLint normalized { GL_FALSE };
+    GLint stride { 0 };
+    GLint buffer_binding { 0 };
+    void* pointer { nullptr };
+};
+
+static MundoVideoVertexAttribState save_mundo_video_vertex_attrib_state(GLuint index)
+{
+    MundoVideoVertexAttribState state;
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &state.enabled);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_SIZE, &state.size);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_TYPE, &state.type);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &state.normalized);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &state.stride);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &state.buffer_binding);
+    glGetVertexAttribPointerv(index, GL_VERTEX_ATTRIB_ARRAY_POINTER, &state.pointer);
+    return state;
+}
+
+static void restore_mundo_video_vertex_attrib_state(GLuint index, MundoVideoVertexAttribState const& state)
+{
+    glBindBuffer(GL_ARRAY_BUFFER, state.buffer_binding);
+    glVertexAttribPointer(index, state.size, state.type, state.normalized, state.stride, state.pointer);
+    if (state.enabled)
+        glEnableVertexAttribArray(index);
+    else
+        glDisableVertexAttribArray(index);
+}
+
+bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fast_path(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width, Optional<int> destination_height, bool is_sub_image)
+{
+    static size_t s_video_nv12_shader_attempt_count { 0 };
+    auto attempt_count = ++s_video_nv12_shader_attempt_count;
+    auto reject = [&](StringView reason) {
+        if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+            dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
+                attempt_count,
+                reason,
+                source.has<GC::Root<HTML::HTMLVideoElement>>(),
+                target,
+                level,
+                format,
+                type,
+                destination_width.value_or(-1),
+                destination_height.value_or(-1),
+                m_unpack_flip_y,
+                m_unpack_premultiply_alpha,
+                is_sub_image);
+        }
+        return false;
+    };
+
+    if (!mundo_webgl_video_nv12_shader_upload_enabled())
+        return reject("disabled"sv);
+    if (!source.has<GC::Root<HTML::HTMLVideoElement>>())
+        return reject("not_video"sv);
+    if (target != GL_TEXTURE_2D || level != 0 || border != 0 || is_sub_image || xoffset != 0 || yoffset != 0)
+        return reject("unsupported_target_or_sub_image"sv);
+    if (format != GL_RGBA || type != GL_UNSIGNED_BYTE)
+        return reject("unsupported_format_or_type"sv);
+    if (m_unpack_premultiply_alpha)
+        return reject("unpack_transform"sv);
+
+    auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
+    auto const* media_frame = video->current_media_frame();
+    if (!media_frame || !media_frame->nv12_data())
+        return reject("missing_nv12_frame"sv);
+    auto const* nv12_data = media_frame->nv12_data();
+    if (nv12_data->width <= 0 || nv12_data->height <= 0)
+        return reject("empty_nv12_frame"sv);
+    if (nv12_data->y_stride != nv12_data->width || nv12_data->uv_stride != ((nv12_data->width + 1) / 2) * 2)
+        return reject("unsupported_nv12_stride"sv);
+    if (destination_width.has_value() && destination_width.value() != nv12_data->width)
+        return reject("destination_width_mismatch"sv);
+    if (destination_height.has_value() && destination_height.value() != nv12_data->height)
+        return reject("destination_height_mismatch"sv);
+
+    if (!m_mundo_video_nv12_program) {
+        auto vertex_shader = compile_mundo_video_nv12_shader(GL_VERTEX_SHADER, R"~~~(
+            attribute vec2 a_position;
+            attribute vec2 a_tex_coord;
+            varying vec2 v_tex_coord;
+            void main()
+            {
+                gl_Position = vec4(a_position, 0.0, 1.0);
+                v_tex_coord = a_tex_coord;
+            }
+        )~~~"sv);
+        auto fragment_shader = compile_mundo_video_nv12_shader(GL_FRAGMENT_SHADER, R"~~~(
+            precision mediump float;
+            varying vec2 v_tex_coord;
+            uniform sampler2D u_y_plane;
+            uniform sampler2D u_uv_plane;
+            uniform float u_y_offset;
+            uniform float u_y_scale;
+            uniform vec3 u_r_coefficients;
+            uniform vec3 u_g_coefficients;
+            uniform vec3 u_b_coefficients;
+            void main()
+            {
+                float y = (texture2D(u_y_plane, v_tex_coord).r - u_y_offset) * u_y_scale;
+                vec2 uv = texture2D(u_uv_plane, v_tex_coord).ra - vec2(0.5, 0.5);
+                vec3 yuv = vec3(y, uv.x, uv.y);
+                gl_FragColor = vec4(dot(yuv, u_r_coefficients), dot(yuv, u_g_coefficients), dot(yuv, u_b_coefficients), 1.0);
+            }
+        )~~~"sv);
+
+        if (!vertex_shader || !fragment_shader)
+            return reject("shader_compile_failed"sv);
+
+        m_mundo_video_nv12_program = glCreateProgram();
+        if (!m_mundo_video_nv12_program)
+            return reject("program_create_failed"sv);
+        glAttachShader(m_mundo_video_nv12_program, vertex_shader);
+        glAttachShader(m_mundo_video_nv12_program, fragment_shader);
+        glBindAttribLocation(m_mundo_video_nv12_program, 0, "a_position");
+        glBindAttribLocation(m_mundo_video_nv12_program, 1, "a_tex_coord");
+        auto linked = link_mundo_video_nv12_program(m_mundo_video_nv12_program);
+        glDeleteShader(vertex_shader);
+        glDeleteShader(fragment_shader);
+        if (!linked) {
+            glDeleteProgram(m_mundo_video_nv12_program);
+            m_mundo_video_nv12_program = 0;
+            return reject("program_link_failed"sv);
+        }
+    }
+
+    if (!m_mundo_video_nv12_y_texture)
+        glGenTextures(1, &m_mundo_video_nv12_y_texture);
+    if (!m_mundo_video_nv12_uv_texture)
+        glGenTextures(1, &m_mundo_video_nv12_uv_texture);
+    if (!m_mundo_video_nv12_framebuffer)
+        glGenFramebuffers(1, &m_mundo_video_nv12_framebuffer);
+    if (!m_mundo_video_nv12_y_texture || !m_mundo_video_nv12_uv_texture || !m_mundo_video_nv12_framebuffer)
+        return reject("resource_create_failed"sv);
+
+    GLint previous_program = 0;
+    GLint previous_active_texture = 0;
+    GLint previous_texture_2d = 0;
+    GLint previous_texture0_2d = 0;
+    GLint previous_texture1_2d = 0;
+    GLint previous_framebuffer = 0;
+    GLint previous_array_buffer = 0;
+    GLint previous_unpack_alignment = 4;
+    GLint previous_viewport[4] {};
+    glGetIntegervRobustANGLE(GL_CURRENT_PROGRAM, 1, nullptr, &previous_program);
+    glGetIntegervRobustANGLE(GL_ACTIVE_TEXTURE, 1, nullptr, &previous_active_texture);
+    glGetIntegervRobustANGLE(GL_TEXTURE_BINDING_2D, 1, nullptr, &previous_texture_2d);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegervRobustANGLE(GL_TEXTURE_BINDING_2D, 1, nullptr, &previous_texture0_2d);
+    glActiveTexture(GL_TEXTURE1);
+    glGetIntegervRobustANGLE(GL_TEXTURE_BINDING_2D, 1, nullptr, &previous_texture1_2d);
+    glActiveTexture(previous_active_texture);
+    glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &previous_framebuffer);
+    glGetIntegervRobustANGLE(GL_ARRAY_BUFFER_BINDING, 1, nullptr, &previous_array_buffer);
+    glGetIntegervRobustANGLE(GL_UNPACK_ALIGNMENT, 1, nullptr, &previous_unpack_alignment);
+    glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, previous_viewport);
+    auto previous_attrib0 = save_mundo_video_vertex_attrib_state(0);
+    auto previous_attrib1 = save_mundo_video_vertex_attrib_state(1);
+
+    auto restore_state = [&] {
+        glBindFramebuffer(GL_FRAMEBUFFER, previous_framebuffer);
+        glUseProgram(previous_program);
+        restore_mundo_video_vertex_attrib_state(0, previous_attrib0);
+        restore_mundo_video_vertex_attrib_state(1, previous_attrib1);
+        glBindBuffer(GL_ARRAY_BUFFER, previous_array_buffer);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, previous_unpack_alignment);
+        glViewport(previous_viewport[0], previous_viewport[1], previous_viewport[2], previous_viewport[3]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, previous_texture0_2d);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, previous_texture1_2d);
+        glActiveTexture(previous_active_texture);
+        glBindTexture(GL_TEXTURE_2D, previous_texture_2d);
+    };
+
+    auto upload_start = MonotonicTime::now();
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(target, level, internalformat, nv12_data->width, nv12_data->height, border, format, type, nullptr);
+    upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, nv12_data->width, nv12_data->height, nv12_data->y_plane.data());
+    upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, nv12_data->uv_stride / 2, (nv12_data->height + 1) / 2, nv12_data->uv_plane.data());
+
+    glBindFramebuffer(GL_FRAMEBUFFER, m_mundo_video_nv12_framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previous_texture_2d, level);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        restore_state();
+        return reject("framebuffer_incomplete"sv);
+    }
+
+    constexpr GLfloat positions[] {
+        -1.0f, -1.0f,
+        1.0f, -1.0f,
+        -1.0f, 1.0f,
+        1.0f, 1.0f,
+    };
+    GLfloat texture_coordinates[8];
+    if (m_unpack_flip_y) {
+        texture_coordinates[0] = 0.0f;
+        texture_coordinates[1] = 1.0f;
+        texture_coordinates[2] = 1.0f;
+        texture_coordinates[3] = 1.0f;
+        texture_coordinates[4] = 0.0f;
+        texture_coordinates[5] = 0.0f;
+        texture_coordinates[6] = 1.0f;
+        texture_coordinates[7] = 0.0f;
+    } else {
+        texture_coordinates[0] = 0.0f;
+        texture_coordinates[1] = 0.0f;
+        texture_coordinates[2] = 1.0f;
+        texture_coordinates[3] = 0.0f;
+        texture_coordinates[4] = 0.0f;
+        texture_coordinates[5] = 1.0f;
+        texture_coordinates[6] = 1.0f;
+        texture_coordinates[7] = 1.0f;
+    }
+
+    glViewport(0, 0, nv12_data->width, nv12_data->height);
+    glUseProgram(m_mundo_video_nv12_program);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, positions);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, texture_coordinates);
+    glUniform1i(glGetUniformLocation(m_mundo_video_nv12_program, "u_y_plane"), 0);
+    glUniform1i(glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_plane"), 1);
+
+    auto const is_full_range = nv12_data->cicp.video_full_range_flag() == Media::VideoFullRangeFlag::Full;
+    glUniform1f(glGetUniformLocation(m_mundo_video_nv12_program, "u_y_offset"), is_full_range ? 0.0f : 16.0f / 255.0f);
+    glUniform1f(glGetUniformLocation(m_mundo_video_nv12_program, "u_y_scale"), is_full_range ? 1.0f : 255.0f / 219.0f);
+    glUniform3f(glGetUniformLocation(m_mundo_video_nv12_program, "u_r_coefficients"), 1.0f, 0.0f, 1.5748f);
+    glUniform3f(glGetUniformLocation(m_mundo_video_nv12_program, "u_g_coefficients"), 1.0f, -0.1873f, -0.4681f);
+    glUniform3f(glGetUniformLocation(m_mundo_video_nv12_program, "u_b_coefficients"), 1.0f, 1.8556f, 0.0f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    restore_state();
+
+    auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
+    if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} upload_us={} size={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={}",
+            attempt_count,
+            upload_microseconds,
+            nv12_data->width,
+            nv12_data->height,
+            nv12_data->y_plane.size(),
+            nv12_data->uv_plane.size(),
+            m_unpack_flip_y,
+            is_full_range);
     }
     return true;
 }

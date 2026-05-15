@@ -145,6 +145,7 @@ protected:
     Optional<Gfx::BitmapExportResult> read_and_pixel_convert_texture_image_source(TexImageSource const& source, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width = OptionalNone {}, Optional<int> destination_height = OptionalNone {});
     bool upload_texture_source_with_video_pbo(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Gfx::BitmapExportResult const&, bool is_sub_image);
     bool upload_texture_source_with_video_bitmap_fast_path(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width, Optional<int> destination_height, bool is_sub_image);
+    bool upload_texture_source_with_video_nv12_shader_fast_path(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width, Optional<int> destination_height, bool is_sub_image);
 
     static Vector<GLchar> null_terminated_string(StringView string)
     {
@@ -195,6 +196,10 @@ private:
     size_t m_mundo_video_upload_pbo_sizes[3] {};
     ByteBuffer m_mundo_video_upload_staging_buffers[3];
     size_t m_mundo_video_upload_pbo_index { 0 };
+    unsigned m_mundo_video_nv12_program { 0 };
+    unsigned m_mundo_video_nv12_y_texture { 0 };
+    unsigned m_mundo_video_nv12_uv_texture { 0 };
+    unsigned m_mundo_video_nv12_framebuffer { 0 };
 
     // Extensions
     // "Multiple calls to getExtension with the same extension string, taking into account case-insensitive comparison, must return the same object as long as the extension is enabled."
