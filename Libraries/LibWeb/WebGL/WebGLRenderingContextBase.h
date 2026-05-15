@@ -202,6 +202,14 @@ private:
     unsigned m_mundo_video_nv12_uv_texture { 0 };
     unsigned m_mundo_video_nv12_framebuffer { 0 };
     unsigned m_mundo_video_nv12_vertex_buffer { 0 };
+    struct MundoVideoNV12TargetTextureState {
+        int width { 0 };
+        int height { 0 };
+        WebIDL::Long internalformat { 0 };
+        WebIDL::UnsignedLong format { 0 };
+        WebIDL::UnsignedLong type { 0 };
+    };
+    HashMap<u64, MundoVideoNV12TargetTextureState> m_mundo_video_nv12_target_texture_states;
 
     // Extensions
     // "Multiple calls to getExtension with the same extension string, taking into account case-insensitive comparison, must return the same object as long as the extension is enabled."

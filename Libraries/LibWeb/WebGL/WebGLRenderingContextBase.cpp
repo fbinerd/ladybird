@@ -844,16 +844,50 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto upload_start = MonotonicTime::now();
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    if (!is_sub_image)
+    auto target_texture_key = (static_cast<u64>(static_cast<unsigned>(previous_texture_2d)) << 32) | static_cast<u32>(level);
+    bool reused_target_storage = false;
+    bool allocated_target_storage = false;
+    auto allocate_target_storage = [&] {
         glTexImage2D(target, level, internalformat, nv12_data->width, nv12_data->height, border, format, type, nullptr);
+        allocated_target_storage = true;
+        if (previous_texture_2d > 0) {
+            m_mundo_video_nv12_target_texture_states.set(target_texture_key, MundoVideoNV12TargetTextureState {
+                                                                           .width = nv12_data->width,
+                                                                           .height = nv12_data->height,
+                                                                           .internalformat = internalformat,
+                                                                           .format = format,
+                                                                           .type = type,
+                                                                       });
+        }
+    };
+    if (!is_sub_image) {
+        auto previous_state = previous_texture_2d > 0 ? m_mundo_video_nv12_target_texture_states.find(target_texture_key) : m_mundo_video_nv12_target_texture_states.end();
+        if (previous_state != m_mundo_video_nv12_target_texture_states.end()
+            && previous_state->value.width == nv12_data->width
+            && previous_state->value.height == nv12_data->height
+            && previous_state->value.internalformat == internalformat
+            && previous_state->value.format == format
+            && previous_state->value.type == type) {
+            reused_target_storage = true;
+        } else {
+            allocate_target_storage();
+        }
+    }
     upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, nv12_data->width, nv12_data->height, nv12_data->y_plane.data());
     upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, nv12_data->uv_stride / 2, (nv12_data->height + 1) / 2, nv12_data->uv_plane.data());
 
     glBindFramebuffer(GL_FRAMEBUFFER, m_mundo_video_nv12_framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previous_texture_2d, level);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        restore_state();
-        return reject("framebuffer_incomplete"sv);
+        if (!is_sub_image && reused_target_storage) {
+            allocate_target_storage();
+            reused_target_storage = false;
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previous_texture_2d, level);
+        }
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            restore_state();
+            return reject("framebuffer_incomplete"sv);
+        }
     }
 
     GLfloat vertices[16];
@@ -933,7 +967,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} upload_us={} size={}x{} offset={}x{} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} upload_us={} size={}x{} offset={}x{} target_storage={} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
             attempt_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             upload_microseconds,
@@ -941,6 +975,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             nv12_data->height,
             is_sub_image ? xoffset : 0,
             is_sub_image ? yoffset : 0,
+            reused_target_storage ? "reused"sv : allocated_target_storage ? "allocated"sv
+                                                                           : "subimage"sv,
             nv12_data->y_plane.size(),
             nv12_data->uv_plane.size(),
             m_unpack_flip_y,
