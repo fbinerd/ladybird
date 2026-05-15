@@ -774,17 +774,19 @@ static ErrorOr<OwnedNV12FrameData> copy_nv12_frame_data(AVFrame const* frame, Co
 
     auto width = frame->width;
     auto height = frame->height;
-    auto y_stride = frame->linesize[0];
-    auto uv_stride = frame->linesize[1];
+    auto source_y_stride = frame->linesize[0];
+    auto source_uv_stride = frame->linesize[1];
+    auto y_stride = width;
+    auto uv_stride = ((width + 1) / 2) * 2;
     auto uv_rows = (height + 1) / 2;
 
     auto y_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(y_stride) * static_cast<size_t>(height)));
     auto uv_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(uv_stride) * static_cast<size_t>(uv_rows)));
 
     for (int row = 0; row < height; ++row)
-        __builtin_memcpy(y_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(y_stride), frame->data[0] + static_cast<size_t>(row) * static_cast<size_t>(y_stride), y_stride);
+        __builtin_memcpy(y_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(y_stride), frame->data[0] + static_cast<size_t>(row) * static_cast<size_t>(source_y_stride), y_stride);
     for (int row = 0; row < uv_rows; ++row)
-        __builtin_memcpy(uv_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(uv_stride), frame->data[1] + static_cast<size_t>(row) * static_cast<size_t>(uv_stride), uv_stride);
+        __builtin_memcpy(uv_plane.data() + static_cast<size_t>(row) * static_cast<size_t>(uv_stride), frame->data[1] + static_cast<size_t>(row) * static_cast<size_t>(source_uv_stride), uv_stride);
 
     return OwnedNV12FrameData {
         .y_plane = move(y_plane),
