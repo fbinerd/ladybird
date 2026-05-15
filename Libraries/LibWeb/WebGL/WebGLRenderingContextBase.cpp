@@ -715,6 +715,13 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     GLint previous_array_buffer = 0;
     GLint previous_unpack_alignment = 4;
     GLint previous_viewport[4] {};
+    GLint previous_color_writemask[4] {};
+    GLboolean previous_scissor_test = GL_FALSE;
+    GLboolean previous_blend = GL_FALSE;
+    GLboolean previous_depth_test = GL_FALSE;
+    GLboolean previous_stencil_test = GL_FALSE;
+    GLboolean previous_cull_face = GL_FALSE;
+    GLboolean previous_dither = GL_FALSE;
     glGetIntegervRobustANGLE(GL_CURRENT_PROGRAM, 1, nullptr, &previous_program);
     glGetIntegervRobustANGLE(GL_ACTIVE_TEXTURE, 1, nullptr, &previous_active_texture);
     glGetIntegervRobustANGLE(GL_TEXTURE_BINDING_2D, 1, nullptr, &previous_texture_2d);
@@ -727,6 +734,13 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     glGetIntegervRobustANGLE(GL_ARRAY_BUFFER_BINDING, 1, nullptr, &previous_array_buffer);
     glGetIntegervRobustANGLE(GL_UNPACK_ALIGNMENT, 1, nullptr, &previous_unpack_alignment);
     glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, previous_viewport);
+    glGetIntegervRobustANGLE(GL_COLOR_WRITEMASK, 4, nullptr, previous_color_writemask);
+    previous_scissor_test = glIsEnabled(GL_SCISSOR_TEST);
+    previous_blend = glIsEnabled(GL_BLEND);
+    previous_depth_test = glIsEnabled(GL_DEPTH_TEST);
+    previous_stencil_test = glIsEnabled(GL_STENCIL_TEST);
+    previous_cull_face = glIsEnabled(GL_CULL_FACE);
+    previous_dither = glIsEnabled(GL_DITHER);
     auto previous_attrib0 = save_mundo_video_vertex_attrib_state(0);
     auto previous_attrib1 = save_mundo_video_vertex_attrib_state(1);
 
@@ -738,6 +752,31 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         glBindBuffer(GL_ARRAY_BUFFER, previous_array_buffer);
         glPixelStorei(GL_UNPACK_ALIGNMENT, previous_unpack_alignment);
         glViewport(previous_viewport[0], previous_viewport[1], previous_viewport[2], previous_viewport[3]);
+        glColorMask(previous_color_writemask[0], previous_color_writemask[1], previous_color_writemask[2], previous_color_writemask[3]);
+        if (previous_scissor_test)
+            glEnable(GL_SCISSOR_TEST);
+        else
+            glDisable(GL_SCISSOR_TEST);
+        if (previous_blend)
+            glEnable(GL_BLEND);
+        else
+            glDisable(GL_BLEND);
+        if (previous_depth_test)
+            glEnable(GL_DEPTH_TEST);
+        else
+            glDisable(GL_DEPTH_TEST);
+        if (previous_stencil_test)
+            glEnable(GL_STENCIL_TEST);
+        else
+            glDisable(GL_STENCIL_TEST);
+        if (previous_cull_face)
+            glEnable(GL_CULL_FACE);
+        else
+            glDisable(GL_CULL_FACE);
+        if (previous_dither)
+            glEnable(GL_DITHER);
+        else
+            glDisable(GL_DITHER);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, previous_texture0_2d);
         glActiveTexture(GL_TEXTURE1);
@@ -790,6 +829,13 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     }
 
     glViewport(0, 0, nv12_data->width, nv12_data->height);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_DITHER);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glUseProgram(m_mundo_video_nv12_program);
     glBindBuffer(GL_ARRAY_BUFFER, m_mundo_video_nv12_vertex_buffer);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
