@@ -30,9 +30,30 @@
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Selection/Selection.h>
 
+#include <stdlib.h>
+
 namespace Web {
 
 GC_DEFINE_ALLOCATOR(Page);
+
+static AK::Duration media_video_sink_update_interval()
+{
+    static auto interval = [] {
+        auto const* raw_value = getenv("MUNDO_MEDIA_VIDEO_UPDATE_FPS");
+        if (!raw_value)
+            return AK::Duration::from_microseconds(1'000'000 / 60);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::zero();
+
+        if (value > 240)
+            value = 240;
+
+        return AK::Duration::from_microseconds(1'000'000 / value);
+    }();
+    return interval;
+}
 
 GC::Ref<Page> Page::create(JS::VM& vm, GC::Ref<PageClient> page_client)
 {
@@ -556,14 +577,36 @@ void Page::for_each_media_element(Callback&& callback)
 
 void Page::update_all_media_element_video_sinks()
 {
-    bool should_request_another_frame = false;
+    bool should_update_video_sinks = false;
     for_each_media_element([&](auto& media_element) {
-        media_element.update_video_frame_and_timeline();
-        should_request_another_frame = true;
+        if (media_element.selected_video_track_sink() && media_element.potentially_playing())
+            should_update_video_sinks = true;
     });
 
-    if (should_request_another_frame)
+    if (!should_update_video_sinks) {
+        m_last_media_video_sink_update_time = {};
+        m_skipped_media_video_sink_update_count = 0;
+        return;
+    }
+
+    auto const interval = media_video_sink_update_interval();
+    auto const now = MonotonicTime::now_coarse();
+    if (!interval.is_zero() && m_last_media_video_sink_update_time.has_value() && now - *m_last_media_video_sink_update_time < interval) {
+        ++m_skipped_media_video_sink_update_count;
+        if (m_skipped_media_video_sink_update_count <= 8 || m_skipped_media_video_sink_update_count % 600 == 0)
+            dbgln("MUNDO_MEDIA_PAGE video_sink_update_throttled count={} interval={}us", m_skipped_media_video_sink_update_count, interval.to_microseconds());
+
         client().request_frame();
+        return;
+    }
+
+    m_last_media_video_sink_update_time = now;
+
+    for_each_media_element([&](auto& media_element) {
+        media_element.update_video_frame_and_timeline();
+    });
+
+    client().request_frame();
 }
 
 void Page::register_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id)

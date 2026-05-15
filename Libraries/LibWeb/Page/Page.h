@@ -11,6 +11,7 @@
 
 #include <AK/JsonValue.h>
 #include <AK/Queue.h>
+#include <AK/Time.h>
 #include <AK/Variant.h>
 #include <LibGC/Root.h>
 #include <LibGC/Weak.h>
@@ -320,6 +321,8 @@ private:
 
     Vector<UniqueNodeID> m_media_elements;
     Vector<UniqueNodeID> m_canvas_elements;
+    Optional<MonotonicTime> m_last_media_video_sink_update_time;
+    size_t m_skipped_media_video_sink_update_count { 0 };
     Optional<UniqueNodeID> m_media_context_menu_element_id;
 
     Web::HTML::MuteState m_mute_state { Web::HTML::MuteState::Unmuted };
