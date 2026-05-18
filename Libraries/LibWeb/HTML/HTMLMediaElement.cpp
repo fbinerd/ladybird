@@ -186,7 +186,7 @@ static bool mundo_nvdec_backend_requested()
 {
     auto const* raw_backend = getenv("MUNDO_VIDEO_DECODER_BACKEND");
     if (!raw_backend)
-        return false;
+        return true;
 
     return !strcmp(raw_backend, "nvdec") || !strcmp(raw_backend, "cuda");
 }
