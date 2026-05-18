@@ -731,15 +731,30 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
             while (queue_size >= m_queue_max_size) {
                 if (low_latency_video_queue_enabled()) {
                     auto locker = take_lock();
-                    if (!m_queue.is_empty()) {
+                    auto should_drop_queued_frame = [&] {
+                        if (m_queue.is_empty() || !m_time_provider)
+                            return false;
+
+                        auto stale_threshold = stale_decoded_frame_drop_threshold();
+                        if (stale_threshold == AK::Duration::max())
+                            return false;
+
+                        auto playback_time = m_time_provider->current_time();
+                        auto queued_timestamp = m_queue.head().timestamp();
+                        return playback_time > queued_timestamp && playback_time - queued_timestamp > stale_threshold;
+                    }();
+
+                    if (should_drop_queued_frame) {
                         auto dropped_frame = m_queue.dequeue();
                         m_dropped_queued_frame_count++;
                         if (m_dropped_queued_frame_count <= 8 || m_dropped_queued_frame_count % 60 == 0) {
-                            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER drop_queued_frame count={} track_id={} dropped_timestamp={}ms new_timestamp={}ms queue_after={} max_size={}",
+                            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER drop_queued_frame count={} track_id={} dropped_timestamp={}ms new_timestamp={}ms playback_time={}ms age={}ms queue_after={} max_size={}",
                                 m_dropped_queued_frame_count,
                                 m_track.identifier(),
                                 dropped_frame.timestamp().to_milliseconds(),
                                 frame->timestamp().to_milliseconds(),
+                                m_time_provider->current_time().to_milliseconds(),
+                                (m_time_provider->current_time() - dropped_frame.timestamp()).to_milliseconds(),
                                 m_queue.size(),
                                 m_queue_max_size);
                         }
