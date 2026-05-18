@@ -141,6 +141,7 @@ private:
         size_t m_decoded_frame_count { 0 };
         size_t m_dropped_stale_decoded_frame_count { 0 };
         size_t m_dropped_queued_frame_count { 0 };
+        size_t m_rebased_stale_live_frame_count { 0 };
         size_t m_end_of_stream_count { 0 };
         size_t m_decoder_end_of_stream_count { 0 };
         size_t m_needs_more_input_count { 0 };
