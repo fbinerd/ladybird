@@ -33,6 +33,7 @@ public:
     virtual ~MediaStream() = default;
 
     virtual NonnullRefPtr<MediaStreamCursor> create_cursor() = 0;
+    virtual bool is_likely_hls() const { return false; }
 };
 
 }

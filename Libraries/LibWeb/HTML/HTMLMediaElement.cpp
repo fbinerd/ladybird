@@ -1557,6 +1557,7 @@ void HTMLMediaElement::load_url_resource(URL::URL const& url_record, Function<vo
     m_remote_fetch_data = make<RemoteFetchData>();
     m_remote_fetch_data->url_record = url_record;
     m_remote_fetch_data->stream = Media::IncrementallyPopulatedStream::create_empty();
+    m_remote_fetch_data->stream->set_likely_hls(serialized_url.contains(".m3u8"sv));
     m_remote_fetch_data->stream->set_data_request_callback(GC::weak_callback(*this, [](auto& self, u64 offset) {
         self.restart_fetch_at_offset(offset);
     }));

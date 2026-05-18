@@ -32,6 +32,9 @@ public:
     ~IncrementallyPopulatedStream();
 
     virtual NonnullRefPtr<MediaStreamCursor> create_cursor() override;
+    virtual bool is_likely_hls() const override { return m_is_likely_hls; }
+
+    void set_likely_hls(bool is_likely_hls) { m_is_likely_hls = is_likely_hls; }
 
     // Callback invoked when data at a specific offset is needed but not available.
     // The callback receives the desired offset position and is invoked on the provided event loop.
@@ -116,6 +119,7 @@ private:
     Chunks m_chunks;
     Optional<u64> m_expected_size;
     bool m_closed { false };
+    bool m_is_likely_hls { false };
 
     RefPtr<Core::WeakEventLoopReference> m_callback_event_loop;
     DataRequestCallback m_data_request_callback;

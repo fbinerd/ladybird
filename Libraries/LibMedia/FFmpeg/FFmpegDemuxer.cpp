@@ -190,8 +190,8 @@ static DecoderErrorOr<Track> create_track_from_stream(AVStream const& stream, St
 DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullRefPtr<MediaStream> const& stream)
 {
     auto cursor = stream->create_cursor();
-    auto force_hls_demuxer = TRY(stream_looks_like_hls(cursor));
-    dbgln("MUNDO_MEDIA_FFMPEG from_stream force_hls={}", force_hls_demuxer);
+    auto force_hls_demuxer = stream->is_likely_hls() || TRY(stream_looks_like_hls(cursor));
+    dbgln("MUNDO_MEDIA_FFMPEG from_stream force_hls={} hint={}", force_hls_demuxer, stream->is_likely_hls());
     auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     AVFormatContext* format_context = nullptr;
@@ -264,8 +264,8 @@ DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullR
 DecoderErrorOr<void> FFmpegDemuxer::create_context_for_track(Track const& track)
 {
     auto cursor = m_stream->create_cursor();
-    auto force_hls_demuxer = TRY(stream_looks_like_hls(cursor));
-    dbgln("MUNDO_MEDIA_FFMPEG create_context track_id={} type={} force_hls={}", track.identifier(), to_underlying(track.type()), force_hls_demuxer);
+    auto force_hls_demuxer = m_stream->is_likely_hls() || TRY(stream_looks_like_hls(cursor));
+    dbgln("MUNDO_MEDIA_FFMPEG create_context track_id={} type={} force_hls={} hint={}", track.identifier(), to_underlying(track.type()), force_hls_demuxer, m_stream->is_likely_hls());
     auto io_context = MUST(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     auto track_context = make<TrackContext>(move(cursor), move(io_context), force_hls_demuxer);
