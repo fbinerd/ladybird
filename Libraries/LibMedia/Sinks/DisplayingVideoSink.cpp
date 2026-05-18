@@ -12,6 +12,7 @@
 #include "DisplayingVideoSink.h"
 
 #include <stdlib.h>
+#include <strings.h>
 
 namespace Media {
 
@@ -52,6 +53,18 @@ static size_t video_sink_drain_log_threshold()
         return 0;
 
     return static_cast<size_t>(value);
+}
+
+static bool present_one_frame_per_update()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_SINK_PRESENT_ONE_PER_UPDATE");
+    if (!raw_value)
+        return true;
+
+    return strcasecmp(raw_value, "0") != 0
+        && strcasecmp(raw_value, "false") != 0
+        && strcasecmp(raw_value, "no") != 0
+        && strcasecmp(raw_value, "off") != 0;
 }
 
 ErrorOr<NonnullRefPtr<DisplayingVideoSink>> DisplayingVideoSink::try_create(NonnullRefPtr<MediaTimeProvider> const& time_provider)
@@ -159,6 +172,8 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
             dbgln("MUNDO_MEDIA_VIDEO_SINK present_frame count={} track_id={} current_time={}ms size={}x{} lazy_bitmap={}", m_presented_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), size.width(), size.height(), m_current_frame.has_lazy_bitmap());
         }
         result = DisplayingVideoSinkUpdateResult::NewFrameAvailable;
+        if (present_one_frame_per_update())
+            break;
     }
     auto drain_log_threshold = video_sink_drain_log_threshold();
     if (drain_log_threshold > 0 && (retrieved_this_update >= drain_log_threshold || dropped_late_this_update > 0 || (saw_provider_empty_this_update && retrieved_this_update > 0))) {
