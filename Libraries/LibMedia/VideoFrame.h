@@ -21,6 +21,22 @@
 namespace Media {
 
 struct MEDIA_API NV12VideoFrameData : public RefCounted<NV12VideoFrameData> {
+    ~NV12VideoFrameData();
+
+    u8 const* y_plane_data() const { return m_y_plane_data ? m_y_plane_data : y_plane.data(); }
+    u8 const* uv_plane_data() const { return m_uv_plane_data ? m_uv_plane_data : uv_plane.data(); }
+    size_t y_plane_size() const { return m_y_plane_size ? m_y_plane_size : y_plane.size(); }
+    size_t uv_plane_size() const { return m_uv_plane_size ? m_uv_plane_size : uv_plane.size(); }
+
+    void set_external_planes(u8 const* y_plane_data, size_t y_plane_size, u8 const* uv_plane_data, size_t uv_plane_size, Function<void()>&& cleanup)
+    {
+        m_y_plane_data = y_plane_data;
+        m_y_plane_size = y_plane_size;
+        m_uv_plane_data = uv_plane_data;
+        m_uv_plane_size = uv_plane_size;
+        m_external_storage_cleanup = move(cleanup);
+    }
+
     ByteBuffer y_plane;
     ByteBuffer uv_plane;
     int width { 0 };
@@ -28,6 +44,13 @@ struct MEDIA_API NV12VideoFrameData : public RefCounted<NV12VideoFrameData> {
     int y_stride { 0 };
     int uv_stride { 0 };
     CodingIndependentCodePoints cicp;
+
+private:
+    u8 const* m_y_plane_data { nullptr };
+    size_t m_y_plane_size { 0 };
+    u8 const* m_uv_plane_data { nullptr };
+    size_t m_uv_plane_size { 0 };
+    Function<void()> m_external_storage_cleanup;
 };
 
 class MEDIA_API VideoFrame final {

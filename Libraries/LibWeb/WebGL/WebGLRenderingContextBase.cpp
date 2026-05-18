@@ -678,8 +678,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 nv12_height = nv12_data->height;
                 nv12_y_stride = nv12_data->y_stride;
                 nv12_uv_stride = nv12_data->uv_stride;
-                nv12_y_bytes = nv12_data->y_plane.size();
-                nv12_uv_bytes = nv12_data->uv_plane.size();
+                nv12_y_bytes = nv12_data->y_plane_size();
+                nv12_uv_bytes = nv12_data->uv_plane_size();
             }
         }
         if (has_nv12_frame || should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
@@ -923,8 +923,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     }
     auto used_y_plane_pbo = false;
     auto used_uv_plane_pbo = false;
-    auto reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, nv12_data->width, nv12_data->height, nv12_data->y_plane.data(), nv12_data->y_plane.size(), m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
-    auto reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, nv12_data->uv_stride / 2, (nv12_data->height + 1) / 2, nv12_data->uv_plane.data(), nv12_data->uv_plane.size(), m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
+    auto reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, nv12_data->width, nv12_data->height, nv12_data->y_plane_data(), nv12_data->y_plane_size(), m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
+    auto reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, nv12_data->uv_stride / 2, (nv12_data->height + 1) / 2, nv12_data->uv_plane_data(), nv12_data->uv_plane_size(), m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
 
     glBindFramebuffer(GL_FRAMEBUFFER, m_mundo_video_nv12_framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previous_texture_2d, level);
@@ -1006,11 +1006,11 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     if (should_probe_black_frame && draw_error == GL_NO_ERROR) {
         glReadPixels(sampled_x, sampled_y_row, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sampled_rgba);
         draw_error = glGetError();
-        sampled_y = nv12_data->y_plane[static_cast<size_t>(sampled_y_row) * static_cast<size_t>(nv12_data->y_stride) + static_cast<size_t>(sampled_x)];
+        sampled_y = nv12_data->y_plane_data()[static_cast<size_t>(sampled_y_row) * static_cast<size_t>(nv12_data->y_stride) + static_cast<size_t>(sampled_x)];
         auto uv_x = (sampled_x / 2) * 2;
         auto uv_y = sampled_y_row / 2;
-        sampled_u = nv12_data->uv_plane[static_cast<size_t>(uv_y) * static_cast<size_t>(nv12_data->uv_stride) + static_cast<size_t>(uv_x)];
-        sampled_v = nv12_data->uv_plane[static_cast<size_t>(uv_y) * static_cast<size_t>(nv12_data->uv_stride) + static_cast<size_t>(uv_x) + 1];
+        sampled_u = nv12_data->uv_plane_data()[static_cast<size_t>(uv_y) * static_cast<size_t>(nv12_data->uv_stride) + static_cast<size_t>(uv_x)];
+        sampled_v = nv12_data->uv_plane_data()[static_cast<size_t>(uv_y) * static_cast<size_t>(nv12_data->uv_stride) + static_cast<size_t>(uv_x) + 1];
     }
 
     restore_state();
@@ -1031,8 +1031,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             reused_uv_plane_storage ? "reused"sv : "allocated"sv,
             used_y_plane_pbo ? "pbo"sv : "client"sv,
             used_uv_plane_pbo ? "pbo"sv : "client"sv,
-            nv12_data->y_plane.size(),
-            nv12_data->uv_plane.size(),
+            nv12_data->y_plane_size(),
+            nv12_data->uv_plane_size(),
             m_unpack_flip_y,
             is_full_range,
             preserved_pending_gl_errors,
@@ -1116,8 +1116,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_pat
                 nv12_data->height,
                 nv12_data->y_stride,
                 nv12_data->uv_stride,
-                nv12_data->y_plane.size(),
-                nv12_data->uv_plane.size(),
+                nv12_data->y_plane_size(),
+                nv12_data->uv_plane_size(),
                 m_unpack_flip_y);
         }
     }

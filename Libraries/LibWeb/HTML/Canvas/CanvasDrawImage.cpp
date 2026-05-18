@@ -177,8 +177,8 @@ ErrorOr<NonnullRefPtr<Gfx::Bitmap>> create_scaled_bitmap_from_video_frame(Media:
         auto source_y = source_rect.y() + static_cast<int>((static_cast<u64>(row) * source_height) / target_height);
         source_y = clamp(source_y, 0, nv12_data->height - 1);
         auto* dst_row = bitmap->scanline_u8(row);
-        auto const* y_row = nv12_data->y_plane.data() + static_cast<size_t>(source_y) * static_cast<size_t>(nv12_data->y_stride);
-        auto const* uv_row = nv12_data->uv_plane.data() + static_cast<size_t>(source_y / 2) * static_cast<size_t>(nv12_data->uv_stride);
+        auto const* y_row = nv12_data->y_plane_data() + static_cast<size_t>(source_y) * static_cast<size_t>(nv12_data->y_stride);
+        auto const* uv_row = nv12_data->uv_plane_data() + static_cast<size_t>(source_y / 2) * static_cast<size_t>(nv12_data->uv_stride);
 
         for (u32 col = 0; col < target_width; ++col) {
             auto source_x = source_rect.x() + static_cast<int>((static_cast<u64>(col) * source_width) / target_width);

@@ -780,6 +780,53 @@ static ErrorOr<NonnullRefPtr<NV12VideoFrameData>> copy_nv12_frame_data(AVFrame c
     auto uv_stride = ((width + 1) / 2) * 2;
     auto uv_rows = (height + 1) / 2;
 
+    auto create_retained_frame_data = [&]() -> ErrorOr<NonnullRefPtr<NV12VideoFrameData>> {
+        auto* retained_frame = av_frame_alloc();
+        if (!retained_frame)
+            return Error::from_errno(ENOMEM);
+
+        auto result = av_frame_ref(retained_frame, frame);
+        if (result < 0) {
+            av_frame_free(&retained_frame);
+            return Error::from_errno(ENOMEM);
+        }
+
+        auto data = make_ref_counted<NV12VideoFrameData>();
+        data->width = width;
+        data->height = height;
+        data->y_stride = source_y_stride;
+        data->uv_stride = source_uv_stride;
+        data->cicp = cicp;
+        data->set_external_planes(
+            retained_frame->data[0],
+            static_cast<size_t>(source_y_stride) * static_cast<size_t>(height),
+            retained_frame->data[1],
+            static_cast<size_t>(source_uv_stride) * static_cast<size_t>(uv_rows),
+            [retained_frame]() mutable {
+                av_frame_free(&retained_frame);
+            });
+
+        auto total_microseconds = (MonotonicTime::now() - copy_start).to_microseconds();
+        static size_t s_nv12_frame_retain_count { 0 };
+        auto count = ++s_nv12_frame_retain_count;
+        if (count <= 8 || count % 120 == 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG nv12_frame_retain count={} total_us={} size={}x{} y_stride={} uv_stride={} compact={}/{}",
+                count,
+                total_microseconds,
+                width,
+                height,
+                source_y_stride,
+                source_uv_stride,
+                source_y_stride == y_stride,
+                source_uv_stride == uv_stride);
+        }
+
+        return data;
+    };
+
+    if (auto retained_data = create_retained_frame_data(); !retained_data.is_error())
+        return retained_data.release_value();
+
     auto allocation_start = MonotonicTime::now();
     auto y_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(y_stride) * static_cast<size_t>(height)));
     auto uv_plane = TRY(ByteBuffer::create_uninitialized(static_cast<size_t>(uv_stride) * static_cast<size_t>(uv_rows)));
@@ -861,13 +908,13 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
     if (target_width == source_width && target_height == source_height) {
         parallel_for_nv12_rows(source_height, job_count, [&](u32 start_row, u32 end_row) {
             for (u32 row = start_row; row < end_row; row += 2) {
-                auto const* y_row = frame.y_plane.data() + row * frame.y_stride;
-                auto const* uv_row = frame.uv_plane.data() + (row / 2) * frame.uv_stride;
+                auto const* y_row = frame.y_plane_data() + row * frame.y_stride;
+                auto const* uv_row = frame.uv_plane_data() + (row / 2) * frame.uv_stride;
                 auto* dst_row = bitmap->scanline_u8(row);
                 convert_nv12_row_to_rgba(lookup_tables, y_row, uv_row, dst_row, source_width);
 
                 if (row + 1 < source_height && row + 1 < end_row) {
-                    auto const* next_y_row = frame.y_plane.data() + (row + 1) * frame.y_stride;
+                    auto const* next_y_row = frame.y_plane_data() + (row + 1) * frame.y_stride;
                     auto* next_dst_row = bitmap->scanline_u8(row + 1);
                     convert_nv12_row_to_rgba(lookup_tables, next_y_row, uv_row, next_dst_row, source_width);
                 }
@@ -877,8 +924,8 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
         parallel_for_nv12_rows(target_height, job_count, [&](u32 start_row, u32 end_row) {
             for (u32 row = start_row; row < end_row; ++row) {
                 auto source_y = min((static_cast<u64>(row) * source_height) / target_height, static_cast<u64>(source_height - 1));
-                auto const* y_row = frame.y_plane.data() + source_y * frame.y_stride;
-                auto const* uv_row = frame.uv_plane.data() + (source_y / 2) * frame.uv_stride;
+                auto const* y_row = frame.y_plane_data() + source_y * frame.y_stride;
+                auto const* uv_row = frame.uv_plane_data() + (source_y / 2) * frame.uv_stride;
                 auto* dst_row = bitmap->scanline_u8(row);
 
                 for (u32 col = 0; col < target_width; ++col) {

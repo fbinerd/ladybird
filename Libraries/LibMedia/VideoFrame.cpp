@@ -11,6 +11,12 @@
 
 namespace Media {
 
+NV12VideoFrameData::~NV12VideoFrameData()
+{
+    if (m_external_storage_cleanup)
+        m_external_storage_cleanup();
+}
+
 VideoFrame::VideoFrame(
     AK::Duration timestamp,
     AK::Duration duration,
