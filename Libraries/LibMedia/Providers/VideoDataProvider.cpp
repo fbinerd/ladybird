@@ -25,18 +25,29 @@ namespace Media {
 static size_t video_frame_queue_size(Track const& track)
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_FRAME_QUEUE_SIZE");
-    if (!raw_value)
+    auto pixel_count = static_cast<size_t>(track.video_data().pixel_width) * static_cast<size_t>(track.video_data().pixel_height);
+    if (!raw_value) {
+        if (pixel_count >= 1920 * 1080)
+            return static_cast<size_t>(2);
         return static_cast<size_t>(4);
+    }
 
     auto value = atoi(raw_value);
     if (value <= 0)
         return static_cast<size_t>(4);
 
-    auto pixel_count = static_cast<size_t>(track.video_data().pixel_width) * static_cast<size_t>(track.video_data().pixel_height);
     if (pixel_count > 4096 * 2048)
         return clamp(static_cast<size_t>(value), static_cast<size_t>(1), static_cast<size_t>(2));
 
     return clamp(static_cast<size_t>(value), static_cast<size_t>(1), VideoDataProvider::QUEUE_CAPACITY);
+}
+
+static bool low_latency_video_queue_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_LOW_LATENCY_QUEUE");
+    if (!raw_value)
+        return true;
+    return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
 static AK::Duration stale_decoded_frame_drop_threshold()
@@ -718,6 +729,25 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
             }();
 
             while (queue_size >= m_queue_max_size) {
+                if (low_latency_video_queue_enabled()) {
+                    auto locker = take_lock();
+                    if (!m_queue.is_empty()) {
+                        auto dropped_frame = m_queue.dequeue();
+                        m_dropped_queued_frame_count++;
+                        if (m_dropped_queued_frame_count <= 8 || m_dropped_queued_frame_count % 60 == 0) {
+                            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER drop_queued_frame count={} track_id={} dropped_timestamp={}ms new_timestamp={}ms queue_after={} max_size={}",
+                                m_dropped_queued_frame_count,
+                                m_track.identifier(),
+                                dropped_frame.timestamp().to_milliseconds(),
+                                frame->timestamp().to_milliseconds(),
+                                m_queue.size(),
+                                m_queue_max_size);
+                        }
+                        queue_size = m_queue.size();
+                        continue;
+                    }
+                }
+
                 if (m_frames_queue_is_full_handler) {
                     invoke_on_main_thread([](auto const& self) {
                         self->m_frames_queue_is_full_handler();
