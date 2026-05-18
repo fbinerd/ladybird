@@ -971,6 +971,95 @@ static ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> create_bitmap_directly_from_
     return Gfx::ImmutableBitmap::create(move(bitmap));
 }
 
+static bool lazy_hardware_frame_transfer_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_LAZY_HW_TRANSFER");
+    if (!raw_value)
+        return true;
+    return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+class RetainedHardwareFrameSource final : public RefCounted<RetainedHardwareFrameSource> {
+public:
+    static ErrorOr<NonnullRefPtr<RetainedHardwareFrameSource>> create(AVFrame const* frame, CodingIndependentCodePoints const& cicp)
+    {
+        auto* retained_frame = av_frame_alloc();
+        if (!retained_frame)
+            return Error::from_errno(ENOMEM);
+
+        auto result = av_frame_ref(retained_frame, frame);
+        if (result < 0) {
+            av_frame_free(&retained_frame);
+            return Error::from_errno(ENOMEM);
+        }
+
+        return make_ref_counted<RetainedHardwareFrameSource>(retained_frame, cicp);
+    }
+
+    RetainedHardwareFrameSource(AVFrame* frame, CodingIndependentCodePoints cicp)
+        : m_frame(frame)
+        , m_cicp(cicp)
+    {
+    }
+
+    ~RetainedHardwareFrameSource()
+    {
+        av_frame_free(&m_frame);
+    }
+
+    ErrorOr<NonnullRefPtr<NV12VideoFrameData>> nv12_data()
+    {
+        if (m_nv12_data)
+            return *m_nv12_data;
+
+        auto* transfer_frame = av_frame_alloc();
+        if (!transfer_frame)
+            return Error::from_errno(ENOMEM);
+
+        auto cleanup_transfer_frame = ScopeGuard([&] {
+            av_frame_free(&transfer_frame);
+        });
+
+        auto transfer_start = MonotonicTime::now();
+        auto result = av_hwframe_transfer_data(transfer_frame, m_frame, 0);
+        auto transfer_microseconds = (MonotonicTime::now() - transfer_start).to_microseconds();
+        if (result < 0)
+            return Error::from_string_literal("Failed to transfer retained FFmpeg hardware frame to CPU");
+
+        result = av_frame_copy_props(transfer_frame, m_frame);
+        if (result < 0)
+            return Error::from_string_literal("Failed to copy retained FFmpeg hardware frame properties");
+
+        if (transfer_frame->format != AV_PIX_FMT_NV12)
+            return Error::from_string_literal("Retained hardware frame did not transfer as NV12");
+
+        auto retain_start = MonotonicTime::now();
+        auto nv12_data = TRY(copy_nv12_frame_data(transfer_frame, m_cicp));
+        auto retain_microseconds = (MonotonicTime::now() - retain_start).to_microseconds();
+
+        static size_t s_lazy_hw_transfer_count { 0 };
+        auto count = ++s_lazy_hw_transfer_count;
+        if (count <= 8 || count % 120 == 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG lazy_hw_transfer count={} hw_format={} sw_format={} size={}x{} transfer_us={} retain_us={}",
+                count,
+                pixel_format_name(static_cast<AVPixelFormat>(m_frame->format)),
+                pixel_format_name(static_cast<AVPixelFormat>(transfer_frame->format)),
+                transfer_frame->width,
+                transfer_frame->height,
+                transfer_microseconds,
+                retain_microseconds);
+        }
+
+        m_nv12_data = nv12_data;
+        return nv12_data;
+    }
+
+private:
+    AVFrame* m_frame { nullptr };
+    CodingIndependentCodePoints m_cicp;
+    RefPtr<NV12VideoFrameData> m_nv12_data;
+};
+
 static DecoderErrorOr<void> copy_planar_frame_to_yuv_data(AVFrame const* frame, Gfx::YUVData& yuv_data, Gfx::Size<u32> size, Subsampling subsampling, size_t component_size)
 {
     auto y_plane_size = size.to_type<size_t>();
@@ -1204,6 +1293,59 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
 
     switch (result) {
     case 0: {
+        if (is_hardware_frame(m_frame)
+            && lazy_hardware_frame_transfer_enabled()
+            && direct_nv12_rgba_bitmap_enabled()
+            && lazy_nv12_rgba_bitmap_enabled()
+            && !should_use_gpu_yuv_for_nv12_frame(m_frame->width, m_frame->height)) {
+            auto color_primaries = static_cast<ColorPrimaries>(m_frame->color_primaries);
+            auto transfer_characteristics = static_cast<TransferCharacteristics>(m_frame->color_trc);
+            auto matrix_coefficients = static_cast<MatrixCoefficients>(m_frame->colorspace);
+            auto color_range = [&] {
+                switch (m_frame->color_range) {
+                case AVColorRange::AVCOL_RANGE_MPEG:
+                    return VideoFullRangeFlag::Studio;
+                case AVColorRange::AVCOL_RANGE_JPEG:
+                    return VideoFullRangeFlag::Full;
+                default:
+                    return VideoFullRangeFlag::Unspecified;
+                }
+            }();
+            auto cicp = CodingIndependentCodePoints { color_primaries, transfer_characteristics, matrix_coefficients, color_range };
+            cicp.adopt_specified_values(container_cicp);
+
+            auto software_pixel_format = static_cast<AVPixelFormat>(m_codec_context->sw_pix_fmt);
+            auto bit_depth = bit_depth_for_pixel_format(software_pixel_format);
+            auto size = Gfx::Size<u32> { m_frame->width, m_frame->height };
+            auto timestamp = AK::Duration::from_microseconds(m_frame->pts);
+            auto duration = AK::Duration::from_microseconds(m_frame->duration);
+
+            auto source = DECODER_TRY_ALLOC(RetainedHardwareFrameSource::create(m_frame, cicp));
+            auto source_for_bitmap = source;
+            auto bitmap_factory = [source_for_bitmap]() mutable -> ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> {
+                auto frame_data = TRY(source_for_bitmap->nv12_data());
+                return create_bitmap_directly_from_nv12_frame_data(*frame_data);
+            };
+            auto source_for_nv12 = source;
+            auto nv12_data_factory = [source_for_nv12]() mutable -> ErrorOr<NonnullRefPtr<NV12VideoFrameData>> {
+                return source_for_nv12->nv12_data();
+            };
+
+            static size_t s_deferred_hw_frame_count { 0 };
+            auto count = ++s_deferred_hw_frame_count;
+            if (count <= 8 || count % 120 == 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG defer_hw_transfer count={} hw_format={} sw_pix_fmt={} size={}x{} timestamp={}ms",
+                    count,
+                    pixel_format_name(static_cast<AVPixelFormat>(m_frame->format)),
+                    pixel_format_name(software_pixel_format),
+                    m_frame->width,
+                    m_frame->height,
+                    timestamp.to_milliseconds());
+            }
+
+            return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap_factory), move(nv12_data_factory)));
+        }
+
         if (!is_hardware_frame(m_frame))
             log_software_frame_while_hwaccel_requested(m_codec_context, m_frame);
         HardwareTransferTiming transfer_timing;

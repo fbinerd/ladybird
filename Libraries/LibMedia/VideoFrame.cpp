@@ -64,6 +64,23 @@ VideoFrame::VideoFrame(
 {
 }
 
+VideoFrame::VideoFrame(
+    AK::Duration timestamp,
+    AK::Duration duration,
+    Gfx::Size<u32> size,
+    u8 bit_depth, CodingIndependentCodePoints cicp,
+    BitmapFactory&& bitmap_factory,
+    NV12DataFactory&& nv12_data_factory)
+    : m_timestamp(timestamp)
+    , m_duration(duration)
+    , m_size(size)
+    , m_bit_depth(bit_depth)
+    , m_cicp(cicp)
+    , m_bitmap_factory(move(bitmap_factory))
+    , m_nv12_data_factory(move(nv12_data_factory))
+{
+}
+
 VideoFrame::~VideoFrame() = default;
 
 NonnullRefPtr<Gfx::ImmutableBitmap> VideoFrame::immutable_bitmap() const
@@ -79,6 +96,21 @@ NonnullRefPtr<Gfx::ImmutableBitmap> VideoFrame::immutable_bitmap() const
         m_bitmap_factory = {};
     }
     return *m_bitmap;
+}
+
+NV12VideoFrameData const* VideoFrame::nv12_data() const
+{
+    if (!m_nv12_data && m_nv12_data_factory) {
+        auto nv12_data_or_error = m_nv12_data_factory();
+        if (nv12_data_or_error.is_error()) {
+            dbgln("MUNDO_MEDIA_VIDEO_FRAME lazy_nv12_materialize_failed error={}", nv12_data_or_error.error());
+            m_nv12_data_factory = {};
+            return nullptr;
+        }
+        m_nv12_data = nv12_data_or_error.release_value();
+        m_nv12_data_factory = {};
+    }
+    return m_nv12_data.ptr();
 }
 
 }

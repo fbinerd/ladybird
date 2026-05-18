@@ -57,6 +57,7 @@ class MEDIA_API VideoFrame final {
 
 public:
     using BitmapFactory = Function<ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>>()>;
+    using NV12DataFactory = Function<ErrorOr<NonnullRefPtr<NV12VideoFrameData>>()>;
 
     VideoFrame(
         AK::Duration timestamp,
@@ -80,6 +81,14 @@ public:
         CodingIndependentCodePoints cicp,
         BitmapFactory&& bitmap_factory,
         NonnullRefPtr<NV12VideoFrameData>);
+    VideoFrame(
+        AK::Duration timestamp,
+        AK::Duration duration,
+        Gfx::Size<u32> size,
+        u8 bit_depth,
+        CodingIndependentCodePoints cicp,
+        BitmapFactory&& bitmap_factory,
+        NV12DataFactory&& nv12_data_factory);
     ~VideoFrame();
 
     AK::Duration timestamp() const { return m_timestamp; }
@@ -94,7 +103,8 @@ public:
 
     NonnullRefPtr<Gfx::ImmutableBitmap> immutable_bitmap() const;
     bool has_lazy_bitmap() const { return m_bitmap == nullptr && m_bitmap_factory; }
-    NV12VideoFrameData const* nv12_data() const { return m_nv12_data.ptr(); }
+    bool has_lazy_nv12_data() const { return m_nv12_data == nullptr && m_nv12_data_factory; }
+    NV12VideoFrameData const* nv12_data() const;
 
 private:
     AK::Duration m_timestamp;
@@ -104,7 +114,8 @@ private:
     CodingIndependentCodePoints m_cicp;
     mutable RefPtr<Gfx::ImmutableBitmap> m_bitmap;
     mutable BitmapFactory m_bitmap_factory;
-    RefPtr<NV12VideoFrameData> m_nv12_data;
+    mutable RefPtr<NV12VideoFrameData> m_nv12_data;
+    mutable NV12DataFactory m_nv12_data_factory;
 };
 
 }
