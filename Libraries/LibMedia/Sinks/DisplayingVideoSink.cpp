@@ -20,7 +20,7 @@ static AK::Duration late_frame_age_threshold()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_LATE_DROP_MS");
     if (!raw_value)
-        return AK::Duration::from_milliseconds(250);
+        return AK::Duration::from_milliseconds(500);
 
     auto value = atoi(raw_value);
     if (value <= 0)
