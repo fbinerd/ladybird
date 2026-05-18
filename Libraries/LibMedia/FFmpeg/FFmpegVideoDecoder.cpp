@@ -147,6 +147,22 @@ static bool is_known_unsupported_nvdec_h264_resolution(AVCodecContext const* cod
     return codec_context->width > 4096 || codec_context->height > 4096 || codec_context->level > 51;
 }
 
+static bool should_keep_small_frame_on_software(AVCodecContext const* codec_context)
+{
+    auto const* raw_min_pixels = getenv("MUNDO_VIDEO_NVDEC_MIN_PIXELS");
+    if (raw_min_pixels && (!strcmp(raw_min_pixels, "0") || !strcmp(raw_min_pixels, "false") || !strcmp(raw_min_pixels, "no") || !strcmp(raw_min_pixels, "off")))
+        return false;
+
+    auto min_pixels = raw_min_pixels ? strtoull(raw_min_pixels, nullptr, 10) : 640ull * 360ull;
+    if (min_pixels == 0)
+        return false;
+
+    if (codec_context->width <= 0 || codec_context->height <= 0)
+        return false;
+
+    return static_cast<unsigned long long>(codec_context->width) * static_cast<unsigned long long>(codec_context->height) < min_pixels;
+}
+
 static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecoderBackend backend)
 {
     if (backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Software)
@@ -199,6 +215,15 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
         if (is_known_unsupported_nvdec_h264_resolution(codec_context)) {
             skipped_hardware_format = true;
             dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=nvdec_h264_resolution_or_level_limit codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                avcodec_get_name(codec_context->codec_id),
+                codec_profile_name(codec_context),
+                codec_context->level,
+                codec_context->width,
+                codec_context->height,
+                pixel_format_name(codec_context->sw_pix_fmt));
+        } else if (should_keep_small_frame_on_software(codec_context)) {
+            skipped_hardware_format = true;
+            dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=small_frame codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
                 avcodec_get_name(codec_context->codec_id),
                 codec_profile_name(codec_context),
                 codec_context->level,
