@@ -221,6 +221,7 @@ void AudioDataProvider::ThreadData::exit()
 {
     auto locker = take_lock();
     m_requested_state = RequestedState::Exit;
+    m_demuxer->set_blocking_reads_aborted_for_track(m_track);
     wake();
 }
 
