@@ -1004,6 +1004,17 @@ public:
 
     ~RetainedHardwareFrameSource()
     {
+        if (!m_was_transferred) {
+            static size_t s_dropped_deferred_hw_frame_count { 0 };
+            auto count = ++s_dropped_deferred_hw_frame_count;
+            if (count <= 8 || count % 120 == 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG deferred_hw_frame_released_without_transfer count={} hw_format={} size={}x{}",
+                    count,
+                    m_frame ? pixel_format_name(static_cast<AVPixelFormat>(m_frame->format)) : "unknown",
+                    m_frame ? m_frame->width : 0,
+                    m_frame ? m_frame->height : 0);
+            }
+        }
         av_frame_free(&m_frame);
     }
 
@@ -1036,6 +1047,7 @@ public:
         auto retain_start = MonotonicTime::now();
         auto nv12_data = TRY(copy_nv12_frame_data(transfer_frame, m_cicp));
         auto retain_microseconds = (MonotonicTime::now() - retain_start).to_microseconds();
+        m_was_transferred = true;
 
         static size_t s_lazy_hw_transfer_count { 0 };
         auto count = ++s_lazy_hw_transfer_count;
@@ -1058,6 +1070,7 @@ private:
     AVFrame* m_frame { nullptr };
     CodingIndependentCodePoints m_cicp;
     RefPtr<NV12VideoFrameData> m_nv12_data;
+    bool m_was_transferred { false };
 };
 
 static DecoderErrorOr<void> copy_planar_frame_to_yuv_data(AVFrame const* frame, Gfx::YUVData& yuv_data, Gfx::Size<u32> size, Subsampling subsampling, size_t component_size)
