@@ -161,8 +161,14 @@ static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecod
 static void log_video_decoder_backend_probe(AVCodec const* codec, CodecID codec_id)
 {
     auto requested_backend = requested_video_decoder_backend();
-    dbgln("MUNDO_MEDIA_FFMPEG video_decoder_backend requested={} codec={} active=software",
-        video_decoder_backend_name(requested_backend), codec_id);
+    auto active_backend = VideoDecoderBackend::Software;
+    if (requested_backend == VideoDecoderBackend::Nvdec && codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec))
+        active_backend = VideoDecoderBackend::Nvdec;
+    else if (requested_backend == VideoDecoderBackend::Auto && codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec))
+        active_backend = VideoDecoderBackend::Nvdec;
+
+    dbgln("MUNDO_MEDIA_FFMPEG video_decoder_backend requested={} codec={} active={}",
+        video_decoder_backend_name(requested_backend), codec_id, video_decoder_backend_name(active_backend));
 
     if (requested_backend == VideoDecoderBackend::Software)
         return;
@@ -253,10 +259,10 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
 static bool should_try_nvdec(AVCodec const* codec)
 {
     auto requested_backend = requested_video_decoder_backend();
-    if (requested_backend != VideoDecoderBackend::Nvdec)
+    if (requested_backend != VideoDecoderBackend::Auto && requested_backend != VideoDecoderBackend::Nvdec)
         return false;
 
-    return codec_has_hw_config(codec, VideoDecoderBackend::Nvdec);
+    return codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec);
 }
 
 static void quiet_ffmpeg_logs_for_nvdec()
