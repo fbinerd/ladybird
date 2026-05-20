@@ -96,7 +96,7 @@ static AK::Duration live_video_timestamp_gap_smooth_step()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_TIMESTAMP_SMOOTH_STEP_MS");
     if (!raw_value)
-        return AK::Duration::from_milliseconds(120);
+        return AK::Duration::max();
 
     auto value = atoi(raw_value);
     if (value <= 0)
