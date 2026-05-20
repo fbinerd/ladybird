@@ -28,8 +28,8 @@ static size_t video_frame_queue_size(Track const& track)
     auto pixel_count = static_cast<size_t>(track.video_data().pixel_width) * static_cast<size_t>(track.video_data().pixel_height);
     if (!raw_value) {
         if (pixel_count >= 1920 * 1080)
-            return static_cast<size_t>(3);
-        return static_cast<size_t>(4);
+            return static_cast<size_t>(16);
+        return static_cast<size_t>(8);
     }
 
     auto value = atoi(raw_value);
@@ -75,7 +75,7 @@ static bool stale_live_video_recovery_enabled()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_RECOVER_STALE_LIVE");
     if (!raw_value)
-        return true;
+        return false;
     return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 

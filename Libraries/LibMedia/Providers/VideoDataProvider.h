@@ -31,7 +31,7 @@ class MEDIA_API VideoDataProvider final : public AtomicRefCounted<VideoDataProvi
     class ThreadData;
 
 public:
-    static constexpr size_t QUEUE_CAPACITY = 8;
+    static constexpr size_t QUEUE_CAPACITY = 32;
     using ImageQueue = Queue<TimedImage, QUEUE_CAPACITY>;
 
     using ErrorHandler = Function<void(DecoderError&&)>;
