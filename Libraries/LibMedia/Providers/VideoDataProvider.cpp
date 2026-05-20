@@ -71,6 +71,53 @@ static bool stale_live_video_rebase_enabled()
     return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
+static bool stale_live_video_recovery_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_RECOVER_STALE_LIVE");
+    if (!raw_value)
+        return true;
+    return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+static size_t stale_live_video_recovery_drop_count()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_RECOVER_STALE_DROP_COUNT");
+    if (!raw_value)
+        return 8;
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return 1;
+
+    return static_cast<size_t>(value);
+}
+
+static AK::Duration stale_live_video_recovery_age()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_RECOVER_STALE_AGE_MS");
+    if (!raw_value)
+        return AK::Duration::from_milliseconds(3000);
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return AK::Duration::max();
+
+    return AK::Duration::from_milliseconds(max(value, 16));
+}
+
+static AK::Duration stale_live_video_recovery_latency()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_RECOVER_STALE_LATENCY_MS");
+    if (!raw_value)
+        return AK::Duration::from_milliseconds(80);
+
+    auto value = atoi(raw_value);
+    if (value < 0)
+        return AK::Duration::zero();
+
+    return AK::Duration::from_milliseconds(value);
+}
+
 static bool smooth_live_video_timestamp_gaps_enabled()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_SMOOTH_TIMESTAMP_GAPS");
@@ -475,20 +522,32 @@ void VideoDataProvider::ThreadData::queue_frame(NonnullOwnPtr<VideoFrame>&& fram
     if (m_time_provider && stale_threshold != AK::Duration::max()) {
         auto playback_time = m_time_provider->current_time();
         if (playback_time > timestamp && playback_time - timestamp > stale_threshold) {
-            if (stale_live_video_rebase_enabled() && m_queue.is_empty() && m_has_frame_timestamp_offset && pixel_count >= 1920 * 1080) {
+            auto age = playback_time - timestamp;
+            m_consecutive_stale_decoded_frame_count++;
+            auto should_recover_stale_live = stale_live_video_recovery_enabled()
+                && m_queue.is_empty()
+                && m_has_frame_timestamp_offset
+                && pixel_count >= 1920 * 1080
+                && (m_consecutive_stale_decoded_frame_count >= stale_live_video_recovery_drop_count() || (stale_live_video_recovery_age() != AK::Duration::max() && age >= stale_live_video_recovery_age()));
+            if ((stale_live_video_rebase_enabled() || should_recover_stale_live) && m_queue.is_empty() && m_has_frame_timestamp_offset && pixel_count >= 1920 * 1080) {
                 auto old_offset = m_frame_timestamp_offset;
-                m_frame_timestamp_offset = frame->timestamp() > playback_time ? frame->timestamp() - playback_time : AK::Duration::zero();
+                auto target_timestamp = playback_time + stale_live_video_recovery_latency();
+                m_frame_timestamp_offset = frame->timestamp() > target_timestamp ? frame->timestamp() - target_timestamp : AK::Duration::zero();
                 timestamp = normalized_frame_timestamp(*frame);
+                m_last_queued_frame_timestamp.clear();
+                m_last_queued_frame_duration = AK::Duration::zero();
                 m_rebased_stale_live_frame_count++;
                 if (m_rebased_stale_live_frame_count <= 8 || m_rebased_stale_live_frame_count % 60 == 0) {
-                    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER rebase_stale_live_frame count={} track_id={} playback_time={}ms old_timestamp={}ms new_timestamp={}ms age={}ms threshold={}ms old_offset={}ms new_offset={}ms queue_size={}",
+                    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER rebase_stale_live_frame count={} track_id={} reason={} playback_time={}ms old_timestamp={}ms new_timestamp={}ms age={}ms threshold={}ms consecutive_stale={} old_offset={}ms new_offset={}ms queue_size={}",
                         m_rebased_stale_live_frame_count,
                         m_track.identifier(),
+                        should_recover_stale_live ? "stale_cascade"sv : "explicit"sv,
                         playback_time.to_milliseconds(),
                         (frame->timestamp() > old_offset ? frame->timestamp() - old_offset : AK::Duration::zero()).to_milliseconds(),
                         timestamp.to_milliseconds(),
-                        (playback_time > timestamp ? playback_time - timestamp : AK::Duration::zero()).to_milliseconds(),
+                        age.to_milliseconds(),
                         stale_threshold.to_milliseconds(),
+                        m_consecutive_stale_decoded_frame_count,
                         old_offset.to_milliseconds(),
                         m_frame_timestamp_offset.to_milliseconds(),
                         m_queue.size());
@@ -509,6 +568,7 @@ void VideoDataProvider::ThreadData::queue_frame(NonnullOwnPtr<VideoFrame>&& fram
             }
         }
     }
+    m_consecutive_stale_decoded_frame_count = 0;
     m_queued_frame_count++;
     if (m_queued_frame_count <= 8 || m_queued_frame_count % 60 == 0)
         dbgln("MUNDO_MEDIA_VIDEO_PROVIDER queue_frame count={} track_id={} timestamp={}ms raw_timestamp={}ms duration={}ms size={}x{} queue_before={} lazy_bitmap={}", m_queued_frame_count, m_track.identifier(), timestamp.to_milliseconds(), frame->timestamp().to_milliseconds(), frame_duration.to_milliseconds(), frame->width(), frame->height(), m_queue.size(), frame->has_lazy_bitmap());
