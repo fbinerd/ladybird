@@ -344,11 +344,14 @@ void HTMLMediaElement::initialize(JS::Realm& realm)
 
     // https://html.spec.whatwg.org/multipage/media.html#playing-the-media-resource:media-element-82
     m_document_observer->set_document_became_inactive([this]() {
-        if (mundo_env_flag_enabled("MUNDO_FORCE_DOCUMENT_VISIBLE")
-            && m_current_src.contains(".m3u8"sv)
-            && !paused()) {
-            dbgln("MUNDO_MEDIA_ELEMENT element={} document_inactive ignored reason=force_visible current_time={} src={}",
+        auto const force_document_visible = mundo_env_flag_enabled("MUNDO_FORCE_DOCUMENT_VISIBLE");
+        auto const allow_hls_visibility_pause = mundo_env_flag_enabled("MUNDO_ALLOW_HLS_VISIBILITY_PAUSE");
+        if (m_current_src.contains(".m3u8"sv)
+            && !paused()
+            && !allow_hls_visibility_pause) {
+            dbgln("MUNDO_MEDIA_ELEMENT element={} document_inactive ignored reason=site_visibility_pause force_visible={} hls_default_ignore=true current_time={} src={}",
                 static_cast<void const*>(this),
+                force_document_visible,
                 m_current_playback_position,
                 m_current_src);
             return;
