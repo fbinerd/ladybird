@@ -54,7 +54,7 @@ static AK::Duration stale_decoded_frame_drop_threshold()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_PROVIDER_STALE_DROP_MS");
     if (!raw_value)
-        return AK::Duration::from_milliseconds(1000);
+        return AK::Duration::max();
 
     auto value = atoi(raw_value);
     if (value <= 0)
