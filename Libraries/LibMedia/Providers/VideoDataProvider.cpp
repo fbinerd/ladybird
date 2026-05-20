@@ -75,7 +75,7 @@ static bool smooth_live_video_timestamp_gaps_enabled()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_SMOOTH_TIMESTAMP_GAPS");
     if (!raw_value)
-        return false;
+        return true;
     return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
@@ -84,6 +84,19 @@ static AK::Duration live_video_timestamp_gap_threshold()
     auto const* raw_value = getenv("MUNDO_VIDEO_TIMESTAMP_GAP_MS");
     if (!raw_value)
         return AK::Duration::from_milliseconds(250);
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return AK::Duration::max();
+
+    return AK::Duration::from_milliseconds(max(value, 16));
+}
+
+static AK::Duration live_video_timestamp_gap_smooth_step()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_TIMESTAMP_SMOOTH_STEP_MS");
+    if (!raw_value)
+        return AK::Duration::from_milliseconds(120);
 
     auto value = atoi(raw_value);
     if (value <= 0)
@@ -431,18 +444,24 @@ void VideoDataProvider::ThreadData::queue_frame(NonnullOwnPtr<VideoFrame>&& fram
             auto old_timestamp = timestamp;
             auto old_offset = m_frame_timestamp_offset;
             auto gap = timestamp - expected_timestamp;
-            m_frame_timestamp_offset += gap;
+            auto adjustment = gap;
+            auto max_adjustment = live_video_timestamp_gap_smooth_step();
+            if (max_adjustment != AK::Duration::max() && adjustment > max_adjustment)
+                adjustment = max_adjustment;
+            m_frame_timestamp_offset += adjustment;
             timestamp = normalized_frame_timestamp(*frame);
             m_smoothed_timestamp_gap_count++;
             if (m_smoothed_timestamp_gap_count <= 16 || m_smoothed_timestamp_gap_count % 60 == 0) {
-                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER timestamp_gap_smoothed count={} track_id={} old_timestamp={}ms new_timestamp={}ms expected={}ms gap={}ms threshold={}ms old_offset={}ms new_offset={}ms duration={}ms raw_timestamp={}ms queue_size={}",
+                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER timestamp_gap_smoothed count={} track_id={} old_timestamp={}ms new_timestamp={}ms expected={}ms gap={}ms applied={}ms threshold={}ms step={}ms old_offset={}ms new_offset={}ms duration={}ms raw_timestamp={}ms queue_size={}",
                     m_smoothed_timestamp_gap_count,
                     m_track.identifier(),
                     old_timestamp.to_milliseconds(),
                     timestamp.to_milliseconds(),
                     expected_timestamp.to_milliseconds(),
                     gap.to_milliseconds(),
+                    adjustment.to_milliseconds(),
                     gap_threshold.to_milliseconds(),
+                    max_adjustment == AK::Duration::max() ? -1 : max_adjustment.to_milliseconds(),
                     old_offset.to_milliseconds(),
                     m_frame_timestamp_offset.to_milliseconds(),
                     frame_duration.to_milliseconds(),
