@@ -67,7 +67,7 @@ static bool stale_live_video_rebase_enabled()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_REBASE_STALE_LIVE");
     if (!raw_value)
-        return true;
+        return false;
     return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
@@ -75,7 +75,7 @@ static bool smooth_live_video_timestamp_gaps_enabled()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_SMOOTH_TIMESTAMP_GAPS");
     if (!raw_value)
-        return true;
+        return false;
     return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
