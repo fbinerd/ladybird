@@ -86,6 +86,8 @@ static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_c
     auto open_input_result = avformat_open_input(&format_context, nullptr, input_format, nullptr);
     if (open_input_result < 0) {
         dbgln("MUNDO_MEDIA_FFMPEG open_input failed error={} force_hls={}", open_input_result, force_hls_demuxer);
+        avformat_free_context(format_context);
+        format_context = nullptr;
         return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to open input for format parsing"sv);
     }
 
@@ -95,6 +97,8 @@ static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_c
     auto find_stream_info_result = avformat_find_stream_info(format_context, nullptr);
     if (find_stream_info_result < 0) {
         dbgln("MUNDO_MEDIA_FFMPEG find_stream_info failed error={} format={}", find_stream_info_result, format_context->iformat ? format_context->iformat->name : "(null)");
+        avformat_close_input(&format_context);
+        format_context = nullptr;
         return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to find stream info"sv);
     }
 
@@ -267,7 +271,7 @@ DecoderErrorOr<void> FFmpegDemuxer::create_context_for_track(Track const& track)
     auto cursor = m_stream->create_cursor();
     auto force_hls_demuxer = m_stream->is_likely_hls() || TRY(stream_looks_like_hls(cursor));
     dbgln("MUNDO_MEDIA_FFMPEG create_context track_id={} type={} force_hls={} hint={}", track.identifier(), to_underlying(track.type()), force_hls_demuxer, m_stream->is_likely_hls());
-    auto io_context = MUST(Media::FFmpeg::FFmpegIOContext::create(cursor));
+    auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     auto track_context = make<TrackContext>(move(cursor), move(io_context), force_hls_demuxer);
 
@@ -293,8 +297,6 @@ FFmpegDemuxer::TrackContext& FFmpegDemuxer::get_track_context(Track const& track
 
 DecoderErrorOr<void> FFmpegDemuxer::recreate_context_for_track(Track const& track, TrackContext& track_context)
 {
-    if (track_context.format_context != nullptr)
-        avformat_close_input(&track_context.format_context);
     if (track_context.packet != nullptr)
         av_packet_unref(track_context.packet);
 
@@ -305,11 +307,16 @@ DecoderErrorOr<void> FFmpegDemuxer::recreate_context_for_track(Track const& trac
 
     auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
+    AVFormatContext* new_format_context = nullptr;
+    TRY(initialize_format_context(new_format_context, *io_context->avio_context(), track_context.force_hls_demuxer, track.identifier()));
+
+    if (track_context.format_context != nullptr)
+        avformat_close_input(&track_context.format_context);
+
     track_context.cursor = move(cursor);
     track_context.io_context = move(io_context);
+    track_context.format_context = new_format_context;
     track_context.is_seekable = true;
-
-    TRY(initialize_format_context(track_context.format_context, *track_context.io_context->avio_context(), track_context.force_hls_demuxer, track.identifier()));
     track_context.hls_reopen_count++;
     track_context.context_was_recreated = true;
     dbgln("MUNDO_MEDIA_FFMPEG hls_reopen track_id={} count={}", track.identifier(), track_context.hls_reopen_count);
@@ -383,6 +390,9 @@ DecoderErrorOr<Optional<Track>> FFmpegDemuxer::get_preferred_track_for_type(Trac
 DecoderErrorOr<DemuxerSeekResult> FFmpegDemuxer::seek_to_most_recent_keyframe(Track const& track, AK::Duration timestamp, DemuxerSeekOptions)
 {
     auto& track_context = get_track_context(track);
+    if (track_context.format_context == nullptr)
+        return DecoderError::with_description(DecoderErrorCategory::Corrupted, "FFmpeg format context not initialized"sv);
+
     auto& format_context = *track_context.format_context;
 
     VERIFY(track.identifier() < format_context.nb_streams);
@@ -427,6 +437,8 @@ DecoderErrorOr<ReadonlyBytes> FFmpegDemuxer::get_codec_initialization_data_for_t
 DecoderErrorOr<CodedFrame> FFmpegDemuxer::get_next_sample_for_track(Track const& track)
 {
     auto& track_context = get_track_context(track);
+    if (track_context.format_context == nullptr)
+        return DecoderError::with_description(DecoderErrorCategory::Corrupted, "FFmpeg format context not initialized"sv);
     auto& packet = *track_context.packet;
 
     for (;;) {
@@ -507,7 +519,7 @@ bool FFmpegDemuxer::is_read_blocked_for_track(Track const& track)
 FFmpegDemuxer::TrackContext::~TrackContext()
 {
     av_packet_free(&packet);
-    avformat_free_context(format_context);
+    avformat_close_input(&format_context);
 }
 
 }

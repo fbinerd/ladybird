@@ -811,6 +811,8 @@ public:
 
     GC::Ref<Animations::DocumentTimeline> timeline();
     auto const& last_animation_frame_timestamp() const { return m_last_animation_frame_timestamp; }
+    Optional<AK::Duration> last_animation_frame_callback_duration() const { return m_last_animation_frame_callback_duration; }
+    void set_last_animation_frame_callback_duration(AK::Duration duration) { m_last_animation_frame_callback_duration = duration; }
 
     void associate_with_timeline(GC::Ref<Animations::AnimationTimeline>);
     void disassociate_with_timeline(GC::Ref<Animations::AnimationTimeline>);
@@ -1426,6 +1428,7 @@ private:
     // https://www.w3.org/TR/web-animations-1/#document-default-document-timeline
     GC::Ptr<Animations::DocumentTimeline> m_default_timeline;
     Optional<double> m_last_animation_frame_timestamp;
+    Optional<AK::Duration> m_last_animation_frame_callback_duration;
 
     // https://www.w3.org/TR/web-animations-1/#pending-animation-event-queue
     Vector<PendingAnimationEvent> m_pending_animation_event_queue;

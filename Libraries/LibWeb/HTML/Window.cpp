@@ -1854,6 +1854,7 @@ WebIDL::UnsignedLong Window::request_animation_frame(GC::Ref<WebIDL::CallbackTyp
         }
         if (result.is_error())
             report_exception(result, realm());
+        associated_document().set_last_animation_frame_callback_duration(mundo_callback_duration);
     }));
     page().client().request_frame();
     return handle;
