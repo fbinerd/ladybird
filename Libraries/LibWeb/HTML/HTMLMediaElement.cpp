@@ -1042,6 +1042,15 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
         static_cast<void const*>(this), to_underlying(m_network_state), to_underlying(m_ready_state), paused(), m_pending_play_promises.size(), m_current_playback_position, m_duration,
         has_attribute(HTML::AttributeNames::src), has_attribute(HTML::AttributeNames::src) ? get_attribute_value(HTML::AttributeNames::src) : String {}, m_current_src);
 
+    if (m_current_src.contains(".m3u8"sv)
+        && !has_attribute(HTML::AttributeNames::src)
+        && !first_child_of_type<HTMLSourceElement>()
+        && m_ready_state != ReadyState::HaveNothing
+        && m_network_state != NetworkState::Empty) {
+        dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring load() without replacement source while HLS current_src={} is active", static_cast<void const*>(this), m_current_src);
+        return {};
+    }
+
     if (m_current_src.contains(".m3u8"sv) && has_attribute(HTML::AttributeNames::src)) {
         auto source = get_attribute_value(HTML::AttributeNames::src);
         auto trimmed_source = source.bytes_as_string_view().trim_whitespace();
