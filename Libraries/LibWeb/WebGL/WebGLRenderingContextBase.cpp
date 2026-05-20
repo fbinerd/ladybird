@@ -725,7 +725,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto const* nv12_data = media_frame->nv12_data();
     if (nv12_data->width <= 0 || nv12_data->height <= 0)
         return reject("empty_nv12_frame"sv);
-    if (nv12_data->y_stride != nv12_data->width || nv12_data->uv_stride != ((nv12_data->width + 1) / 2) * 2)
+    auto visible_uv_width = (nv12_data->width + 1) / 2;
+    auto uv_texture_width = nv12_data->uv_stride / 2;
+    if (nv12_data->y_stride < nv12_data->width || nv12_data->uv_stride < visible_uv_width * 2 || nv12_data->uv_stride % 2 != 0)
         return reject("unsupported_nv12_stride"sv);
     if (destination_width.has_value() && destination_width.value() != nv12_data->width)
         return reject("destination_width_mismatch"sv);
@@ -748,6 +750,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             varying vec2 v_tex_coord;
             uniform sampler2D u_y_plane;
             uniform sampler2D u_uv_plane;
+            uniform vec2 u_y_coord_scale;
+            uniform vec2 u_uv_coord_scale;
             uniform float u_y_offset;
             uniform float u_y_scale;
             uniform vec3 u_r_coefficients;
@@ -755,8 +759,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             uniform vec3 u_b_coefficients;
             void main()
             {
-                float y = (texture2D(u_y_plane, v_tex_coord).r - u_y_offset) * u_y_scale;
-                vec2 uv = texture2D(u_uv_plane, v_tex_coord).ra - vec2(0.5, 0.5);
+                float y = (texture2D(u_y_plane, v_tex_coord * u_y_coord_scale).r - u_y_offset) * u_y_scale;
+                vec2 uv = texture2D(u_uv_plane, v_tex_coord * u_uv_coord_scale).ra - vec2(0.5, 0.5);
                 vec3 yuv = vec3(y, uv.x, uv.y);
                 gl_FragColor = vec4(dot(yuv, u_r_coefficients), dot(yuv, u_g_coefficients), dot(yuv, u_b_coefficients), 1.0);
             }
@@ -782,6 +786,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         }
         m_mundo_video_nv12_uniform_locations.y_plane = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_plane");
         m_mundo_video_nv12_uniform_locations.uv_plane = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_plane");
+        m_mundo_video_nv12_uniform_locations.y_coord_scale = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_coord_scale");
+        m_mundo_video_nv12_uniform_locations.uv_coord_scale = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_coord_scale");
         m_mundo_video_nv12_uniform_locations.y_offset = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_offset");
         m_mundo_video_nv12_uniform_locations.y_scale = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_scale");
         m_mundo_video_nv12_uniform_locations.r_coefficients = glGetUniformLocation(m_mundo_video_nv12_program, "u_r_coefficients");
@@ -923,8 +929,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     }
     auto used_y_plane_pbo = false;
     auto used_uv_plane_pbo = false;
-    auto reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, nv12_data->width, nv12_data->height, nv12_data->y_plane_data(), nv12_data->y_plane_size(), m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
-    auto reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, nv12_data->uv_stride / 2, (nv12_data->height + 1) / 2, nv12_data->uv_plane_data(), nv12_data->uv_plane_size(), m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
+    auto reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, nv12_data->y_stride, nv12_data->height, nv12_data->y_plane_data(), nv12_data->y_plane_size(), m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
+    auto reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, uv_texture_width, (nv12_data->height + 1) / 2, nv12_data->uv_plane_data(), nv12_data->uv_plane_size(), m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
 
     glBindFramebuffer(GL_FRAMEBUFFER, m_mundo_video_nv12_framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previous_texture_2d, level);
@@ -986,6 +992,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), reinterpret_cast<void*>(2 * sizeof(GLfloat)));
     glUniform1i(m_mundo_video_nv12_uniform_locations.y_plane, 0);
     glUniform1i(m_mundo_video_nv12_uniform_locations.uv_plane, 1);
+    glUniform2f(m_mundo_video_nv12_uniform_locations.y_coord_scale, static_cast<float>(nv12_data->width) / static_cast<float>(nv12_data->y_stride), 1.0f);
+    glUniform2f(m_mundo_video_nv12_uniform_locations.uv_coord_scale, static_cast<float>(visible_uv_width) / static_cast<float>(uv_texture_width), 1.0f);
 
     auto const is_full_range = nv12_data->cicp.video_full_range_flag() == Media::VideoFullRangeFlag::Full;
     glUniform1f(m_mundo_video_nv12_uniform_locations.y_offset, is_full_range ? 0.0f : 16.0f / 255.0f);

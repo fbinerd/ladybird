@@ -13,14 +13,148 @@ extern "C" {
 #include <GLES2/gl2ext_angle.h>
 }
 
+#include <AK/Time.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/DataView.h>
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/WebGL/OpenGLContext.h>
 #include <LibWeb/WebGL/WebGLRenderingContextOverloads.h>
 #include <LibWeb/WebGL/WebGLUniformLocation.h>
+#include <stdlib.h>
+#include <string.h>
 
 namespace Web::WebGL {
+
+static bool mundo_webgl_timing_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_TIMING_LOG");
+    if (!raw_value)
+        return true;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+static bool mundo_webgl_timing_detail_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_TIMING_DETAIL_LOG");
+    if (!raw_value)
+        return false;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+static i64 mundo_webgl_timing_threshold_ms()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_TIMING_LOG_MS");
+    if (!raw_value || raw_value[0] == '\0')
+        return 40;
+
+    auto value = strtoll(raw_value, nullptr, 10);
+    return value > 0 ? value : 40;
+}
+
+static i64 mundo_webgl_timing_summary_interval_ms()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_TIMING_SUMMARY_INTERVAL_MS");
+    if (!raw_value || raw_value[0] == '\0')
+        return 1000;
+
+    auto value = strtoll(raw_value, nullptr, 10);
+    return value > 0 ? value : 1000;
+}
+
+static Optional<i64> mundo_webgl_slow_duration(MonotonicTime start)
+{
+    if (!mundo_webgl_timing_enabled() || !mundo_webgl_timing_detail_enabled())
+        return {};
+
+    auto duration = (MonotonicTime::now() - start).to_milliseconds();
+    auto threshold = mundo_webgl_timing_threshold_ms();
+    if (duration < threshold)
+        return {};
+
+    return duration;
+}
+
+struct MundoWebGLUploadTimingSummary {
+    size_t buffer_data_count { 0 };
+    i64 buffer_data_us { 0 };
+    size_t buffer_sub_data_count { 0 };
+    i64 buffer_sub_data_us { 0 };
+    size_t tex_image_count { 0 };
+    i64 tex_image_us { 0 };
+    size_t tex_sub_image_count { 0 };
+    i64 tex_sub_image_us { 0 };
+    size_t compressed_tex_count { 0 };
+    i64 compressed_tex_us { 0 };
+    size_t read_pixels_count { 0 };
+    i64 read_pixels_us { 0 };
+    MonotonicTime started_at { MonotonicTime::now() };
+};
+
+static void record_mundo_webgl_timing_summary(char const* operation, i64 duration_us)
+{
+    if (!mundo_webgl_timing_enabled())
+        return;
+
+    static MundoWebGLUploadTimingSummary s_summary;
+
+    if (!strncmp(operation, "bufferData", 10)) {
+        ++s_summary.buffer_data_count;
+        s_summary.buffer_data_us += duration_us;
+    } else if (!strcmp(operation, "bufferSubData")) {
+        ++s_summary.buffer_sub_data_count;
+        s_summary.buffer_sub_data_us += duration_us;
+    } else if (!strncmp(operation, "texImage2D", 10)) {
+        ++s_summary.tex_image_count;
+        s_summary.tex_image_us += duration_us;
+    } else if (!strncmp(operation, "texSubImage2D", 13)) {
+        ++s_summary.tex_sub_image_count;
+        s_summary.tex_sub_image_us += duration_us;
+    } else if (!strncmp(operation, "compressedTex", 13)) {
+        ++s_summary.compressed_tex_count;
+        s_summary.compressed_tex_us += duration_us;
+    } else if (!strcmp(operation, "readPixels")) {
+        ++s_summary.read_pixels_count;
+        s_summary.read_pixels_us += duration_us;
+    }
+
+    auto now = MonotonicTime::now();
+    auto elapsed = (now - s_summary.started_at).to_milliseconds();
+    if (elapsed < mundo_webgl_timing_summary_interval_ms())
+        return;
+
+    auto total_count = s_summary.buffer_data_count + s_summary.buffer_sub_data_count + s_summary.tex_image_count + s_summary.tex_sub_image_count + s_summary.compressed_tex_count + s_summary.read_pixels_count;
+    auto total_us = s_summary.buffer_data_us + s_summary.buffer_sub_data_us + s_summary.tex_image_us + s_summary.tex_sub_image_us + s_summary.compressed_tex_us + s_summary.read_pixels_us;
+    if (total_count) {
+        dbgln("MUNDO_WEBGL_UPLOAD_SUMMARY elapsed={}ms total_count={} total_us={} avg_us={} buffer_data={}/{}us buffer_sub_data={}/{}us tex_image={}/{}us tex_sub_image={}/{}us compressed_tex={}/{}us read_pixels={}/{}us",
+            elapsed,
+            total_count,
+            total_us,
+            total_us / static_cast<i64>(total_count),
+            s_summary.buffer_data_count,
+            s_summary.buffer_data_us,
+            s_summary.buffer_sub_data_count,
+            s_summary.buffer_sub_data_us,
+            s_summary.tex_image_count,
+            s_summary.tex_image_us,
+            s_summary.tex_sub_image_count,
+            s_summary.tex_sub_image_us,
+            s_summary.compressed_tex_count,
+            s_summary.compressed_tex_us,
+            s_summary.read_pixels_count,
+            s_summary.read_pixels_us);
+    }
+
+    s_summary = {};
+    s_summary.started_at = now;
+}
+
+static size_t mundo_webgl_next_timing_count()
+{
+    static size_t s_count { 0 };
+    return ++s_count;
+}
 
 WebGLRenderingContextOverloads::WebGLRenderingContextOverloads(JS::Realm& realm, NonnullOwnPtr<OpenGLContext> context)
     : WebGLRenderingContextImpl(realm, move(context))
@@ -31,7 +165,11 @@ void WebGLRenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, We
 {
     m_context->make_current();
 
+    auto start = MonotonicTime::now();
     glBufferData(target, size, 0, usage);
+    record_mundo_webgl_timing_summary("bufferData(size)", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=bufferData(size) duration={}ms threshold={}ms target={} size={} usage={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, size, usage);
 }
 
 void WebGLRenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, Optional<GC::Root<WebIDL::BufferSource>> data, WebIDL::UnsignedLong usage)
@@ -46,7 +184,11 @@ void WebGLRenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, Op
     }
 
     auto span = MUST(get_offset_span<u8 const>(*data.value(), /* src_offset= */ 0));
+    auto start = MonotonicTime::now();
     glBufferData(target, static_cast<GLsizeiptr>(span.size()), span.data(), usage);
+    record_mundo_webgl_timing_summary("bufferData(data)", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=bufferData(data) duration={}ms threshold={}ms target={} bytes={} usage={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, span.size(), usage);
 }
 
 void WebGLRenderingContextOverloads::buffer_sub_data(WebIDL::UnsignedLong target, WebIDL::LongLong offset, GC::Root<WebIDL::BufferSource> data)
@@ -54,7 +196,11 @@ void WebGLRenderingContextOverloads::buffer_sub_data(WebIDL::UnsignedLong target
     m_context->make_current();
 
     auto span = MUST(get_offset_span<u8 const>(*data, /* src_offset= */ 0));
+    auto start = MonotonicTime::now();
     glBufferSubData(target, offset, span.size(), span.data());
+    record_mundo_webgl_timing_summary("bufferSubData", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=bufferSubData duration={}ms threshold={}ms target={} offset={} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, offset, span.size());
 }
 
 void WebGLRenderingContextOverloads::compressed_tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, GC::Root<WebIDL::ArrayBufferView> data)
@@ -67,7 +213,11 @@ void WebGLRenderingContextOverloads::compressed_tex_image2d(WebIDL::UnsignedLong
     }
 
     auto span = MUST(get_offset_span<u8 const>(*data, /* src_offset= */ 0));
+    auto start = MonotonicTime::now();
     glCompressedTexImage2DRobustANGLE(target, level, internalformat, width, height, border, span.size(), span.size(), span.data());
+    record_mundo_webgl_timing_summary("compressedTexImage2D", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=compressedTexImage2D duration={}ms threshold={}ms target={} level={} internalformat={} size={}x{} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, level, internalformat, width, height, span.size());
 }
 
 void WebGLRenderingContextOverloads::compressed_tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, GC::Root<WebIDL::ArrayBufferView> data)
@@ -80,7 +230,11 @@ void WebGLRenderingContextOverloads::compressed_tex_sub_image2d(WebIDL::Unsigned
     }
 
     auto span = MUST(get_offset_span<u8 const>(*data, /* src_offset= */ 0));
+    auto start = MonotonicTime::now();
     glCompressedTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, width, height, format, span.size(), span.size(), span.data());
+    record_mundo_webgl_timing_summary("compressedTexSubImage2D", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=compressedTexSubImage2D duration={}ms threshold={}ms target={} level={} offset={}x{} size={}x{} format={} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, level, xoffset, yoffset, width, height, format, span.size());
 }
 
 void WebGLRenderingContextOverloads::read_pixels(WebIDL::Long x, WebIDL::Long y, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, GC::Root<WebIDL::ArrayBufferView> pixels)
@@ -93,7 +247,11 @@ void WebGLRenderingContextOverloads::read_pixels(WebIDL::Long x, WebIDL::Long y,
     }
 
     auto span = MUST(get_offset_span<u8>(*pixels, /* src_offset= */ 0));
+    auto start = MonotonicTime::now();
     glReadPixelsRobustANGLE(x, y, width, height, format, type, span.size(), nullptr, nullptr, nullptr, span.data());
+    record_mundo_webgl_timing_summary("readPixels", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=readPixels duration={}ms threshold={}ms rect={}x{}+{}+{} format={} type={} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), width, height, x, y, format, type, span.size());
 }
 
 void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, GC::Root<WebIDL::ArrayBufferView> pixels)
@@ -102,7 +260,11 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
 
     if (pixels) {
         auto span = MUST(get_offset_span<u8>(*pixels, /* src_offset= */ 0));
+        auto start = MonotonicTime::now();
         glTexImage2DRobustANGLE(target, level, internalformat, width, height, border, format, type, span.size(), span.data());
+        record_mundo_webgl_timing_summary("texImage2D(pixels)", (MonotonicTime::now() - start).to_microseconds());
+        if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+            dbgln("MUNDO_WEBGL_TIMING count={} op=texImage2D(pixels) duration={}ms threshold={}ms target={} level={} size={}x{} format={} type={} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, level, width, height, format, type, span.size());
         return;
     }
 
@@ -161,7 +323,11 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
     }
 
     auto byte_buffer = MUST(ByteBuffer::create_zeroed(bytes.value_unchecked()));
+    auto start = MonotonicTime::now();
     glTexImage2DRobustANGLE(target, level, internalformat, width, height, border, format, type, byte_buffer.size(), byte_buffer.data());
+    record_mundo_webgl_timing_summary("texImage2D(null)", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=texImage2D(null) duration={}ms threshold={}ms target={} level={} size={}x{} format={} type={} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, level, width, height, format, type, byte_buffer.size());
 }
 
 void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source)
@@ -170,10 +336,8 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
 
     if (upload_texture_source_with_video_nv12_shader_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
         return;
-    if (texture_source_is_video_with_nv12_frame(source)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SKIP_BITMAP_FALLBACK kind=texImage2D reason=nv12_shader_rejected target={} level={} format={} type={}", target, level, format, type);
-        return;
-    }
+    if (texture_source_is_video_with_nv12_frame(source))
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_BITMAP_FALLBACK kind=texImage2D reason=nv12_shader_rejected target={} level={} format={} type={}", target, level, format, type);
     if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
         return;
 
@@ -183,7 +347,11 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
     auto converted_texture = maybe_converted_texture.release_value();
     if (upload_texture_source_with_video_pbo(source, target, level, internalformat, 0, 0, 0, format, type, converted_texture, false))
         return;
+    auto start = MonotonicTime::now();
     glTexImage2DRobustANGLE(target, level, internalformat, converted_texture.width, converted_texture.height, 0, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
+    record_mundo_webgl_timing_summary("texImage2D(source)", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=texImage2D(source) duration={}ms threshold={}ms target={} level={} size={}x{} format={} type={} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, level, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size());
 }
 
 void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long width, WebIDL::Long height, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, GC::Root<WebIDL::ArrayBufferView> pixels)
@@ -191,7 +359,11 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
     m_context->make_current();
 
     auto span = MUST(get_offset_span<u8>(*pixels, /* src_offset= */ 0));
+    auto start = MonotonicTime::now();
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, width, height, format, type, span.size(), span.data());
+    record_mundo_webgl_timing_summary("texSubImage2D(pixels)", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=texSubImage2D(pixels) duration={}ms threshold={}ms target={} level={} offset={}x{} size={}x{} format={} type={} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, level, xoffset, yoffset, width, height, format, type, span.size());
 }
 
 void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, TexImageSource source)
@@ -200,10 +372,8 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
 
     if (upload_texture_source_with_video_nv12_shader_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, OptionalNone {}, OptionalNone {}, true))
         return;
-    if (texture_source_is_video_with_nv12_frame(source)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SKIP_BITMAP_FALLBACK kind=texSubImage2D reason=nv12_shader_rejected target={} level={} offset={}x{} format={} type={}", target, level, xoffset, yoffset, format, type);
-        return;
-    }
+    if (texture_source_is_video_with_nv12_frame(source))
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_BITMAP_FALLBACK kind=texSubImage2D reason=nv12_shader_rejected target={} level={} offset={}x{} format={} type={}", target, level, xoffset, yoffset, format, type);
     if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, OptionalNone {}, OptionalNone {}, true))
         return;
 
@@ -214,7 +384,11 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
     auto converted_texture = maybe_converted_texture.release_value();
     if (upload_texture_source_with_video_pbo(source, target, level, 0, xoffset, yoffset, 0, format, type, converted_texture, true))
         return;
+    auto start = MonotonicTime::now();
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
+    record_mundo_webgl_timing_summary("texSubImage2D(source)", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=texSubImage2D(source) duration={}ms threshold={}ms target={} level={} offset={}x{} size={}x{} format={} type={} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size());
 }
 
 void WebGLRenderingContextOverloads::uniform1fv(GC::Root<WebGLUniformLocation> location, Float32List v)

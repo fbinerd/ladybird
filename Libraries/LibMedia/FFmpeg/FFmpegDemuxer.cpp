@@ -31,6 +31,7 @@ FFmpegDemuxer::FFmpegDemuxer(NonnullRefPtr<MediaStream> const& stream)
 FFmpegDemuxer::~FFmpegDemuxer()
 {
     for (auto& [track, context] : m_track_contexts) {
+        context->cursor->abort();
         if (context->format_context != nullptr)
             avformat_close_input(&context->format_context);
     }
@@ -429,6 +430,9 @@ DecoderErrorOr<CodedFrame> FFmpegDemuxer::get_next_sample_for_track(Track const&
     auto& packet = *track_context.packet;
 
     for (;;) {
+        if (track_context.cursor->is_aborted())
+            return DecoderError::format(DecoderErrorCategory::Aborted, "Read aborted");
+
         auto& format_context = *track_context.format_context;
         VERIFY(track.identifier() < format_context.nb_streams);
         auto& stream = *format_context.streams[track.identifier()];

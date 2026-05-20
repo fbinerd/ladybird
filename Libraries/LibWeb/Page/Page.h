@@ -199,7 +199,8 @@ public:
     void register_media_element(Badge<HTML::HTMLMediaElement>, UniqueNodeID media_id);
     void unregister_media_element(Badge<HTML::HTMLMediaElement>, UniqueNodeID media_id);
 
-    void update_all_media_element_video_sinks();
+    bool has_potentially_playing_video_media() const;
+    void update_all_media_element_video_sinks(bool force = false, char const* reason = nullptr);
 
     void register_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id);
     void unregister_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id);
@@ -322,7 +323,11 @@ private:
     Vector<UniqueNodeID> m_media_elements;
     Vector<UniqueNodeID> m_canvas_elements;
     Optional<MonotonicTime> m_last_media_video_sink_update_time;
+    Optional<MonotonicTime> m_last_media_video_sink_actual_update_time;
     size_t m_skipped_media_video_sink_update_count { 0 };
+    size_t m_total_skipped_media_video_sink_update_count { 0 };
+    size_t m_media_video_sink_update_throttle_log_count { 0 };
+    size_t m_media_video_sink_update_gap_count { 0 };
     Optional<UniqueNodeID> m_media_context_menu_element_id;
 
     Web::HTML::MuteState m_mute_state { Web::HTML::MuteState::Unmuted };

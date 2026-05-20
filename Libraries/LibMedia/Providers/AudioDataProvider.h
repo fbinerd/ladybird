@@ -31,7 +31,7 @@ class MEDIA_API AudioDataProvider : public AtomicRefCounted<AudioDataProvider> {
     class ThreadData;
 
 public:
-    static constexpr size_t QUEUE_CAPACITY = 16;
+    static constexpr size_t QUEUE_CAPACITY = 64;
     using AudioQueue = Queue<AudioBlock, QUEUE_CAPACITY>;
 
     using ErrorHandler = Function<void(DecoderError&&)>;

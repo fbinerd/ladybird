@@ -7,11 +7,16 @@
  */
 
 #include <AK/Utf8View.h>
+#include <AK/ByteString.h>
+#include <AK/HashMap.h>
+#include <AK/StringBuilder.h>
+#include <AK/Time.h>
 #include <LibGC/WeakHashSet.h>
 #include <LibIPC/File.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Accessor.h>
 #include <LibJS/Runtime/Completion.h>
+#include <LibJS/Runtime/ECMAScriptFunctionObject.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/FunctionObject.h>
 #include <LibJS/Runtime/GlobalEnvironment.h>
@@ -80,6 +85,8 @@
 #include <LibWeb/ViewTransition/ViewTransition.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 
+#include <stdlib.h>
+
 namespace Web::HTML {
 
 GC_DEFINE_ALLOCATOR(Window);
@@ -88,6 +95,80 @@ static GC::WeakHashSet<Window>& all_windows()
 {
     static GC::WeakHashSet<Window> windows;
     return windows;
+}
+
+static AK::Duration mundo_raf_callback_log_threshold()
+{
+    static auto threshold = [] {
+        auto const* raw_value = getenv("MUNDO_RAF_CALLBACK_LOG_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(80);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::max();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return threshold;
+}
+
+static AK::Duration mundo_posted_message_log_threshold()
+{
+    static auto threshold = [] {
+        auto const* raw_value = getenv("MUNDO_POSTED_MESSAGE_LOG_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(120);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::max();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return threshold;
+}
+
+static ByteString mundo_raf_registration_stack(JS::VM& vm)
+{
+    StringBuilder builder;
+    auto stack_trace = vm.stack_trace();
+    size_t emitted_frames = 0;
+    for (auto const& element : stack_trace) {
+        auto* context = element.execution_context;
+        if (!context)
+            continue;
+
+        auto function_name = context->function ? context->function->name_for_call_stack() : ""_utf16;
+        auto function_name_utf8 = function_name.is_empty() ? ByteString { "<anonymous>"sv } : function_name.to_byte_string();
+
+        if (emitted_frames > 0)
+            builder.append(" <- "sv);
+
+        if (element.source_range.has_value()) {
+            auto const& source_range = *element.source_range;
+            builder.appendff("{}@{}:{}:{}", function_name_utf8, source_range.filename(), source_range.start.line, source_range.start.column);
+        } else {
+            builder.append(function_name_utf8);
+        }
+
+        ++emitted_frames;
+        if (emitted_frames >= 8)
+            break;
+    }
+
+    return builder.to_byte_string();
+}
+
+static ByteString const& mundo_raf_registration_stack_for_callback(JS::Object const& callback, JS::VM& vm)
+{
+    static HashMap<void const*, ByteString> s_registration_stacks;
+    auto key = static_cast<void const*>(&callback);
+    auto it = s_registration_stacks.find(key);
+    if (it != s_registration_stacks.end())
+        return it->value;
+    s_registration_stacks.set(key, mundo_raf_registration_stack(vm));
+    return s_registration_stacks.find(key)->value;
 }
 
 void Window::for_each_active(Function<IterationDecision(Window&)> callback)
@@ -1258,6 +1339,12 @@ WebIDL::ExceptionOr<void> Window::window_post_message_steps(JS::Value message, W
 
     // 8. Queue a global task on the posted message task source given targetWindow to run the following steps:
     queue_global_task(Task::Source::PostedMessage, *this, GC::create_function(heap(), [this, serialize_with_transfer_result = move(serialize_with_transfer_result), target_origin = move(target_origin), &incumbent_settings, &target_realm]() mutable {
+        auto const task_started_at = MonotonicTime::now();
+        auto deserialize_us = 0uz;
+        auto dispatch_us = 0uz;
+        auto event_name = "message"sv;
+        auto const threshold = mundo_posted_message_log_threshold();
+
         // 1. If the targetOrigin argument is not a single literal U+002A ASTERISK character (*) and targetWindow's
         //    associated Document's origin is not same origin with targetOrigin, then return.
         // NOTE: Due to step 4 and 5 above, the only time it's not '*' is if target_origin contains an Origin.
@@ -1276,17 +1363,26 @@ WebIDL::ExceptionOr<void> Window::window_post_message_steps(JS::Value message, W
         TemporaryExecutionContext temporary_execution_context { target_realm, TemporaryExecutionContext::CallbacksEnabled::Yes };
 
         // 4. Let deserializeRecord be StructuredDeserializeWithTransfer(serializeWithTransferResult, targetRealm).
+        auto const deserialize_started_at = MonotonicTime::now();
         auto deserialize_record_or_error = structured_deserialize_with_transfer(serialize_with_transfer_result, target_realm);
+        deserialize_us = (MonotonicTime::now() - deserialize_started_at).to_microseconds();
 
         // If this throws an exception, catch it, fire an event named messageerror at targetWindow, using MessageEvent,
         // with its origin initialized to origin and the source attribute initialized to source, and then return.
         if (deserialize_record_or_error.is_exception()) {
+            event_name = "messageerror"sv;
             MessageEventInit message_event_init {};
             message_event_init.origin = origin;
             message_event_init.source = GC::make_root(source);
 
             auto message_error_event = MessageEvent::create(target_realm, EventNames::messageerror, message_event_init);
+            auto const dispatch_started_at = MonotonicTime::now();
             dispatch_event(message_error_event);
+            dispatch_us = (MonotonicTime::now() - dispatch_started_at).to_microseconds();
+            auto const total_ms = (MonotonicTime::now() - task_started_at).to_milliseconds();
+            if (AK::Duration::from_milliseconds(total_ms) >= threshold)
+                dbgln("MUNDO_POSTED_MESSAGE kind=window event={} total_ms={} deserialize_us={} dispatch_us={} url={} origin={}",
+                    event_name, total_ms, deserialize_us, dispatch_us, document()->url().serialize(), origin.serialize());
             return;
         }
 
@@ -1303,6 +1399,7 @@ WebIDL::ExceptionOr<void> Window::window_post_message_steps(JS::Value message, W
                 new_ports.append(*message_port);
             }
         }
+        auto const ports_count = new_ports.size();
 
         // 7. Fire an event named message at targetWindow, using MessageEvent, with its origin initialized to origin,
         //    the source attribute initialized to source, the data attribute initialized to messageClone, and the ports
@@ -1315,7 +1412,13 @@ WebIDL::ExceptionOr<void> Window::window_post_message_steps(JS::Value message, W
 
         auto message_event = MessageEvent::create(target_realm, EventNames::message, message_event_init);
         message_event->set_is_trusted(true);
+        auto const dispatch_started_at = MonotonicTime::now();
         dispatch_event(message_event);
+        dispatch_us = (MonotonicTime::now() - dispatch_started_at).to_microseconds();
+        auto const total_ms = (MonotonicTime::now() - task_started_at).to_milliseconds();
+        if (AK::Duration::from_milliseconds(total_ms) >= threshold)
+            dbgln("MUNDO_POSTED_MESSAGE kind=window event={} total_ms={} deserialize_us={} dispatch_us={} ports={} url={} origin={}",
+                event_name, total_ms, deserialize_us, dispatch_us, ports_count, document()->url().serialize(), origin.serialize());
     }));
 
     return {};
@@ -1724,9 +1827,31 @@ double Window::device_pixel_ratio() const
 WebIDL::UnsignedLong Window::request_animation_frame(GC::Ref<WebIDL::CallbackType> callback)
 {
     // FIXME: Make this fully spec compliant. Currently implements a mix of 'requestAnimationFrame()' and 'run the animation frame callbacks'.
-    auto handle = animation_frame_callback_driver().add(GC::create_function(heap(), [this, callback](double now) {
+    auto mundo_registration_stack = mundo_raf_registration_stack_for_callback(*callback->callback, realm().vm());
+    auto handle = animation_frame_callback_driver().add(GC::create_function(heap(), [this, callback, mundo_registration_stack = move(mundo_registration_stack)](double now) {
         // 3. Invoke callback, passing now as the only argument, and if an exception is thrown, report the exception.
+        auto mundo_callback_start = MonotonicTime::now_coarse();
         auto result = WebIDL::invoke_callback(*callback, {}, { { JS::Value(now) } });
+        auto mundo_callback_duration = MonotonicTime::now_coarse() - mundo_callback_start;
+        auto mundo_threshold = mundo_raf_callback_log_threshold();
+        if (mundo_callback_duration > mundo_threshold) {
+            static size_t s_mundo_raf_callback_log_count { 0 };
+            ++s_mundo_raf_callback_log_count;
+            if (s_mundo_raf_callback_log_count <= 96 || s_mundo_raf_callback_log_count % 240 == 0) {
+                Utf16String callback_name;
+                if (is<JS::ECMAScriptFunctionObject>(*callback->callback))
+                    callback_name = static_cast<JS::ECMAScriptFunctionObject&>(*callback->callback).name_for_call_stack();
+
+                dbgln("MUNDO_RAF_CALLBACK count={} duration={}ms threshold={}ms callback={} callback_name={} url={} registered_at={}",
+                    s_mundo_raf_callback_log_count,
+                    mundo_callback_duration.to_milliseconds(),
+                    mundo_threshold.to_milliseconds(),
+                    static_cast<void const*>(callback->callback.ptr()),
+                    callback_name,
+                    associated_document().url().serialize(),
+                    mundo_registration_stack);
+            }
+        }
         if (result.is_error())
             report_exception(result, realm());
     }));

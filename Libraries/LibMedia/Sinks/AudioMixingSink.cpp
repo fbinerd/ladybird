@@ -7,10 +7,23 @@
 #include <AK/Time.h>
 #include <LibMedia/Audio/PlaybackStream.h>
 #include <LibMedia/Providers/AudioDataProvider.h>
+#include <stdlib.h>
 
 #include "AudioMixingSink.h"
 
 namespace Media {
+
+static u32 mundo_audio_target_latency_ms()
+{
+    auto const* raw_value = getenv("MUNDO_AUDIO_TARGET_LATENCY_MS");
+    if (!raw_value || raw_value[0] == '\0')
+        return 250;
+
+    auto value = strtoul(raw_value, nullptr, 10);
+    if (value == 0)
+        return 250;
+    return min<u32>(static_cast<u32>(value), 1000);
+}
 
 ErrorOr<NonnullRefPtr<AudioMixingSink>> AudioMixingSink::try_create()
 {
@@ -81,7 +94,8 @@ void AudioMixingSink::create_playback_stream()
             return buffer.trim(0);
         return self->write_audio_data_to_playback_stream(buffer);
     };
-    constexpr u32 target_latency_ms = 100;
+    auto target_latency_ms = mundo_audio_target_latency_ms();
+    dbgln("MUNDO_AUDIO_SINK create_playback_stream target_latency_ms={}", target_latency_ms);
 
     auto promise = Audio::PlaybackStream::create(Audio::OutputState::Suspended, target_latency_ms, move(data_callback));
 
@@ -173,7 +187,8 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
     if (sample_count == 0) {
         ++m_write_callback_count;
         if (m_write_callback_count <= 12 || m_write_callback_count % 120 == 0)
-            dbgln("MUNDO_AUDIO_SINK write count={} requested={} wrote=0 buffering={} providers={} volume={}", m_write_callback_count, buffer.size() / channel_count, buffering, m_track_mixing_datas.size(), m_volume);
+            dbgln("MUNDO_AUDIO_SINK write count={} requested={} wrote=0 buffering={} providers={} volume={} next_sample={} queue_end_min={}",
+                m_write_callback_count, buffer.size() / channel_count, buffering, m_track_mixing_datas.size(), m_volume, m_next_sample_to_write.load(), samples_end);
         return buffer;
     }
 
@@ -258,9 +273,10 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
 
     m_next_sample_to_write += static_cast<i64>(sample_count);
     ++m_write_callback_count;
-    if (m_write_callback_count <= 12 || m_write_callback_count % 120 == 0)
-        dbgln("MUNDO_AUDIO_SINK write count={} requested={} wrote={} buffering={} providers={} nonzero={} volume={} next_sample={}",
-            m_write_callback_count, buffer.size() / channel_count, sample_count, buffering, m_track_mixing_datas.size(), wrote_nonzero_sample, m_volume, m_next_sample_to_write.load());
+    auto requested_sample_count = buffer.size() / channel_count;
+    if (m_write_callback_count <= 12 || m_write_callback_count % 120 == 0 || sample_count < requested_sample_count || !wrote_nonzero_sample)
+        dbgln("MUNDO_AUDIO_SINK write count={} requested={} wrote={} buffering={} providers={} nonzero={} volume={} next_sample={} queue_end_min={}",
+            m_write_callback_count, requested_sample_count, sample_count, buffering, m_track_mixing_datas.size(), wrote_nonzero_sample, m_volume, m_next_sample_to_write.load(), samples_end);
     return buffer;
 }
 

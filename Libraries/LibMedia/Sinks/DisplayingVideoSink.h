@@ -68,6 +68,11 @@ private:
     size_t m_consecutive_late_frame_drop_count { 0 };
     size_t m_late_drop_limit_hit_count { 0 };
     size_t m_drain_log_count { 0 };
+    size_t m_cadence_gap_log_count { 0 };
+    size_t m_coalesced_frame_count { 0 };
+    Optional<MonotonicTime> m_last_present_wall_time;
+    Optional<AK::Duration> m_last_present_media_time;
+    Optional<AK::Duration> m_last_present_frame_time;
     bool m_pause_updates { false };
     bool m_has_new_current_frame { false };
 };

@@ -142,12 +142,15 @@ private:
         size_t m_dropped_stale_decoded_frame_count { 0 };
         size_t m_dropped_queued_frame_count { 0 };
         size_t m_rebased_stale_live_frame_count { 0 };
+        size_t m_smoothed_timestamp_gap_count { 0 };
         size_t m_end_of_stream_count { 0 };
         size_t m_decoder_end_of_stream_count { 0 };
         size_t m_needs_more_input_count { 0 };
         bool m_reached_end_of_stream { false };
         bool m_has_frame_timestamp_offset { false };
         AK::Duration m_frame_timestamp_offset { AK::Duration::zero() };
+        Optional<AK::Duration> m_last_queued_frame_timestamp;
+        AK::Duration m_last_queued_frame_duration { AK::Duration::zero() };
         FrameEndTimeHandler m_duration_change_handler;
         ErrorHandler m_error_handler;
         bool m_is_in_error_state { false };

@@ -8,6 +8,8 @@
 
 #include <AK/ByteReader.h>
 #include <AK/MemoryStream.h>
+#include <AK/String.h>
+#include <AK/Time.h>
 #include <LibCore/System.h>
 #include <LibGC/WeakHashSet.h>
 #include <LibIPC/Decoder.h>
@@ -26,11 +28,111 @@
 #include <LibWeb/HTML/StructuredSerializeOptions.h>
 #include <LibWeb/HTML/WorkerGlobalScope.h>
 
+#include <stdlib.h>
+#include <string.h>
+
 namespace Web::HTML {
 
 constexpr u8 IPC_FILE_TAG = 0xA5;
 
 GC_DEFINE_ALLOCATOR(MessagePort);
+
+static AK::Duration mundo_posted_message_log_threshold()
+{
+    static auto threshold = [] {
+        auto const* raw_value = getenv("MUNDO_POSTED_MESSAGE_LOG_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(120);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::max();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return threshold;
+}
+
+static bool mundo_message_port_null_tick_coalesce_enabled()
+{
+    static auto enabled = [] {
+        auto const* raw_value = getenv("MUNDO_MESSAGE_PORT_NULL_TICK_COALESCE");
+        if (!raw_value)
+            return false;
+
+        return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+    }();
+    return enabled;
+}
+
+static AK::Duration mundo_message_port_null_tick_min_interval()
+{
+    static auto interval = [] {
+        auto const* raw_value = getenv("MUNDO_MESSAGE_PORT_NULL_TICK_MIN_INTERVAL_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(250);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::zero();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return interval;
+}
+
+static AK::Duration mundo_message_port_null_tick_slow_threshold()
+{
+    static auto threshold = [] {
+        auto const* raw_value = getenv("MUNDO_MESSAGE_PORT_NULL_TICK_SLOW_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(400);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::max();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return threshold;
+}
+
+static AK::Duration mundo_message_port_null_tick_slow_cooldown()
+{
+    static auto cooldown = [] {
+        auto const* raw_value = getenv("MUNDO_MESSAGE_PORT_NULL_TICK_SLOW_COOLDOWN_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(1200);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::zero();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return cooldown;
+}
+
+static String mundo_posted_message_payload_summary(JS::Value value)
+{
+    if (value.is_undefined())
+        return "undefined"_string;
+    if (value.is_null())
+        return "null"_string;
+    if (value.is_boolean())
+        return MUST(String::formatted("boolean({})", value.as_bool()));
+    if (value.is_number())
+        return MUST(String::formatted("number({})", value.as_double()));
+    if (value.is_string())
+        return MUST(String::formatted("string({})", value.to_string_without_side_effects()));
+    if (value.is_bigint())
+        return MUST(String::formatted("bigint({})", value.to_string_without_side_effects()));
+    if (value.is_symbol())
+        return "symbol"_string;
+    if (value.is_object())
+        return MUST(String::formatted("object(class={} ptr={})", value.as_object().class_name(), &value.as_object()));
+    return value.to_string_without_side_effects();
+}
 
 static GC::WeakHashSet<MessagePort>& all_message_ports()
 {
@@ -383,6 +485,12 @@ void MessagePort::read_from_transport()
 
 void MessagePort::post_message_task_steps(SerializedTransferRecord& serialize_with_transfer_result)
 {
+    auto const task_started_at = MonotonicTime::now();
+    auto deserialize_us = 0uz;
+    auto dispatch_us = 0uz;
+    auto event_name = "message"sv;
+    auto const threshold = mundo_posted_message_log_threshold();
+
     // 1. Let finalTargetPort be the MessagePort in whose port message queue the task now finds itself.
     // NOTE: This can be different from targetPort, if targetPort itself was transferred and thus all its tasks moved along with it.
     auto* final_target_port = this;
@@ -403,18 +511,51 @@ void MessagePort::post_message_task_steps(SerializedTransferRecord& serialize_wi
     TemporaryExecutionContext context { target_realm };
 
     // 3. Let deserializeRecord be StructuredDeserializeWithTransfer(serializeWithTransferResult, targetRealm).
+    auto const deserialize_started_at = MonotonicTime::now();
     auto deserialize_record_or_error = structured_deserialize_with_transfer(serialize_with_transfer_result, target_realm);
+    deserialize_us = (MonotonicTime::now() - deserialize_started_at).to_microseconds();
     if (deserialize_record_or_error.is_error()) {
+        event_name = "messageerror"sv;
         // If this throws an exception, catch it, fire an event named messageerror at finalTargetPort, using MessageEvent, and then return.
         auto exception = deserialize_record_or_error.release_error();
         MessageEventInit event_init {};
+        auto const dispatch_started_at = MonotonicTime::now();
         message_event_target->dispatch_event(MessageEvent::create(target_realm, HTML::EventNames::messageerror, event_init));
+        dispatch_us = (MonotonicTime::now() - dispatch_started_at).to_microseconds();
+        auto const total_ms = (MonotonicTime::now() - task_started_at).to_milliseconds();
+        if (AK::Duration::from_milliseconds(total_ms) >= threshold)
+            dbgln("MUNDO_POSTED_MESSAGE kind=message_port event={} total_ms={} deserialize_us={} dispatch_us={} worker_target={} error={} port={}",
+                event_name, total_ms, deserialize_us, dispatch_us, m_worker_event_target != nullptr, exception, this);
         return;
     }
     auto deserialize_record = deserialize_record_or_error.release_value();
 
     // 4. Let messageClone be deserializeRecord.[[Deserialized]].
     auto message_clone = deserialize_record.deserialized;
+    auto const message_is_null_tick = message_clone.is_null() && !m_worker_event_target;
+    auto const before_dispatch = MonotonicTime::now();
+    if (message_is_null_tick && mundo_message_port_null_tick_coalesce_enabled()) {
+        auto const min_interval = mundo_message_port_null_tick_min_interval();
+        auto const in_slow_cooldown = m_mundo_null_message_cooldown_until.has_value() && before_dispatch < *m_mundo_null_message_cooldown_until;
+        auto const too_soon = !min_interval.is_zero()
+            && m_mundo_last_null_message_dispatch_time.has_value()
+            && before_dispatch - *m_mundo_last_null_message_dispatch_time < min_interval;
+        if (in_slow_cooldown || too_soon) {
+            ++m_mundo_null_message_skip_count;
+            if (m_mundo_null_message_skip_count <= 24 || m_mundo_null_message_skip_count % 120 == 0) {
+                auto remaining_cooldown = in_slow_cooldown ? (*m_mundo_null_message_cooldown_until - before_dispatch).to_milliseconds() : 0;
+                auto since_last = m_mundo_last_null_message_dispatch_time.has_value() ? (before_dispatch - *m_mundo_last_null_message_dispatch_time).to_milliseconds() : -1;
+                dbgln("MUNDO_POSTED_MESSAGE kind=message_port event=message action=skip_null_tick count={} reason={} since_last={}ms min_interval={}ms cooldown_remaining={}ms port={}",
+                    m_mundo_null_message_skip_count,
+                    in_slow_cooldown ? "slow_cooldown"sv : "min_interval"sv,
+                    since_last,
+                    min_interval.to_milliseconds(),
+                    remaining_cooldown,
+                    this);
+            }
+            return;
+        }
+    }
 
     // 5. Let newPorts be a new frozen array consisting of all MessagePort objects in deserializeRecord.[[TransferredValues]], if any, maintaining their relative order.
     // FIXME: Use a FrozenArray
@@ -424,6 +565,7 @@ void MessagePort::post_message_task_steps(SerializedTransferRecord& serialize_wi
             new_ports.append(as<MessagePort>(*object));
         }
     }
+    auto const ports_count = new_ports.size();
 
     // 6. Fire an event named message at finalTargetPort, using MessageEvent, with the data attribute initialized to messageClone and the ports attribute initialized to newPorts.
     MessageEventInit event_init {};
@@ -431,7 +573,27 @@ void MessagePort::post_message_task_steps(SerializedTransferRecord& serialize_wi
     event_init.ports = move(new_ports);
     auto event = MessageEvent::create(target_realm, HTML::EventNames::message, event_init);
     event->set_is_trusted(true);
+    auto const dispatch_started_at = MonotonicTime::now();
     message_event_target->dispatch_event(event);
+    dispatch_us = (MonotonicTime::now() - dispatch_started_at).to_microseconds();
+    auto const total_ms = (MonotonicTime::now() - task_started_at).to_milliseconds();
+    if (message_is_null_tick && mundo_message_port_null_tick_coalesce_enabled()) {
+        auto const dispatch_duration = AK::Duration::from_microseconds(dispatch_us);
+        m_mundo_last_null_message_dispatch_time = MonotonicTime::now();
+        if (dispatch_duration >= mundo_message_port_null_tick_slow_threshold()) {
+            auto const cooldown = mundo_message_port_null_tick_slow_cooldown();
+            if (!cooldown.is_zero()) {
+                m_mundo_null_message_cooldown_until = *m_mundo_last_null_message_dispatch_time + cooldown;
+                dbgln("MUNDO_POSTED_MESSAGE kind=message_port event=message action=null_tick_slow dispatch={}ms cooldown={}ms port={}",
+                    dispatch_duration.to_milliseconds(),
+                    cooldown.to_milliseconds(),
+                    this);
+            }
+        }
+    }
+    if (AK::Duration::from_milliseconds(total_ms) >= threshold)
+        dbgln("MUNDO_POSTED_MESSAGE kind=message_port event={} total_ms={} deserialize_us={} dispatch_us={} ports={} worker_target={} port={} payload={}",
+            event_name, total_ms, deserialize_us, dispatch_us, ports_count, m_worker_event_target != nullptr, this, mundo_posted_message_payload_summary(message_clone));
 }
 
 void MessagePort::enable()

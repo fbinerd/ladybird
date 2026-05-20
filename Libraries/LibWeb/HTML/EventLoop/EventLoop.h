@@ -104,6 +104,7 @@ private:
 
     void process_input_events() const;
     void update_the_rendering();
+    bool should_skip_mundo_media_animation_frame_callbacks(DOM::Document&);
 
     Type m_type { Type::Window };
 
@@ -144,6 +145,14 @@ private:
     bool m_running_rendering_task { false };
 
     GC::Ptr<GC::Function<void()>> m_rendering_task_function;
+
+    struct MundoDocumentAnimationThrottleState {
+        GC::Weak<DOM::Document> document;
+        double last_run_time_ms { 0 };
+        size_t skipped_since_last_run { 0 };
+        size_t log_count { 0 };
+    };
+    Vector<MundoDocumentAnimationThrottleState> m_mundo_document_animation_throttle_states;
 };
 
 WEB_API EventLoop& main_thread_event_loop();

@@ -8,6 +8,7 @@
 #pragma once
 
 #include <AK/Optional.h>
+#include <AK/Time.h>
 #include <LibGfx/Forward.h>
 #include <LibWeb/DOM/DocumentLoadEventDelayer.h>
 #include <LibWeb/Forward.h>
@@ -88,6 +89,7 @@ private:
     virtual GC::Ptr<Layout::Node> create_layout_node(GC::Ref<CSS::ComputedProperties>) override;
 
     WebIDL::ExceptionOr<void> determine_element_poster_frame(Optional<String> const& poster);
+    void log_mundo_video_consume_gap(StringView source) const;
 
     GC::Ptr<HTML::VideoTrack> m_video_track;
     VideoFrame m_current_frame;
@@ -107,6 +109,8 @@ private:
     Vector<VideoFrameCallback> m_video_frame_callbacks;
     WebIDL::UnsignedLong m_next_video_frame_callback_handle { 1 };
     u32 m_presented_video_frame_count { 0 };
+    mutable Optional<MonotonicTime> m_last_mundo_video_consume_time;
+    mutable size_t m_mundo_video_consume_gap_count { 0 };
 };
 
 }

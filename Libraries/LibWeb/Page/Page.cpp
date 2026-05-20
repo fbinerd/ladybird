@@ -55,6 +55,22 @@ static AK::Duration media_video_sink_update_interval()
     return interval;
 }
 
+static AK::Duration media_video_sink_update_gap_log_threshold()
+{
+    static auto threshold = [] {
+        auto const* raw_value = getenv("MUNDO_MEDIA_VIDEO_UPDATE_GAP_LOG_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(120);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::max();
+
+        return AK::Duration::from_milliseconds(max(value, 16));
+    }();
+    return threshold;
+}
+
 GC::Ref<Page> Page::create(JS::VM& vm, GC::Ref<PageClient> page_client)
 {
     return vm.heap().allocate<Page>(page_client);
@@ -575,15 +591,20 @@ void Page::for_each_media_element(Callback&& callback)
     }
 }
 
-void Page::update_all_media_element_video_sinks()
+bool Page::has_potentially_playing_video_media() const
 {
-    bool should_update_video_sinks = false;
-    for_each_media_element([&](auto& media_element) {
+    bool has_potentially_playing_video = false;
+    const_cast<Page&>(*this).for_each_media_element([&](auto& media_element) {
         if (media_element.selected_video_track_sink() && media_element.potentially_playing())
-            should_update_video_sinks = true;
+            has_potentially_playing_video = true;
     });
 
-    if (!should_update_video_sinks) {
+    return has_potentially_playing_video;
+}
+
+void Page::update_all_media_element_video_sinks(bool force, char const* reason)
+{
+    if (!has_potentially_playing_video_media()) {
         m_last_media_video_sink_update_time = {};
         m_skipped_media_video_sink_update_count = 0;
         return;
@@ -591,16 +612,53 @@ void Page::update_all_media_element_video_sinks()
 
     auto const interval = media_video_sink_update_interval();
     auto const now = MonotonicTime::now_coarse();
-    if (!interval.is_zero() && m_last_media_video_sink_update_time.has_value() && now - *m_last_media_video_sink_update_time < interval) {
+    if (!force && !interval.is_zero() && m_last_media_video_sink_update_time.has_value() && now - *m_last_media_video_sink_update_time < interval) {
         ++m_skipped_media_video_sink_update_count;
-        if (m_skipped_media_video_sink_update_count <= 8 || m_skipped_media_video_sink_update_count % 600 == 0)
-            dbgln("MUNDO_MEDIA_PAGE video_sink_update_throttled count={} interval={}us", m_skipped_media_video_sink_update_count, interval.to_microseconds());
+        ++m_total_skipped_media_video_sink_update_count;
+        if (m_media_video_sink_update_throttle_log_count < 16 || m_total_skipped_media_video_sink_update_count % 1200 == 0) {
+            ++m_media_video_sink_update_throttle_log_count;
+            dbgln("MUNDO_MEDIA_PAGE video_sink_update_throttled log_count={} burst_count={} total_count={} interval={}us",
+                m_media_video_sink_update_throttle_log_count,
+                m_skipped_media_video_sink_update_count,
+                m_total_skipped_media_video_sink_update_count,
+                interval.to_microseconds());
+        }
 
-        client().request_frame();
         return;
     }
 
+    if (force) {
+        static size_t s_mundo_forced_media_sink_update_count { 0 };
+        ++s_mundo_forced_media_sink_update_count;
+        if (s_mundo_forced_media_sink_update_count <= 48 || s_mundo_forced_media_sink_update_count % 240 == 0) {
+            i64 elapsed_ms = -1;
+            if (m_last_media_video_sink_update_time.has_value())
+                elapsed_ms = (now - *m_last_media_video_sink_update_time).to_milliseconds();
+            dbgln("MUNDO_MEDIA_PAGE video_sink_update_forced count={} reason={} elapsed={}ms elements={}",
+                s_mundo_forced_media_sink_update_count,
+                reason ? reason : "unknown",
+                elapsed_ms,
+                m_media_elements.size());
+        }
+    }
+
     m_last_media_video_sink_update_time = now;
+    if (m_last_media_video_sink_actual_update_time.has_value()) {
+        auto update_delta = now - *m_last_media_video_sink_actual_update_time;
+        auto threshold = media_video_sink_update_gap_log_threshold();
+        if (update_delta > threshold) {
+            m_media_video_sink_update_gap_count++;
+            if (m_media_video_sink_update_gap_count <= 24 || m_media_video_sink_update_gap_count % 60 == 0)
+                dbgln("MUNDO_MEDIA_PAGE video_sink_update_gap count={} delta={}ms threshold={}ms skipped_since_last={} elements={}",
+                    m_media_video_sink_update_gap_count,
+                    update_delta.to_milliseconds(),
+                    threshold.to_milliseconds(),
+                    m_skipped_media_video_sink_update_count,
+                    m_media_elements.size());
+        }
+    }
+    m_last_media_video_sink_actual_update_time = now;
+    m_skipped_media_video_sink_update_count = 0;
 
     for_each_media_element([&](auto& media_element) {
         media_element.update_video_frame_and_timeline();

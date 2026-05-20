@@ -11,6 +11,7 @@
 #include <AK/StringBuilder.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/ECMAScriptFunctionObject.h>
+#include <LibJS/Runtime/ExecutionContext.h>
 #include <LibJS/Runtime/GlobalEnvironment.h>
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/ObjectEnvironment.h>
@@ -47,6 +48,39 @@
 namespace Web::DOM {
 
 GC_DEFINE_ALLOCATOR(EventTarget);
+
+void set_mundo_event_listener_registration_stack(void const*, ByteString);
+
+static ByteString mundo_event_listener_registration_stack(JS::VM& vm)
+{
+    StringBuilder builder;
+    auto stack_trace = vm.stack_trace();
+    size_t emitted_frames = 0;
+    for (auto const& element : stack_trace) {
+        auto* context = element.execution_context;
+        if (!context)
+            continue;
+
+        auto function_name = context->function ? context->function->name_for_call_stack() : ""_utf16;
+        auto function_name_utf8 = function_name.is_empty() ? ByteString { "<anonymous>"sv } : function_name.to_byte_string();
+
+        if (emitted_frames > 0)
+            builder.append(" <- "sv);
+
+        if (element.source_range.has_value()) {
+            auto const& source_range = *element.source_range;
+            builder.appendff("{}@{}:{}:{}", function_name_utf8, source_range.filename(), source_range.start.line, source_range.start.column);
+        } else {
+            builder.append(function_name_utf8);
+        }
+
+        ++emitted_frames;
+        if (emitted_frames >= 8)
+            break;
+    }
+
+    return builder.to_byte_string();
+}
 
 EventTarget::EventTarget(JS::Realm& realm, MayInterfereWithIndexedPropertyAccess may_interfere_with_indexed_property_access)
     : PlatformObject(realm, may_interfere_with_indexed_property_access)
@@ -214,6 +248,11 @@ void EventTarget::add_an_event_listener(DOMEventListener& listener)
     // 3. If listener’s callback is null, then return.
     if (!listener.callback)
         return;
+
+    if (listener.type.is_one_of(HTML::EventNames::message, HTML::EventNames::messageerror))
+        set_mundo_event_listener_registration_stack(
+            static_cast<void const*>(listener.callback->callback().callback.ptr()),
+            mundo_event_listener_registration_stack(listener.callback->callback().callback->shape().realm().vm()));
 
     // 4. If listener’s passive is null, then set it to the default passive value given listener’s type and eventTarget.
     if (!listener.passive.has_value()) {

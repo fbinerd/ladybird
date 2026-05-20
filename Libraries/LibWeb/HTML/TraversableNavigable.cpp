@@ -30,6 +30,9 @@
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/Timer.h>
 
+#include <stdlib.h>
+#include <strings.h>
+
 namespace Web::HTML {
 
 GC_DEFINE_ALLOCATOR(TraversableNavigable);
@@ -1736,6 +1739,20 @@ void finalize_a_same_document_navigation(GC::Ref<TraversableNavigable> traversab
 // https://html.spec.whatwg.org/multipage/interaction.html#system-visibility-state
 void TraversableNavigable::set_system_visibility_state(VisibilityState visibility_state)
 {
+    static bool const force_visible = [] {
+        auto const* raw_value = getenv("MUNDO_FORCE_DOCUMENT_VISIBLE");
+        if (!raw_value)
+            return false;
+        return strcasecmp(raw_value, "0") != 0
+            && strcasecmp(raw_value, "false") != 0
+            && strcasecmp(raw_value, "no") != 0
+            && strcasecmp(raw_value, "off") != 0;
+    }();
+    if (force_visible && visibility_state == VisibilityState::Hidden) {
+        dbgln("MUNDO_VISIBILITY force_visible ignoring hidden transition");
+        visibility_state = VisibilityState::Visible;
+    }
+
     if (m_system_visibility_state == visibility_state)
         return;
     m_system_visibility_state = visibility_state;

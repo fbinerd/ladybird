@@ -8,7 +8,9 @@
 
 #pragma once
 
+#include <AK/Optional.h>
 #include <AK/RefCounted.h>
+#include <AK/Time.h>
 #include <AK/Weakable.h>
 #include <LibCore/Socket.h>
 #include <LibIPC/File.h>
@@ -100,6 +102,9 @@ private:
 
     Vector<SerializedTransferRecord> m_pending_incoming_messages;
     Vector<SerializedTransferRecord> m_pending_outgoing_messages;
+    Optional<MonotonicTime> m_mundo_last_null_message_dispatch_time;
+    Optional<MonotonicTime> m_mundo_null_message_cooldown_until;
+    size_t m_mundo_null_message_skip_count { 0 };
     bool m_should_shutdown_on_enable { false };
     bool m_enabled { false };
 };

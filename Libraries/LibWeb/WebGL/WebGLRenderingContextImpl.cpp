@@ -14,6 +14,7 @@ extern "C" {
 #include <GLES2/gl2ext_angle.h>
 }
 
+#include <AK/Time.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/DataView.h>
@@ -35,12 +36,180 @@ extern "C" {
 #include <LibWeb/WebGL/WebGLUniformLocation.h>
 #include <LibWeb/WebGL/WebGLVertexArrayObject.h>
 #include <LibWeb/WebIDL/Buffers.h>
+#include <stdlib.h>
+#include <string.h>
 
 namespace Web::WebGL {
 
 // https://registry.khronos.org/webgl/extensions/WEBGL_debug_renderer_info/
 static constexpr GLenum UNMASKED_VENDOR_WEBGL = 0x9245;
 static constexpr GLenum UNMASKED_RENDERER_WEBGL = 0x9246;
+
+static bool mundo_webgl_timing_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_TIMING_LOG");
+    if (!raw_value)
+        return true;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+static bool mundo_webgl_timing_detail_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_TIMING_DETAIL_LOG");
+    if (!raw_value)
+        return false;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+static i64 mundo_webgl_timing_threshold_ms()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_TIMING_LOG_MS");
+    if (!raw_value || raw_value[0] == '\0')
+        return 40;
+
+    auto value = strtoll(raw_value, nullptr, 10);
+    return value > 0 ? value : 40;
+}
+
+static i64 mundo_webgl_timing_summary_interval_ms()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_TIMING_SUMMARY_INTERVAL_MS");
+    if (!raw_value || raw_value[0] == '\0')
+        return 1000;
+
+    auto value = strtoll(raw_value, nullptr, 10);
+    return value > 0 ? value : 1000;
+}
+
+static int mundo_webgl_draw_elements_budget_per_second()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_DRAW_ELEMENTS_BUDGET_PER_SECOND");
+    if (!raw_value)
+        return 0;
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return 0;
+
+    return value;
+}
+
+static Optional<i64> mundo_webgl_slow_duration(MonotonicTime start)
+{
+    if (!mundo_webgl_timing_enabled() || !mundo_webgl_timing_detail_enabled())
+        return {};
+
+    auto duration = (MonotonicTime::now() - start).to_milliseconds();
+    auto threshold = mundo_webgl_timing_threshold_ms();
+    if (duration < threshold)
+        return {};
+
+    return duration;
+}
+
+static bool should_skip_mundo_webgl_draw_elements_for_budget(WebIDL::Long count)
+{
+    auto budget_per_second = mundo_webgl_draw_elements_budget_per_second();
+    if (budget_per_second <= 0)
+        return false;
+
+    static MonotonicTime s_last_refill { MonotonicTime::now() };
+    static double s_available_budget { static_cast<double>(budget_per_second) };
+    static size_t s_skipped_draws { 0 };
+    static size_t s_log_count { 0 };
+
+    auto now = MonotonicTime::now();
+    auto elapsed_ms = (now - s_last_refill).to_milliseconds();
+    if (elapsed_ms > 0) {
+        s_available_budget = min(static_cast<double>(budget_per_second), s_available_budget + (static_cast<double>(elapsed_ms) * static_cast<double>(budget_per_second) / 1000.0));
+        s_last_refill = now;
+    }
+
+    if (s_available_budget >= 1.0) {
+        s_available_budget -= 1.0;
+        return false;
+    }
+
+    ++s_skipped_draws;
+    ++s_log_count;
+    if (s_log_count <= 32 || s_log_count % 240 == 0)
+        dbgln("MUNDO_WEBGL_DRAW_BUDGET_SKIP log_count={} skipped={} budget_per_second={} available={} count={}",
+            s_log_count,
+            s_skipped_draws,
+            budget_per_second,
+            static_cast<int>(s_available_budget),
+            count);
+
+    return true;
+}
+
+struct MundoWebGLTimingSummary {
+    size_t draw_arrays_count { 0 };
+    i64 draw_arrays_us { 0 };
+    size_t draw_elements_count { 0 };
+    i64 draw_elements_us { 0 };
+    size_t finish_count { 0 };
+    i64 finish_us { 0 };
+    size_t flush_count { 0 };
+    i64 flush_us { 0 };
+    MonotonicTime started_at { MonotonicTime::now() };
+};
+
+static void record_mundo_webgl_timing_summary(char const* operation, i64 duration_us)
+{
+    if (!mundo_webgl_timing_enabled())
+        return;
+
+    static MundoWebGLTimingSummary s_summary;
+
+    if (!strcmp(operation, "drawArrays")) {
+        ++s_summary.draw_arrays_count;
+        s_summary.draw_arrays_us += duration_us;
+    } else if (!strcmp(operation, "drawElements")) {
+        ++s_summary.draw_elements_count;
+        s_summary.draw_elements_us += duration_us;
+    } else if (!strcmp(operation, "finish")) {
+        ++s_summary.finish_count;
+        s_summary.finish_us += duration_us;
+    } else if (!strcmp(operation, "flush")) {
+        ++s_summary.flush_count;
+        s_summary.flush_us += duration_us;
+    }
+
+    auto now = MonotonicTime::now();
+    auto elapsed = (now - s_summary.started_at).to_milliseconds();
+    if (elapsed < mundo_webgl_timing_summary_interval_ms())
+        return;
+
+    auto total_count = s_summary.draw_arrays_count + s_summary.draw_elements_count + s_summary.finish_count + s_summary.flush_count;
+    auto total_us = s_summary.draw_arrays_us + s_summary.draw_elements_us + s_summary.finish_us + s_summary.flush_us;
+    if (total_count) {
+        dbgln("MUNDO_WEBGL_FRAME_SUMMARY elapsed={}ms total_count={} total_us={} avg_us={} draw_arrays={}/{}us draw_elements={}/{}us finish={}/{}us flush={}/{}us",
+            elapsed,
+            total_count,
+            total_us,
+            total_us / static_cast<i64>(total_count),
+            s_summary.draw_arrays_count,
+            s_summary.draw_arrays_us,
+            s_summary.draw_elements_count,
+            s_summary.draw_elements_us,
+            s_summary.finish_count,
+            s_summary.finish_us,
+            s_summary.flush_count,
+            s_summary.flush_us);
+    }
+
+    s_summary = {};
+    s_summary.started_at = now;
+}
+
+static size_t mundo_webgl_next_timing_count()
+{
+    static size_t s_count { 0 };
+    return ++s_count;
+}
 
 WebGLRenderingContextImpl::WebGLRenderingContextImpl(JS::Realm& realm, NonnullOwnPtr<OpenGLContext> context)
     : WebGLRenderingContextBase(realm)
@@ -619,7 +788,11 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
     m_context->make_current();
     m_context->notify_content_will_change();
     needs_to_present();
+    auto start = MonotonicTime::now();
     glDrawArrays(mode, first, count);
+    record_mundo_webgl_timing_summary("drawArrays", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=drawArrays duration={}ms threshold={}ms mode={} first={} count={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), mode, first, count);
 }
 
 void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL::Long count, WebIDL::UnsignedLong type, WebIDL::LongLong offset)
@@ -627,7 +800,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
     m_context->make_current();
     m_context->notify_content_will_change();
 
+    if (should_skip_mundo_webgl_draw_elements_for_budget(count))
+        return;
+
+    auto start = MonotonicTime::now();
     glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
+    record_mundo_webgl_timing_summary("drawElements", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=drawElements duration={}ms threshold={}ms mode={} count={} type={} offset={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), mode, count, type, offset);
     needs_to_present();
 }
 
@@ -646,13 +826,21 @@ void WebGLRenderingContextImpl::enable_vertex_attrib_array(WebIDL::UnsignedLong 
 void WebGLRenderingContextImpl::finish()
 {
     m_context->make_current();
+    auto start = MonotonicTime::now();
     glFinish();
+    record_mundo_webgl_timing_summary("finish", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=finish duration={}ms threshold={}ms", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms());
 }
 
 void WebGLRenderingContextImpl::flush()
 {
     m_context->make_current();
+    auto start = MonotonicTime::now();
     glFlush();
+    record_mundo_webgl_timing_summary("flush", (MonotonicTime::now() - start).to_microseconds());
+    if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
+        dbgln("MUNDO_WEBGL_TIMING count={} op=flush duration={}ms threshold={}ms", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms());
 }
 
 void WebGLRenderingContextImpl::framebuffer_renderbuffer(WebIDL::UnsignedLong target, WebIDL::UnsignedLong attachment, WebIDL::UnsignedLong renderbuffertarget, GC::Root<WebGLRenderbuffer> renderbuffer)

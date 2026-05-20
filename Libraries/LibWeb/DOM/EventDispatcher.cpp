@@ -6,8 +6,11 @@
  */
 
 #include <AK/Assertions.h>
+#include <AK/HashMap.h>
+#include <AK/Time.h>
 #include <AK/TypeCasts.h>
 #include <LibJS/Runtime/AbstractOperations.h>
+#include <LibJS/Runtime/ECMAScriptFunctionObject.h>
 #include <LibJS/Runtime/FunctionObject.h>
 #include <LibWeb/DOM/AbortSignal.h>
 #include <LibWeb/DOM/Document.h>
@@ -29,7 +32,47 @@
 #include <LibWeb/UIEvents/MouseEvent.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 
+#include <stdlib.h>
+
 namespace Web::DOM {
+
+static AK::Duration mundo_event_listener_log_threshold()
+{
+    static auto threshold = [] {
+        auto const* raw_value = getenv("MUNDO_EVENT_LISTENER_LOG_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(120);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::max();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return threshold;
+}
+
+static HashMap<void const*, ByteString>& mundo_event_listener_registration_stacks()
+{
+    static HashMap<void const*, ByteString> stacks;
+    return stacks;
+}
+
+void set_mundo_event_listener_registration_stack(void const*, ByteString);
+
+void set_mundo_event_listener_registration_stack(void const* callback, ByteString stack)
+{
+    mundo_event_listener_registration_stacks().set(callback, move(stack));
+}
+
+static ByteString const& mundo_event_listener_registration_stack(void const* callback)
+{
+    static ByteString empty;
+    auto it = mundo_event_listener_registration_stacks().find(callback);
+    if (it == mundo_event_listener_registration_stacks().end())
+        return empty;
+    return it->value;
+}
 
 // https://dom.spec.whatwg.org/#concept-event-listener-inner-invoke
 bool EventDispatcher::inner_invoke(Event& event, Vector<GC::Root<DOM::DOMEventListener>>& listeners, Event::Phase phase, bool invocation_target_in_shadow_tree, bool& legacy_output_did_listeners_throw)
@@ -91,7 +134,59 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<GC::Root<DOM::DOMEventLi
         // FIXME: These should be wrapped for us in call_user_object_operation, but it currently doesn't do that.
         auto* this_value = event.current_target_for_bindings().ptr();
         auto* wrapped_event = &event;
+        auto const mundo_listener_started_at = MonotonicTime::now();
         auto result = WebIDL::call_user_object_operation(callback, "handleEvent"_utf16_fly_string, this_value, { { wrapped_event } });
+        auto const mundo_listener_duration = MonotonicTime::now() - mundo_listener_started_at;
+        auto const mundo_threshold = mundo_event_listener_log_threshold();
+        if (mundo_listener_duration >= mundo_threshold) {
+            static size_t s_mundo_event_listener_log_count { 0 };
+            ++s_mundo_event_listener_log_count;
+            if (s_mundo_event_listener_log_count <= 160 || s_mundo_event_listener_log_count % 240 == 0) {
+                Utf16String callback_name;
+                if (is<JS::ECMAScriptFunctionObject>(*callback.callback))
+                    callback_name = static_cast<JS::ECMAScriptFunctionObject&>(*callback.callback).name_for_call_stack();
+                else if (is<JS::FunctionObject>(*callback.callback))
+                    callback_name = static_cast<JS::FunctionObject&>(*callback.callback).name_for_call_stack();
+
+                StringView phase_name = "unknown"sv;
+                switch (phase) {
+                case Event::Phase::None:
+                    phase_name = "none"sv;
+                    break;
+                case Event::Phase::CapturingPhase:
+                    phase_name = "capturing"sv;
+                    break;
+                case Event::Phase::AtTarget:
+                    phase_name = "at_target"sv;
+                    break;
+                case Event::Phase::BubblingPhase:
+                    phase_name = "bubbling"sv;
+                    break;
+                }
+
+                auto global_url = String {};
+                if (is<HTML::Window>(global))
+                    global_url = as<HTML::Window>(global).associated_document().url().serialize();
+
+                auto const* callback_key = static_cast<void const*>(callback.callback.ptr());
+                dbgln("MUNDO_EVENT_LISTENER count={} event={} duration={}ms threshold={}ms phase={} current_target={} target={} callback={} callback_name={} capture={} passive={} once={} global={} url={} registered_at={}",
+                    s_mundo_event_listener_log_count,
+                    event.type(),
+                    mundo_listener_duration.to_milliseconds(),
+                    mundo_threshold.to_milliseconds(),
+                    phase_name,
+                    event.current_target() ? event.current_target()->class_name() : "<null>"sv,
+                    event.target() ? event.target()->class_name() : "<null>"sv,
+                    callback_key,
+                    callback_name,
+                    listener->capture,
+                    listener->passive.value_or(false),
+                    listener->once,
+                    global.class_name(),
+                    global_url,
+                    mundo_event_listener_registration_stack(callback_key));
+            }
+        }
 
         // If this throws an exception, then:
         if (result.is_error()) {

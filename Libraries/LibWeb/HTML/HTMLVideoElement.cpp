@@ -48,9 +48,37 @@ static bool mundo_video_frame_diagnostics_enabled()
     return enabled;
 }
 
+static bool update_video_frame_on_consume()
+{
+    static bool enabled = [] {
+        auto const* raw_value = getenv("MUNDO_VIDEO_UPDATE_ON_CONSUME");
+        if (!raw_value)
+            return true;
+        auto value = StringView { raw_value, strlen(raw_value) };
+        return value != "0"sv && !value.equals_ignoring_ascii_case("false"sv) && !value.equals_ignoring_ascii_case("no"sv) && !value.equals_ignoring_ascii_case("off"sv);
+    }();
+    return enabled;
+}
+
 static bool should_log_mundo_video_frame_diagnostic(size_t count)
 {
     return mundo_video_frame_diagnostics_enabled() && (count <= 12 || count % 120 == 0);
+}
+
+static AK::Duration mundo_video_consume_gap_log_threshold()
+{
+    static auto threshold = [] {
+        auto const* raw_value = getenv("MUNDO_VIDEO_CONSUME_GAP_LOG_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(120);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::max();
+
+        return AK::Duration::from_milliseconds(max(value, 16));
+    }();
+    return threshold;
 }
 
 HTMLVideoElement::HTMLVideoElement(DOM::Document& document, DOM::QualifiedName qualified_name)
@@ -364,6 +392,9 @@ RefPtr<Gfx::ImmutableBitmap> HTMLVideoElement::bitmap() const
     auto const& sink = selected_video_track_sink();
     if (sink == nullptr)
         return nullptr;
+    log_mundo_video_consume_gap("bitmap"sv);
+    if (potentially_playing() && update_video_frame_on_consume())
+        sink->update();
     static size_t s_bitmap_request_count { 0 };
     auto count = ++s_bitmap_request_count;
     if (should_log_mundo_video_frame_diagnostic(count)) {
@@ -386,7 +417,35 @@ Media::VideoFrame const* HTMLVideoElement::current_media_frame() const
     auto const& sink = selected_video_track_sink();
     if (sink == nullptr)
         return nullptr;
+    log_mundo_video_consume_gap("current_media_frame"sv);
+    if (potentially_playing() && update_video_frame_on_consume())
+        sink->update();
     return sink->current_video_frame();
+}
+
+void HTMLVideoElement::log_mundo_video_consume_gap(StringView source) const
+{
+    auto now = MonotonicTime::now_coarse();
+    if (m_last_mundo_video_consume_time.has_value()) {
+        auto delta = now - *m_last_mundo_video_consume_time;
+        auto threshold = mundo_video_consume_gap_log_threshold();
+        if (delta > threshold) {
+            ++m_mundo_video_consume_gap_count;
+            if (m_mundo_video_consume_gap_count <= 24 || m_mundo_video_consume_gap_count % 60 == 0)
+                dbgln("MUNDO_VIDEO_ELEMENT consume_gap count={} source={} delta={}ms threshold={}ms element={} current_src={} ready_state={} potentially_playing={} paused={} current_time={}",
+                    m_mundo_video_consume_gap_count,
+                    source,
+                    delta.to_milliseconds(),
+                    threshold.to_milliseconds(),
+                    static_cast<void const*>(this),
+                    current_src(),
+                    to_underlying(ready_state()),
+                    potentially_playing(),
+                    paused(),
+                    current_time());
+        }
+    }
+    m_last_mundo_video_consume_time = now;
 }
 
 WebIDL::UnsignedLong HTMLVideoElement::request_video_frame_callback(GC::Ref<WebIDL::CallbackType> callback)

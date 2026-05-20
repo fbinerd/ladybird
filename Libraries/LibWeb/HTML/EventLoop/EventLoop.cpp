@@ -6,6 +6,7 @@
  */
 
 #include <AK/TemporaryChange.h>
+#include <AK/Time.h>
 #include <LibCore/EventLoop.h>
 #include <LibJS/Runtime/VM.h>
 #include <LibWeb/Bindings/MainThreadVM.h>
@@ -30,9 +31,182 @@
 #include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/Platform/Timer.h>
 
+#include <stdlib.h>
+
 namespace Web::HTML {
 
 GC_DEFINE_ALLOCATOR(EventLoop);
+
+static AK::Duration mundo_event_loop_long_task_log_threshold()
+{
+    static auto threshold = [] {
+        auto const* raw_value = getenv("MUNDO_EVENT_LOOP_LONG_TASK_LOG_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(120);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::max();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return threshold;
+}
+
+static AK::Duration mundo_event_loop_phase_log_threshold()
+{
+    static auto threshold = [] {
+        auto const* raw_value = getenv("MUNDO_EVENT_LOOP_PHASE_LOG_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(80);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::max();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return threshold;
+}
+
+static AK::Duration mundo_media_animation_frame_interval()
+{
+    static auto interval = [] {
+        auto const* raw_value = getenv("MUNDO_MEDIA_RAF_FPS");
+        if (!raw_value)
+            return AK::Duration::zero();
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::zero();
+
+        if (value > 120)
+            value = 120;
+
+        return AK::Duration::from_microseconds(1'000'000 / value);
+    }();
+    return interval;
+}
+
+static bool mundo_media_service_after_long_tasks_enabled()
+{
+    static auto enabled = [] {
+        auto const* raw_value = getenv("MUNDO_MEDIA_SERVICE_AFTER_LONG_TASKS");
+        if (!raw_value)
+            return true;
+
+        return atoi(raw_value) > 0;
+    }();
+    return enabled;
+}
+
+static char const* mundo_task_source_name(Task::Source source)
+{
+    switch (source) {
+    case Task::Source::Unspecified:
+        return "Unspecified";
+    case Task::Source::DOMManipulation:
+        return "DOMManipulation";
+    case Task::Source::UserInteraction:
+        return "UserInteraction";
+    case Task::Source::Networking:
+        return "Networking";
+    case Task::Source::HistoryTraversal:
+        return "HistoryTraversal";
+    case Task::Source::IdleTask:
+        return "IdleTask";
+    case Task::Source::PostedMessage:
+        return "PostedMessage";
+    case Task::Source::Microtask:
+        return "Microtask";
+    case Task::Source::TimerTask:
+        return "TimerTask";
+    case Task::Source::JavaScriptEngine:
+        return "JavaScriptEngine";
+    case Task::Source::Geolocation:
+        return "Geolocation";
+    case Task::Source::BitmapTask:
+        return "BitmapTask";
+    case Task::Source::NavigationAndTraversal:
+        return "NavigationAndTraversal";
+    case Task::Source::FileReading:
+        return "FileReading";
+    case Task::Source::IntersectionObserver:
+        return "IntersectionObserver";
+    case Task::Source::PerformanceTimeline:
+        return "PerformanceTimeline";
+    case Task::Source::CanvasBlobSerializationTask:
+        return "CanvasBlobSerializationTask";
+    case Task::Source::Clipboard:
+        return "Clipboard";
+    case Task::Source::Permissions:
+        return "Permissions";
+    case Task::Source::FontLoading:
+        return "FontLoading";
+    case Task::Source::RemoteEvent:
+        return "RemoteEvent";
+    case Task::Source::Rendering:
+        return "Rendering";
+    case Task::Source::DatabaseAccess:
+        return "DatabaseAccess";
+    case Task::Source::WebSocket:
+        return "WebSocket";
+    case Task::Source::MediaCapabilities:
+        return "MediaCapabilities";
+    case Task::Source::Gamepad:
+        return "Gamepad";
+    case Task::Source::WebGL:
+        return "WebGL";
+    case Task::Source::Crypto:
+        return "Crypto";
+    case Task::Source::UniqueTaskSourceStart:
+        return "UniqueTaskSourceStart";
+    }
+    return "UniqueTaskSource";
+}
+
+bool EventLoop::should_skip_mundo_media_animation_frame_callbacks(DOM::Document& document)
+{
+    auto interval = mundo_media_animation_frame_interval();
+    if (interval.is_zero() || !document.page().has_potentially_playing_video_media())
+        return false;
+
+    auto now = HighResolutionTime::unsafe_shared_current_time();
+    auto state_iterator = m_mundo_document_animation_throttle_states.find_if([&](auto& candidate) {
+        return candidate.document.ptr() == &document;
+    });
+    if (state_iterator == m_mundo_document_animation_throttle_states.end()) {
+        auto state_index = m_mundo_document_animation_throttle_states.size();
+        m_mundo_document_animation_throttle_states.append({ &document, 0, 0, 0 });
+        state_iterator = m_mundo_document_animation_throttle_states.begin() + state_index;
+    }
+    auto& state = *state_iterator;
+
+    auto elapsed = now - state.last_run_time_ms;
+    if (state.last_run_time_ms > 0 && elapsed < static_cast<double>(interval.to_milliseconds())) {
+        ++state.skipped_since_last_run;
+        ++state.log_count;
+        if (state.log_count <= 24 || state.log_count % 120 == 0)
+            dbgln("MUNDO_EVENT_LOOP media_raf_throttled count={} skipped_since_last_run={} elapsed={}ms interval={}ms url={}",
+                state.log_count,
+                state.skipped_since_last_run,
+                static_cast<i64>(elapsed),
+                interval.to_milliseconds(),
+                document.url().serialize());
+        return true;
+    }
+
+    if (state.skipped_since_last_run > 0 && (state.log_count <= 24 || state.log_count % 120 == 0))
+        dbgln("MUNDO_EVENT_LOOP media_raf_resume skipped_since_last_run={} elapsed={}ms interval={}ms url={}",
+            state.skipped_since_last_run,
+            static_cast<i64>(elapsed),
+            interval.to_milliseconds(),
+            document.url().serialize());
+
+    state.last_run_time_ms = now;
+    state.skipped_since_last_run = 0;
+    return false;
+}
 
 EventLoop::EventLoop(Type type)
     : m_type(type)
@@ -146,7 +320,28 @@ void EventLoop::process()
         m_currently_running_task = oldest_task.ptr();
 
         // 6. Perform oldestTask's steps.
+        auto mundo_task_start = MonotonicTime::now_coarse();
         oldest_task->execute();
+        auto mundo_task_duration = MonotonicTime::now_coarse() - mundo_task_start;
+        auto mundo_threshold = mundo_event_loop_long_task_log_threshold();
+        if (mundo_task_duration > mundo_threshold) {
+            static size_t s_mundo_long_task_log_count { 0 };
+            ++s_mundo_long_task_log_count;
+            if (s_mundo_long_task_log_count <= 48 || s_mundo_long_task_log_count % 120 == 0)
+                dbgln("MUNDO_EVENT_LOOP long_task count={} task_id={} source={} duration={}ms threshold={}ms has_document={} created_at={}",
+                    s_mundo_long_task_log_count,
+                    oldest_task->id().value(),
+                    mundo_task_source_name(oldest_task->source()),
+                    mundo_task_duration.to_milliseconds(),
+                    mundo_threshold.to_milliseconds(),
+                    oldest_task->document() != nullptr,
+                    oldest_task->mundo_creation_stack());
+
+            if (mundo_media_service_after_long_tasks_enabled()) {
+                if (auto* document = oldest_task->document(); document && const_cast<DOM::Document&>(*document).page().has_potentially_playing_video_media())
+                    const_cast<DOM::Document&>(*document).page().update_all_media_element_video_sinks(true, "after_long_task");
+            }
+        }
 
         // 7. Set the event loop's currently running task back to null.
         m_currently_running_task = nullptr;
@@ -308,7 +503,27 @@ void EventLoop::update_the_rendering()
         m_running_rendering_task = false;
     };
 
+    auto mundo_render_start = MonotonicTime::now_coarse();
+    auto log_mundo_render_phase = [](char const* phase, MonotonicTime start, size_t document_count) {
+        auto duration = MonotonicTime::now_coarse() - start;
+        auto threshold = mundo_event_loop_phase_log_threshold();
+        if (duration <= threshold)
+            return;
+
+        static size_t s_mundo_render_phase_log_count { 0 };
+        ++s_mundo_render_phase_log_count;
+        if (s_mundo_render_phase_log_count <= 64 || s_mundo_render_phase_log_count % 120 == 0)
+            dbgln("MUNDO_EVENT_LOOP rendering_phase count={} phase={} duration={}ms threshold={}ms documents={}",
+                s_mundo_render_phase_log_count,
+                phase,
+                duration.to_milliseconds(),
+                threshold.to_milliseconds(),
+                document_count);
+    };
+
+    auto mundo_phase_start = MonotonicTime::now_coarse();
     process_input_events();
+    log_mundo_render_phase("process_input_events", mundo_phase_start, 0);
 
     // 1. Let frameTimestamp be eventLoop's last render opportunity time.
     auto frame_timestamp = m_last_render_opportunity_time;
@@ -347,14 +562,19 @@ void EventLoop::update_the_rendering()
 
         return true;
     });
+    log_mundo_render_phase("collect_documents", mundo_render_start, docs.size());
 
     // AD-HOC: Update all the displayed video frames on HTMLMediaElements in documents' pages.
+    mundo_phase_start = MonotonicTime::now_coarse();
     for (auto& document : docs)
         document->page().update_all_media_element_video_sinks();
+    log_mundo_render_phase("media_video_sinks", mundo_phase_start, docs.size());
 
     // AD-HOC: Present all canvas element surfaces in documents' pages.
+    mundo_phase_start = MonotonicTime::now_coarse();
     for (auto& document : docs)
         document->page().present_all_canvas_element_surfaces();
+    log_mundo_render_phase("canvas_surfaces", mundo_phase_start, docs.size());
 
     // FIXME: 4. Unnecessary rendering: Remove from docs any Document object doc for which all of the following are true:
 
@@ -396,14 +616,36 @@ void EventLoop::update_the_rendering()
     // FIXME: 13. For each doc of docs, if the user agent detects that the backing storage associated with a CanvasRenderingContext2D or an OffscreenCanvasRenderingContext2D, context, has been lost, then it must run the context lost steps for each such context:
 
     // 14. For each doc of docs, run the animation frame callbacks for doc, passing in the relative high resolution time given frameTimestamp and doc's relevant global object as the timestamp.
+    mundo_phase_start = MonotonicTime::now_coarse();
     for (auto& document : docs) {
+        if (should_skip_mundo_media_animation_frame_callbacks(*document))
+            continue;
+
+        auto mundo_document_animation_start = MonotonicTime::now_coarse();
         auto now = HighResolutionTime::relative_high_resolution_time(frame_timestamp, relevant_global_object(*document));
         run_animation_frame_callbacks(*document, now);
+        auto duration = MonotonicTime::now_coarse() - mundo_document_animation_start;
+        auto threshold = mundo_event_loop_phase_log_threshold();
+        if (duration > threshold) {
+            static size_t s_mundo_document_animation_log_count { 0 };
+            ++s_mundo_document_animation_log_count;
+            if (s_mundo_document_animation_log_count <= 64 || s_mundo_document_animation_log_count % 120 == 0)
+                dbgln("MUNDO_EVENT_LOOP animation_frame_document count={} duration={}ms threshold={}ms url={}",
+                    s_mundo_document_animation_log_count,
+                    duration.to_milliseconds(),
+                    threshold.to_milliseconds(),
+                    document->url().serialize());
+
+            if (mundo_media_service_after_long_tasks_enabled() && document->page().has_potentially_playing_video_media())
+                document->page().update_all_media_element_video_sinks(true, "after_long_raf");
+        }
     }
+    log_mundo_render_phase("animation_frame_callbacks", mundo_phase_start, docs.size());
 
     // FIXME: 15. Let unsafeStyleAndLayoutStartTime be the unsafe shared current time.
 
     // 16. For each doc of docs:
+    mundo_phase_start = MonotonicTime::now_coarse();
     for (auto& document : docs) {
         // 1. Let resizeObserverDepth be 0.
         size_t resize_observer_depth = 0;
@@ -466,6 +708,7 @@ void EventLoop::update_the_rendering()
             // FIXME: Deliver resize loop error.
         }
     }
+    log_mundo_render_phase("layout_resize_observers", mundo_phase_start, docs.size());
 
     // FIXME: 17. For each doc of docs, if the focused area of doc is not a focusable area, then run the focusing steps for doc's viewport, and set doc's relevant global object's navigation API's focus changed during ongoing navigation to false.
 
@@ -475,6 +718,7 @@ void EventLoop::update_the_rendering()
     }
 
     // 19. For each doc of docs, run the update intersection observations steps for doc, passing in the relative high resolution time given now and doc's relevant global object as the timestamp. [INTERSECTIONOBSERVER]
+    mundo_phase_start = MonotonicTime::now_coarse();
     for (auto& document : docs) {
         // NB: Layout may have been invalidated by previous steps (e.g. view transitions at step 18).
         //     Re-run layout here since intersection observations need up-to-date geometry.
@@ -483,12 +727,14 @@ void EventLoop::update_the_rendering()
         auto now = HighResolutionTime::relative_high_resolution_time(frame_timestamp, relevant_global_object(*document));
         document->run_the_update_intersection_observations_steps(now);
     }
+    log_mundo_render_phase("intersection_observers", mundo_phase_start, docs.size());
 
     // FIXME: 20. For each doc of docs, record rendering time for doc given unsafeStyleAndLayoutStartTime.
 
     // FIXME: 21. For each doc of docs, mark paint timing for doc.
 
     // 22. For each doc of docs, update the rendering or user interface of doc and its node navigable to reflect the current state.
+    mundo_phase_start = MonotonicTime::now_coarse();
     for (auto& doc : docs.in_reverse()) {
         auto navigable = doc->navigable();
         if (!navigable->needs_repaint())
@@ -503,6 +749,7 @@ void EventLoop::update_the_rendering()
             traversable->process_screenshot_requests();
         }
     }
+    log_mundo_render_phase("paint_next_frame", mundo_phase_start, docs.size());
 
     // 23. For each doc of docs, process top layer removals given doc.
     for (auto& document : docs) {
@@ -518,6 +765,7 @@ void EventLoop::update_the_rendering()
         TemporaryExecutionContext context(document->realm(), TemporaryExecutionContext::CallbacksEnabled::Yes);
         document->fonts()->set_is_pending_on_the_environment(document->readiness() == DocumentReadyState::Loading);
     }
+    log_mundo_render_phase("rendering_total", mundo_render_start, docs.size());
 }
 
 void run_when_event_loop_reaches_step_1(GC::Ref<GC::Function<void()>> steps)

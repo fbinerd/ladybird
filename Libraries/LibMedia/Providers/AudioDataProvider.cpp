@@ -14,10 +14,23 @@
 #include <LibMedia/Sinks/AudioSink.h>
 #include <LibThreading/Mutex.h>
 #include <LibThreading/Thread.h>
+#include <stdlib.h>
 
 #include "AudioDataProvider.h"
 
 namespace Media {
+
+static size_t mundo_audio_queue_max_blocks()
+{
+    auto const* raw_value = getenv("MUNDO_AUDIO_QUEUE_MAX_BLOCKS");
+    if (!raw_value || raw_value[0] == '\0')
+        return 16;
+
+    auto value = strtoul(raw_value, nullptr, 10);
+    if (value == 0)
+        return 16;
+    return min<size_t>(value, AudioDataProvider::QUEUE_CAPACITY);
+}
 
 DecoderErrorOr<NonnullRefPtr<AudioDataProvider>> AudioDataProvider::try_create(NonnullRefPtr<Core::WeakEventLoopReference> const& main_thread_event_loop, NonnullRefPtr<Demuxer> const& demuxer, Track const& track)
 {
@@ -159,6 +172,8 @@ AudioDataProvider::ThreadData::ThreadData(NonnullRefPtr<Core::WeakEventLoopRefer
     , m_duration(duration)
     , m_converter(move(converter))
 {
+    m_queue_max_size = mundo_audio_queue_max_blocks();
+    dbgln("MUNDO_MEDIA_AUDIO_PROVIDER queue_config track_id={} max_blocks={} capacity={}", m_track.identifier(), m_queue_max_size, AudioDataProvider::QUEUE_CAPACITY);
 }
 
 AudioDataProvider::ThreadData::~ThreadData() = default;
@@ -206,6 +221,8 @@ void AudioDataProvider::ThreadData::suspend()
     auto locker = take_lock();
     VERIFY(m_requested_state != RequestedState::Exit);
     m_requested_state = RequestedState::Suspended;
+    m_demuxer->set_blocking_reads_aborted_for_track(m_track);
+    dbgln("MUNDO_MEDIA_AUDIO_PROVIDER suspend track_id={} abort_blocking_read=true", m_track.identifier());
     wake();
 }
 
@@ -214,6 +231,8 @@ void AudioDataProvider::ThreadData::resume()
     auto locker = take_lock();
     VERIFY(m_requested_state != RequestedState::Exit);
     m_requested_state = RequestedState::Running;
+    m_demuxer->reset_blocking_reads_aborted_for_track(m_track);
+    dbgln("MUNDO_MEDIA_AUDIO_PROVIDER resume track_id={} reset_blocking_read_abort=true", m_track.identifier());
     wake();
 }
 
@@ -280,6 +299,7 @@ bool AudioDataProvider::ThreadData::handle_suspension()
         if (m_requested_state != RequestedState::Running)
             return true;
 
+        m_demuxer->reset_blocking_reads_aborted_for_track(m_track);
         auto result = create_decoder();
         if (result.is_error()) {
             m_is_in_error_state = true;
@@ -347,6 +367,8 @@ void AudioDataProvider::ThreadData::queue_block(AudioBlock&& block)
     m_queue_end_sample = block.end_timestamp_in_samples();
     m_queue.enqueue(move(block));
     VERIFY(!m_queue.tail().is_empty());
+    if (m_queue.size() <= 2 || m_queue.size() == m_queue_max_size)
+        dbgln("MUNDO_MEDIA_AUDIO_PROVIDER queue_block track_id={} queue_size={} max_blocks={} end_sample={}", m_track.identifier(), m_queue.size(), m_queue_max_size, m_queue_end_sample);
 }
 
 void AudioDataProvider::ThreadData::dispatch_error(DecoderError&& error)
@@ -547,6 +569,13 @@ void AudioDataProvider::ThreadData::push_data_and_decode_a_block()
 
     auto sample_result = m_demuxer->get_next_sample_for_track(m_track);
     if (sample_result.is_error()) {
+        if (sample_result.error().category() == DecoderErrorCategory::Aborted) {
+            auto locker = take_lock();
+            if (m_requested_state != RequestedState::Running) {
+                dbgln("MUNDO_MEDIA_AUDIO_PROVIDER read_aborted_for_state track_id={} state={}", m_track.identifier(), to_underlying(m_requested_state));
+                return;
+            }
+        }
         if (sample_result.error().category() == DecoderErrorCategory::EndOfStream) {
             m_decoder->signal_end_of_stream();
         } else {

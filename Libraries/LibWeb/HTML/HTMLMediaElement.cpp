@@ -228,11 +228,11 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
         }
         if (path.ends_with("_vr.m3u8"sv)) {
             if (!target_quality || target_quality[0] == '\0')
-                target_quality = "1440p60";
+                return {};
             normalized_path_base = path.substring_view(0, path.length() - ".m3u8"sv.length());
         } else if (path.ends_with("_vr_auto.m3u8"sv)) {
             if (!target_quality || target_quality[0] == '\0')
-                target_quality = "1440p60";
+                return {};
             normalized_path_base = path.substring_view(0, path.length() - "_auto.m3u8"sv.length());
         } else if (!target_quality || target_quality[0] == '\0') {
             return {};
@@ -247,11 +247,8 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
         target_quality = getenv("MUNDO_HLS_AUX_QUALITY");
         if (target_quality && (!strcmp(target_quality, "0") || !strcmp(target_quality, "false") || !strcmp(target_quality, "no") || !strcmp(target_quality, "off") || !strcmp(target_quality, "source") || !strcmp(target_quality, "original")))
             return {};
-        if (!target_quality || target_quality[0] == '\0') {
-            if (!mundo_nvdec_backend_requested())
-                return {};
-            target_quality = "160p";
-        }
+        if (!target_quality || target_quality[0] == '\0')
+            return {};
         if (path.ends_with("_auto.m3u8"sv))
             normalized_path_base = path.substring_view(0, path.length() - "_auto.m3u8"sv.length());
         else if (path.ends_with("_160p.m3u8"sv))
@@ -347,6 +344,16 @@ void HTMLMediaElement::initialize(JS::Realm& realm)
 
     // https://html.spec.whatwg.org/multipage/media.html#playing-the-media-resource:media-element-82
     m_document_observer->set_document_became_inactive([this]() {
+        if (mundo_env_flag_enabled("MUNDO_FORCE_DOCUMENT_VISIBLE")
+            && m_current_src.contains(".m3u8"sv)
+            && !paused()) {
+            dbgln("MUNDO_MEDIA_ELEMENT element={} document_inactive ignored reason=force_visible current_time={} src={}",
+                static_cast<void const*>(this),
+                m_current_playback_position,
+                m_current_src);
+            return;
+        }
+
         // If the media element's node document stops being a fully active document, then the playback will stop until
         // the document is active again.
         pause_element();
@@ -851,6 +858,7 @@ GC::Ref<WebIDL::Promise> HTMLMediaElement::play()
 // https://html.spec.whatwg.org/multipage/media.html#dom-media-pause
 void HTMLMediaElement::pause()
 {
+    auto stack = mundo_media_stack_trace(realm().vm());
     dbgln("MUNDO_MEDIA_ELEMENT element={} pause() requested network_state={} ready_state={} paused={} current_time={} duration={} pending_play_promises={} page_url={} attr_src={} current_src={} stack={}",
         static_cast<void const*>(this),
         to_underlying(m_network_state),
@@ -862,7 +870,22 @@ void HTMLMediaElement::pause()
         document().url_string(),
         has_attribute(HTML::AttributeNames::src) ? get_attribute_value(HTML::AttributeNames::src) : String {},
         m_current_src,
-        mundo_media_stack_trace(realm().vm()));
+        stack);
+
+    auto const ignore_site_visibility_pause = mundo_env_flag_enabled("MUNDO_IGNORE_SITE_VISIBILITY_PAUSE");
+    auto const force_document_visible = mundo_env_flag_enabled("MUNDO_FORCE_DOCUMENT_VISIBLE");
+    auto const allow_hls_visibility_pause = mundo_env_flag_enabled("MUNDO_ALLOW_HLS_VISIBILITY_PAUSE");
+    auto const is_hls_visibility_pause = m_current_src.contains(".m3u8"sv) && stack.contains("setDocumentVisibility"sv);
+    if (is_hls_visibility_pause && !allow_hls_visibility_pause) {
+        dbgln("MUNDO_MEDIA_ELEMENT element={} pause() ignored reason=site_visibility_pause force_visible={} explicit_ignore={} hls_default_ignore=true current_time={} src={} stack={}",
+            static_cast<void const*>(this),
+            force_document_visible,
+            ignore_site_visibility_pause,
+            m_current_playback_position,
+            m_current_src,
+            stack);
+        return;
+    }
 
     // 1. If the media element's networkState attribute has the value NETWORK_EMPTY, invoke the media element's resource
     //    selection algorithm.

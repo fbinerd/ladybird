@@ -5,8 +5,12 @@
  */
 
 #include <AK/IDAllocator.h>
+#include <AK/StringBuilder.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/EventLoop/Task.h>
+#include <LibJS/Runtime/VM.h>
+
+#include <stdlib.h>
 
 namespace Web::HTML {
 
@@ -20,9 +24,48 @@ static IDAllocator s_unique_task_source_allocator { static_cast<int>(Task::Sourc
     return next_task_id++;
 }
 
+static ByteString mundo_task_creation_stack(JS::VM& vm)
+{
+    auto const* raw_value = getenv("MUNDO_TASK_CREATION_STACKS");
+    if (!raw_value || !atoi(raw_value))
+        return {};
+
+    StringBuilder builder;
+    auto stack_trace = vm.stack_trace();
+    size_t emitted_frames = 0;
+    for (auto const& element : stack_trace) {
+        auto* context = element.execution_context;
+        if (!context)
+            continue;
+
+        auto function_name = context->function ? context->function->name_for_call_stack() : ""_utf16;
+        auto function_name_utf8 = function_name.is_empty() ? ByteString { "<anonymous>"sv } : function_name.to_byte_string();
+
+        if (emitted_frames > 0)
+            builder.append(" <- "sv);
+
+        builder.append(function_name_utf8);
+        if (auto source_range = element.source_range; source_range.has_value()) {
+            auto source = source_range->filename();
+            if (!source.is_empty()) {
+                builder.append('@');
+                builder.append(source);
+            }
+            builder.appendff(":{}:{}", source_range->start.line, source_range->start.column);
+        }
+
+        if (++emitted_frames >= 10)
+            break;
+    }
+
+    return builder.to_byte_string();
+}
+
 GC::Ref<Task> Task::create(JS::VM& vm, Source source, GC::Ptr<DOM::Document const> document, GC::Ref<GC::Function<void()>> steps)
 {
-    return vm.heap().allocate<Task>(source, document, move(steps));
+    auto task = vm.heap().allocate<Task>(source, document, move(steps));
+    task->m_mundo_creation_stack = mundo_task_creation_stack(vm);
+    return task;
 }
 
 Task::Task(Source source, GC::Ptr<DOM::Document const> document, GC::Ref<GC::Function<void()>> steps)

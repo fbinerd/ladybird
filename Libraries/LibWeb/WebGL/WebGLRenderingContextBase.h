@@ -219,6 +219,8 @@ private:
     struct MundoVideoNV12UniformLocations {
         int y_plane { -1 };
         int uv_plane { -1 };
+        int y_coord_scale { -1 };
+        int uv_coord_scale { -1 };
         int y_offset { -1 };
         int y_scale { -1 };
         int r_coefficients { -1 };

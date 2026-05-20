@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/ByteString.h>
 #include <AK/DistinctNumeric.h>
 #include <LibGC/CellAllocator.h>
 #include <LibJS/Heap/Cell.h>
@@ -102,6 +103,7 @@ public:
 
     [[nodiscard]] TaskID id() const { return m_id; }
     Source source() const { return m_source; }
+    ByteString const& mundo_creation_stack() const { return m_mundo_creation_stack; }
     void execute();
 
     DOM::Document const* document() const;
@@ -118,6 +120,7 @@ private:
     Source m_source { Source::Unspecified };
     GC::Ref<GC::Function<void()>> m_steps;
     GC::Ptr<DOM::Document const> m_document;
+    ByteString m_mundo_creation_stack;
 };
 
 struct WEB_API UniqueTaskSource {
