@@ -8,6 +8,7 @@
 #include <LibMedia/Audio/PlaybackStream.h>
 #include <LibMedia/Providers/AudioDataProvider.h>
 #include <stdlib.h>
+#include <strings.h>
 
 #include "AudioMixingSink.h"
 
@@ -23,6 +24,18 @@ static u32 mundo_audio_target_latency_ms()
     if (value == 0)
         return 250;
     return min<u32>(static_cast<u32>(value), 1000);
+}
+
+static bool mundo_audio_skip_silent_gaps_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_AUDIO_SKIP_SILENT_GAPS");
+    if (!raw_value)
+        return true;
+
+    return strcasecmp(raw_value, "0") != 0
+        && strcasecmp(raw_value, "false") != 0
+        && strcasecmp(raw_value, "no") != 0
+        && strcasecmp(raw_value, "off") != 0;
 }
 
 ErrorOr<NonnullRefPtr<AudioMixingSink>> AudioMixingSink::try_create()
@@ -193,6 +206,7 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
     }
 
     bool wrote_nonzero_sample = false;
+    auto const requested_sample_count = sample_count;
     for (auto& [track, track_data] : m_track_mixing_datas) {
         auto next_sample = buffer_start;
 
@@ -222,8 +236,29 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
             }
 
             auto first_sample_offset = current_block.timestamp_in_samples();
-            if (first_sample_offset >= samples_end)
-                break;
+            if (first_sample_offset >= samples_end) {
+                if (mundo_audio_skip_silent_gaps_enabled() && !wrote_nonzero_sample && m_track_mixing_datas.size() == 1 && first_sample_offset > buffer_start) {
+                    auto old_buffer_start = buffer_start;
+                    auto old_samples_end = samples_end;
+                    buffer_start = first_sample_offset;
+                    samples_end = buffer_start + static_cast<i64>(requested_sample_count);
+                    next_sample = buffer_start;
+                    m_silent_gap_skip_count++;
+                    if (m_silent_gap_skip_count <= 16 || m_silent_gap_skip_count % 60 == 0)
+                        dbgln("MUNDO_AUDIO_SINK skip_silent_gap count={} track_id={} old_start={} old_end={} new_start={} gap_samples={} gap_ms={} requested={} queue_end_min={}",
+                            m_silent_gap_skip_count,
+                            track.identifier(),
+                            old_buffer_start,
+                            old_samples_end,
+                            buffer_start,
+                            buffer_start - old_buffer_start,
+                            AK::Duration::from_time_units(buffer_start - old_buffer_start, 1, m_sample_specification.sample_rate()).to_milliseconds(),
+                            requested_sample_count,
+                            samples_end);
+                } else {
+                    break;
+                }
+            }
 
             auto block_end = first_sample_offset + current_block_sample_count;
             if (block_end <= next_sample) {
@@ -271,9 +306,8 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
         }
     }
 
-    m_next_sample_to_write += static_cast<i64>(sample_count);
+    m_next_sample_to_write = buffer_start + static_cast<i64>(sample_count);
     ++m_write_callback_count;
-    auto requested_sample_count = buffer.size() / channel_count;
     if (m_write_callback_count <= 12 || m_write_callback_count % 120 == 0 || sample_count < requested_sample_count || !wrote_nonzero_sample)
         dbgln("MUNDO_AUDIO_SINK write count={} requested={} wrote={} buffering={} providers={} nonzero={} volume={} next_sample={} queue_end_min={}",
             m_write_callback_count, requested_sample_count, sample_count, buffering, m_track_mixing_datas.size(), wrote_nonzero_sample, m_volume, m_next_sample_to_write.load(), samples_end);
