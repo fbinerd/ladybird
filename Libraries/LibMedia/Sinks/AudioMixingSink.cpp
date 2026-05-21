@@ -18,11 +18,11 @@ static u32 mundo_audio_target_latency_ms()
 {
     auto const* raw_value = getenv("MUNDO_AUDIO_TARGET_LATENCY_MS");
     if (!raw_value || raw_value[0] == '\0')
-        return 250;
+        return 500;
 
     auto value = strtoul(raw_value, nullptr, 10);
     if (value == 0)
-        return 250;
+        return 500;
     return min<u32>(static_cast<u32>(value), 1000);
 }
 

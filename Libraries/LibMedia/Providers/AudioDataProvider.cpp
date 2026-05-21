@@ -24,11 +24,11 @@ static size_t mundo_audio_queue_max_blocks()
 {
     auto const* raw_value = getenv("MUNDO_AUDIO_QUEUE_MAX_BLOCKS");
     if (!raw_value || raw_value[0] == '\0')
-        return 16;
+        return 64;
 
     auto value = strtoul(raw_value, nullptr, 10);
     if (value == 0)
-        return 16;
+        return 64;
     return min<size_t>(value, AudioDataProvider::QUEUE_CAPACITY);
 }
 
