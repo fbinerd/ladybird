@@ -20,7 +20,7 @@ static AK::Duration late_frame_age_threshold()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_LATE_DROP_MS");
     if (!raw_value)
-        return AK::Duration::from_milliseconds(500);
+        return AK::Duration::max();
 
     auto value = atoi(raw_value);
     if (value <= 0)
@@ -33,7 +33,7 @@ static AK::Duration hard_late_frame_coalesce_threshold()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_HARD_LATE_COALESCE_MS");
     if (!raw_value)
-        return AK::Duration::from_milliseconds(1500);
+        return AK::Duration::max();
 
     auto value = atoi(raw_value);
     if (value <= 0)
@@ -84,7 +84,7 @@ static bool coalesce_due_frames_per_update()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_SINK_COALESCE_DUE_FRAMES");
     if (!raw_value)
-        return true;
+        return false;
 
     return strcasecmp(raw_value, "0") != 0
         && strcasecmp(raw_value, "false") != 0
