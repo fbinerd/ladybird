@@ -152,6 +152,53 @@ static AK::Duration live_video_timestamp_gap_smooth_step()
     return AK::Duration::from_milliseconds(max(value, 16));
 }
 
+static bool bridge_live_video_segment_gaps_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_BRIDGE_SEGMENT_GAPS");
+    if (!raw_value)
+        return true;
+    return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+static AK::Duration live_video_segment_gap_min()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_SEGMENT_GAP_MIN_MS");
+    if (!raw_value)
+        return AK::Duration::from_milliseconds(750);
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return AK::Duration::max();
+
+    return AK::Duration::from_milliseconds(max(value, 16));
+}
+
+static AK::Duration live_video_segment_gap_max()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_SEGMENT_GAP_MAX_MS");
+    if (!raw_value)
+        return AK::Duration::from_milliseconds(4500);
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return AK::Duration::max();
+
+    return AK::Duration::from_milliseconds(max(value, 16));
+}
+
+static AK::Duration live_video_segment_frame_max_delta()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_SEGMENT_FRAME_MAX_MS");
+    if (!raw_value)
+        return AK::Duration::from_milliseconds(50);
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return AK::Duration::max();
+
+    return AK::Duration::from_milliseconds(max(value, 16));
+}
+
 DecoderErrorOr<NonnullRefPtr<VideoDataProvider>> VideoDataProvider::try_create(NonnullRefPtr<Core::WeakEventLoopReference> const& main_thread_event_loop, NonnullRefPtr<Demuxer> const& demuxer, Track const& track, RefPtr<MediaTimeProvider> const& time_provider)
 {
     dbgln("MUNDO_MEDIA_VIDEO_PROVIDER start track_id={} size={}x{}", track.identifier(), track.video_data().pixel_width, track.video_data().pixel_height);
@@ -477,6 +524,51 @@ void VideoDataProvider::ThreadData::queue_frame(NonnullOwnPtr<VideoFrame>&& fram
     auto timestamp = normalized_frame_timestamp(*frame);
     auto pixel_count = static_cast<size_t>(m_track.video_data().pixel_width) * static_cast<size_t>(m_track.video_data().pixel_height);
     auto frame_duration = frame->duration();
+
+    if (bridge_live_video_segment_gaps_enabled() && pixel_count >= 1920 * 1080 && m_last_queued_frame_timestamp.has_value()) {
+        auto expected_delta = m_last_queued_frame_duration;
+        if (expected_delta <= AK::Duration::zero())
+            expected_delta = frame_duration;
+        if (expected_delta <= AK::Duration::zero())
+            expected_delta = AK::Duration::from_milliseconds(20);
+
+        auto frame_delta_limit = live_video_segment_frame_max_delta();
+        auto min_gap = live_video_segment_gap_min();
+        auto max_gap = live_video_segment_gap_max();
+        auto expected_timestamp = *m_last_queued_frame_timestamp + expected_delta;
+        if (frame_delta_limit != AK::Duration::max()
+            && min_gap != AK::Duration::max()
+            && max_gap != AK::Duration::max()
+            && expected_delta <= frame_delta_limit
+            && (frame_duration <= AK::Duration::zero() || frame_duration <= frame_delta_limit)
+            && timestamp > expected_timestamp) {
+            auto gap = timestamp - expected_timestamp;
+            if (gap >= min_gap && gap <= max_gap) {
+                auto old_timestamp = timestamp;
+                auto old_offset = m_frame_timestamp_offset;
+                m_frame_timestamp_offset += gap;
+                timestamp = normalized_frame_timestamp(*frame);
+                m_bridged_segment_timestamp_gap_count++;
+                if (m_bridged_segment_timestamp_gap_count <= 16 || m_bridged_segment_timestamp_gap_count % 60 == 0) {
+                    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER segment_gap_bridged count={} track_id={} old_timestamp={}ms new_timestamp={}ms expected={}ms gap={}ms min={}ms max={}ms frame_delta_limit={}ms old_offset={}ms new_offset={}ms duration={}ms raw_timestamp={}ms queue_size={}",
+                        m_bridged_segment_timestamp_gap_count,
+                        m_track.identifier(),
+                        old_timestamp.to_milliseconds(),
+                        timestamp.to_milliseconds(),
+                        expected_timestamp.to_milliseconds(),
+                        gap.to_milliseconds(),
+                        min_gap.to_milliseconds(),
+                        max_gap.to_milliseconds(),
+                        frame_delta_limit.to_milliseconds(),
+                        old_offset.to_milliseconds(),
+                        m_frame_timestamp_offset.to_milliseconds(),
+                        frame_duration.to_milliseconds(),
+                        frame->timestamp().to_milliseconds(),
+                        m_queue.size());
+                }
+            }
+        }
+    }
 
     if (smooth_live_video_timestamp_gaps_enabled() && pixel_count >= 1920 * 1080 && m_last_queued_frame_timestamp.has_value()) {
         auto expected_delta = m_last_queued_frame_duration;

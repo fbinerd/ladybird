@@ -143,6 +143,7 @@ private:
         size_t m_dropped_queued_frame_count { 0 };
         size_t m_rebased_stale_live_frame_count { 0 };
         size_t m_smoothed_timestamp_gap_count { 0 };
+        size_t m_bridged_segment_timestamp_gap_count { 0 };
         size_t m_consecutive_stale_decoded_frame_count { 0 };
         size_t m_end_of_stream_count { 0 };
         size_t m_decoder_end_of_stream_count { 0 };
