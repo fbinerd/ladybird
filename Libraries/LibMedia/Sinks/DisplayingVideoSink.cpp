@@ -29,6 +29,19 @@ static AK::Duration late_frame_age_threshold()
     return AK::Duration::from_milliseconds(max(value, 16));
 }
 
+static AK::Duration hard_late_frame_coalesce_threshold()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_HARD_LATE_COALESCE_MS");
+    if (!raw_value)
+        return AK::Duration::from_milliseconds(1500);
+
+    auto value = atoi(raw_value);
+    if (value <= 0)
+        return AK::Duration::max();
+
+    return AK::Duration::from_milliseconds(max(value, 16));
+}
+
 static size_t max_consecutive_late_frame_drops()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_MAX_LATE_DROPS");
@@ -218,6 +231,51 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         auto frame_age = current_time - m_next_frame.timestamp();
         auto late_frame_threshold = late_frame_age_threshold();
         auto late_frame_drop_limit = max_consecutive_late_frame_drops();
+        auto hard_late_threshold = hard_late_frame_coalesce_threshold();
+        if (m_current_frame.is_valid() && frame_age > hard_late_threshold) {
+            TimedImage newest_due_frame;
+            size_t hard_coalesced_frames = 0;
+            auto oldest_late_frame_time = m_next_frame.timestamp();
+            auto oldest_late_frame_age = frame_age;
+
+            while (m_next_frame.is_valid() && m_next_frame.timestamp() <= current_time) {
+                if (newest_due_frame.is_valid())
+                    hard_coalesced_frames++;
+                newest_due_frame = move(m_next_frame);
+                m_next_frame = m_provider->retrieve_frame();
+                if (!m_next_frame.is_valid()) {
+                    saw_provider_empty_this_update = true;
+                    m_empty_provider_frame_count++;
+                    if (m_empty_provider_frame_count <= 8 || m_empty_provider_frame_count % 120 == 0)
+                        dbgln("MUNDO_MEDIA_VIDEO_SINK provider_empty count={} track_id={} blocked={}", m_empty_provider_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, m_provider->is_blocked());
+                    if (m_provider->is_blocked() && m_on_start_buffering)
+                        m_on_start_buffering();
+                    break;
+                }
+                retrieved_this_update++;
+            }
+
+            if (newest_due_frame.is_valid()) {
+                m_hard_late_coalesce_count++;
+                coalesced_this_update += hard_coalesced_frames;
+                if (m_hard_late_coalesce_count <= 24 || m_hard_late_coalesce_count % 60 == 0)
+                    dbgln("MUNDO_MEDIA_VIDEO_SINK hard_late_coalesce count={} track_id={} current_time={}ms oldest_frame={}ms oldest_age={}ms presented_frame={}ms presented_age={}ms threshold={}ms coalesced={} provider_empty={} has_next={}",
+                        m_hard_late_coalesce_count,
+                        m_track.has_value() ? m_track.value().identifier() : 0,
+                        current_time.to_milliseconds(),
+                        oldest_late_frame_time.to_milliseconds(),
+                        oldest_late_frame_age.to_milliseconds(),
+                        newest_due_frame.timestamp().to_milliseconds(),
+                        (current_time - newest_due_frame.timestamp()).to_milliseconds(),
+                        hard_late_threshold.to_milliseconds(),
+                        hard_coalesced_frames,
+                        saw_provider_empty_this_update,
+                        m_next_frame.is_valid());
+                present_frame(move(newest_due_frame));
+                break;
+            }
+        }
+
         if (m_current_frame.is_valid() && frame_age > late_frame_threshold) {
             if (late_frame_drop_limit > 0 && m_consecutive_late_frame_drop_count >= late_frame_drop_limit) {
                 m_late_drop_limit_hit_count++;
