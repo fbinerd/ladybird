@@ -100,6 +100,18 @@ static bool pause_auxiliary_hls_when_vr_active()
     return enabled;
 }
 
+static bool suppress_auxiliary_hls_play_when_vr_active()
+{
+    static auto enabled = [] {
+        auto const* raw_value = getenv("MUNDO_SUPPRESS_AUX_HLS_PLAY_WHEN_VR_ACTIVE");
+        if (!raw_value)
+            return true;
+
+        return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+    }();
+    return enabled;
+}
+
 static bool is_mundo_hls_url(String const& url)
 {
     return url.contains("/hls/"sv) || url.contains(".m3u8"sv);
@@ -639,6 +651,22 @@ bool Page::has_potentially_playing_video_media() const
     });
 
     return has_potentially_playing_video;
+}
+
+bool Page::has_active_vr_hls_playback_excluding(HTML::HTMLMediaElement const& excluded_media_element) const
+{
+    if (!suppress_auxiliary_hls_play_when_vr_active())
+        return false;
+
+    bool has_active_vr_hls = false;
+    const_cast<Page&>(*this).for_each_media_element([&](auto& media_element) {
+        if (&media_element == &excluded_media_element)
+            return;
+        if (!has_active_vr_hls && media_element.potentially_playing() && is_mundo_vr_hls_url(media_element.current_src()))
+            has_active_vr_hls = true;
+    });
+
+    return has_active_vr_hls;
 }
 
 void Page::update_all_media_element_video_sinks(bool force, char const* reason)

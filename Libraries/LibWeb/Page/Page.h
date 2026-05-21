@@ -200,6 +200,7 @@ public:
     void unregister_media_element(Badge<HTML::HTMLMediaElement>, UniqueNodeID media_id);
 
     bool has_potentially_playing_video_media() const;
+    bool has_active_vr_hls_playback_excluding(HTML::HTMLMediaElement const&) const;
     void update_all_media_element_video_sinks(bool force = false, char const* reason = nullptr);
 
     void register_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id);

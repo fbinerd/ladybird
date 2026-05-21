@@ -147,6 +147,16 @@ static bool mundo_is_hls_mime_type(MimeSniff::MimeType const& mime_type)
     return mime_type.essence().is_one_of("application/vnd.apple.mpegurl"sv, "application/x-mpegurl"sv, "audio/mpegurl"sv, "audio/x-mpegurl"sv);
 }
 
+static bool mundo_is_hls_url(String const& url)
+{
+    return url.contains("/hls/"sv) || url.contains(".m3u8"sv);
+}
+
+static bool mundo_is_vr_hls_url(String const& url)
+{
+    return mundo_is_hls_url(url) && url.contains("_vr/"sv);
+}
+
 static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& current_src, u64 offset, ByteBuffer const& media_data)
 {
     if (offset != 0 || !current_src.contains(".m3u8"sv))
@@ -843,6 +853,24 @@ GC::Ref<WebIDL::Promise> HTMLMediaElement::play()
             static_cast<void const*>(this), to_underlying(m_error->code()), m_error->message(), m_current_src);
         auto exception = WebIDL::NotSupportedError::create(realm, Utf16String::from_utf8(m_error->message()));
         return WebIDL::create_rejected_promise_from_exception(realm, exception);
+    }
+
+    if (mundo_is_hls_url(m_current_src)
+        && !mundo_is_vr_hls_url(m_current_src)
+        && effective_media_volume() <= 0.0
+        && document().page().has_active_vr_hls_playback_excluding(*this)) {
+        static size_t s_mundo_auxiliary_hls_suppressed_play_count { 0 };
+        ++s_mundo_auxiliary_hls_suppressed_play_count;
+        if (s_mundo_auxiliary_hls_suppressed_play_count <= 24 || s_mundo_auxiliary_hls_suppressed_play_count % 120 == 0) {
+            dbgln("MUNDO_MEDIA_ELEMENT element={} play() suppressed count={} reason=vr_hls_active_auxiliary current_time={} ready_state={} volume={} src={}",
+                static_cast<void const*>(this),
+                s_mundo_auxiliary_hls_suppressed_play_count,
+                m_current_playback_position,
+                to_underlying(m_ready_state),
+                effective_media_volume(),
+                m_current_src);
+        }
+        return WebIDL::create_resolved_promise(realm, JS::js_undefined());
     }
 
     // 3. Let promise be a new promise and append promise to the list of pending play promises.
