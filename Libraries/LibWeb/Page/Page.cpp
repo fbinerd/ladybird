@@ -31,6 +31,7 @@
 #include <LibWeb/Selection/Selection.h>
 
 #include <stdlib.h>
+#include <string.h>
 
 namespace Web {
 
@@ -85,6 +86,28 @@ static AK::Duration media_forced_video_sink_update_min_interval()
         return AK::Duration::from_milliseconds(value);
     }();
     return interval;
+}
+
+static bool pause_auxiliary_hls_when_vr_active()
+{
+    static auto enabled = [] {
+        auto const* raw_value = getenv("MUNDO_PAUSE_AUX_HLS_WHEN_VR_ACTIVE");
+        if (!raw_value)
+            return true;
+
+        return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+    }();
+    return enabled;
+}
+
+static bool is_mundo_hls_url(String const& url)
+{
+    return url.contains("/hls/"sv) || url.contains(".m3u8"sv);
+}
+
+static bool is_mundo_vr_hls_url(String const& url)
+{
+    return is_mundo_hls_url(url) && url.contains("_vr/"sv);
 }
 
 GC::Ref<Page> Page::create(JS::VM& vm, GC::Ref<PageClient> page_client)
@@ -693,7 +716,34 @@ void Page::update_all_media_element_video_sinks(bool force, char const* reason)
     m_last_media_video_sink_actual_update_time = now;
     m_skipped_media_video_sink_update_count = 0;
 
+    bool has_active_vr_hls = false;
+    if (pause_auxiliary_hls_when_vr_active()) {
+        for_each_media_element([&](auto& media_element) {
+            if (!has_active_vr_hls && media_element.potentially_playing() && is_mundo_vr_hls_url(media_element.current_src()))
+                has_active_vr_hls = true;
+        });
+    }
+
     for_each_media_element([&](auto& media_element) {
+        if (has_active_vr_hls
+            && media_element.potentially_playing()
+            && is_mundo_hls_url(media_element.current_src())
+            && !is_mundo_vr_hls_url(media_element.current_src())
+            && media_element.effective_media_volume() <= 0.0) {
+            static size_t s_mundo_auxiliary_hls_pause_count { 0 };
+            ++s_mundo_auxiliary_hls_pause_count;
+            if (s_mundo_auxiliary_hls_pause_count <= 24 || s_mundo_auxiliary_hls_pause_count % 120 == 0) {
+                dbgln("MUNDO_MEDIA_PAGE auxiliary_hls_paused count={} reason=vr_hls_active element={} current_time={} ready_state={} src={}",
+                    s_mundo_auxiliary_hls_pause_count,
+                    static_cast<void const*>(&media_element),
+                    media_element.current_playback_position(),
+                    to_underlying(media_element.ready_state()),
+                    media_element.current_src());
+            }
+            media_element.pause();
+            return;
+        }
+
         media_element.update_video_frame_and_timeline();
     });
 
