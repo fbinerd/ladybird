@@ -71,6 +71,22 @@ static AK::Duration media_video_sink_update_gap_log_threshold()
     return threshold;
 }
 
+static AK::Duration media_forced_video_sink_update_min_interval()
+{
+    static auto interval = [] {
+        auto const* raw_value = getenv("MUNDO_MEDIA_FORCED_VIDEO_UPDATE_MIN_MS");
+        if (!raw_value)
+            return AK::Duration::from_milliseconds(16);
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return AK::Duration::zero();
+
+        return AK::Duration::from_milliseconds(value);
+    }();
+    return interval;
+}
+
 GC::Ref<Page> Page::create(JS::VM& vm, GC::Ref<PageClient> page_client)
 {
     return vm.heap().allocate<Page>(page_client);
@@ -612,6 +628,23 @@ void Page::update_all_media_element_video_sinks(bool force, char const* reason)
 
     auto const interval = media_video_sink_update_interval();
     auto const now = MonotonicTime::now_coarse();
+    if (force && m_last_media_video_sink_actual_update_time.has_value()) {
+        auto const forced_min_interval = media_forced_video_sink_update_min_interval();
+        auto const elapsed = now - *m_last_media_video_sink_actual_update_time;
+        if (!forced_min_interval.is_zero() && elapsed < forced_min_interval) {
+            static size_t s_mundo_forced_media_sink_update_skip_count { 0 };
+            ++s_mundo_forced_media_sink_update_skip_count;
+            if (s_mundo_forced_media_sink_update_skip_count <= 48 || s_mundo_forced_media_sink_update_skip_count % 240 == 0) {
+                dbgln("MUNDO_MEDIA_PAGE video_sink_update_forced_skipped count={} reason={} elapsed={}ms min_interval={}ms elements={}",
+                    s_mundo_forced_media_sink_update_skip_count,
+                    reason ? reason : "unknown",
+                    elapsed.to_milliseconds(),
+                    forced_min_interval.to_milliseconds(),
+                    m_media_elements.size());
+            }
+            return;
+        }
+    }
     if (!force && !interval.is_zero() && m_last_media_video_sink_update_time.has_value() && now - *m_last_media_video_sink_update_time < interval) {
         ++m_skipped_media_video_sink_update_count;
         ++m_total_skipped_media_video_sink_update_count;
