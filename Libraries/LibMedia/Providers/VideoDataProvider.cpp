@@ -28,7 +28,7 @@ static size_t video_frame_queue_size(Track const& track)
     auto pixel_count = static_cast<size_t>(track.video_data().pixel_width) * static_cast<size_t>(track.video_data().pixel_height);
     if (!raw_value) {
         if (pixel_count >= 1920 * 1080)
-            return static_cast<size_t>(120);
+            return static_cast<size_t>(60);
         return static_cast<size_t>(8);
     }
 
