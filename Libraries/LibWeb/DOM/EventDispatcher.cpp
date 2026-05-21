@@ -29,6 +29,7 @@
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
+#include <LibWeb/Page/Page.h>
 #include <LibWeb/UIEvents/MouseEvent.h>
 #include <LibWeb/WebIDL/AbstractOperations.h>
 
@@ -50,6 +51,18 @@ static AK::Duration mundo_event_listener_log_threshold()
         return AK::Duration::from_milliseconds(value);
     }();
     return threshold;
+}
+
+static bool mundo_media_service_after_long_event_listener_enabled()
+{
+    static auto enabled = [] {
+        auto const* raw_value = getenv("MUNDO_MEDIA_SERVICE_AFTER_LONG_EVENT_LISTENER");
+        if (!raw_value)
+            return true;
+
+        return atoi(raw_value) != 0;
+    }();
+    return enabled;
 }
 
 static HashMap<void const*, ByteString>& mundo_event_listener_registration_stacks()
@@ -138,7 +151,8 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<GC::Root<DOM::DOMEventLi
         auto result = WebIDL::call_user_object_operation(callback, "handleEvent"_utf16_fly_string, this_value, { { wrapped_event } });
         auto const mundo_listener_duration = MonotonicTime::now() - mundo_listener_started_at;
         auto const mundo_threshold = mundo_event_listener_log_threshold();
-        if (mundo_listener_duration >= mundo_threshold) {
+        auto const mundo_listener_was_long = mundo_listener_duration >= mundo_threshold;
+        if (mundo_listener_was_long) {
             static size_t s_mundo_event_listener_log_count { 0 };
             ++s_mundo_event_listener_log_count;
             if (s_mundo_event_listener_log_count <= 160 || s_mundo_event_listener_log_count % 240 == 0) {
@@ -186,6 +200,11 @@ bool EventDispatcher::inner_invoke(Event& event, Vector<GC::Root<DOM::DOMEventLi
                     global_url,
                     mundo_event_listener_registration_stack(callback_key));
             }
+        }
+        if (mundo_listener_was_long && mundo_media_service_after_long_event_listener_enabled() && is<HTML::Window>(global)) {
+            auto& page = as<HTML::Window>(global).page();
+            if (page.has_potentially_playing_video_media())
+                page.update_all_media_element_video_sinks(true, "after_long_event_listener");
         }
 
         // If this throws an exception, then:
