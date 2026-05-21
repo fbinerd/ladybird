@@ -122,7 +122,7 @@ static bool smooth_live_video_timestamp_gaps_enabled()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_SMOOTH_TIMESTAMP_GAPS");
     if (!raw_value)
-        return false;
+        return true;
     return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
