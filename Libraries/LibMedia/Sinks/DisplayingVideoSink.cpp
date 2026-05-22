@@ -11,14 +11,67 @@
 
 #include "DisplayingVideoSink.h"
 
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 
 namespace Media {
 
+static bool runtime_video_control_value(char const* key, char* buffer, size_t buffer_size)
+{
+    auto const* path = getenv("MUNDO_VIDEO_RUNTIME_CONTROL_FILE");
+    if (!path || !*path || buffer_size == 0)
+        return false;
+
+    FILE* file = fopen(path, "r");
+    if (!file)
+        return false;
+
+    char line[256];
+    auto key_length = strlen(key);
+    while (fgets(line, sizeof(line), file)) {
+        char* cursor = line;
+        while (*cursor == ' ' || *cursor == '\t')
+            cursor++;
+        if (*cursor == '#' || *cursor == '\n' || *cursor == '\0')
+            continue;
+        if (strncmp(cursor, key, key_length) != 0)
+            continue;
+        cursor += key_length;
+        while (*cursor == ' ' || *cursor == '\t')
+            cursor++;
+        if (*cursor != '=')
+            continue;
+        cursor++;
+        while (*cursor == ' ' || *cursor == '\t')
+            cursor++;
+        auto length = strcspn(cursor, "\r\n#");
+        while (length > 0 && (cursor[length - 1] == ' ' || cursor[length - 1] == '\t'))
+            length--;
+        if (length >= buffer_size)
+            length = buffer_size - 1;
+        memcpy(buffer, cursor, length);
+        buffer[length] = '\0';
+        fclose(file);
+        return true;
+    }
+
+    fclose(file);
+    return false;
+}
+
+static char const* runtime_or_environment_value(char const* key, char* buffer, size_t buffer_size)
+{
+    if (runtime_video_control_value(key, buffer, buffer_size))
+        return buffer;
+    return getenv(key);
+}
+
 static AK::Duration late_frame_age_threshold()
 {
-    auto const* raw_value = getenv("MUNDO_VIDEO_LATE_DROP_MS");
+    char runtime_value[64];
+    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_LATE_DROP_MS", runtime_value, sizeof(runtime_value));
     if (!raw_value)
         return AK::Duration::max();
 
@@ -31,7 +84,8 @@ static AK::Duration late_frame_age_threshold()
 
 static AK::Duration hard_late_frame_coalesce_threshold()
 {
-    auto const* raw_value = getenv("MUNDO_VIDEO_HARD_LATE_COALESCE_MS");
+    char runtime_value[64];
+    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_HARD_LATE_COALESCE_MS", runtime_value, sizeof(runtime_value));
     if (!raw_value)
         return AK::Duration::max();
 
@@ -44,7 +98,8 @@ static AK::Duration hard_late_frame_coalesce_threshold()
 
 static size_t max_consecutive_late_frame_drops()
 {
-    auto const* raw_value = getenv("MUNDO_VIDEO_MAX_LATE_DROPS");
+    char runtime_value[64];
+    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_MAX_LATE_DROPS", runtime_value, sizeof(runtime_value));
     if (!raw_value)
         return 24;
 
@@ -57,7 +112,8 @@ static size_t max_consecutive_late_frame_drops()
 
 static size_t video_sink_drain_log_threshold()
 {
-    auto const* raw_value = getenv("MUNDO_VIDEO_SINK_DRAIN_LOG_THRESHOLD");
+    char runtime_value[64];
+    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SINK_DRAIN_LOG_THRESHOLD", runtime_value, sizeof(runtime_value));
     if (!raw_value)
         return 4;
 
@@ -70,7 +126,8 @@ static size_t video_sink_drain_log_threshold()
 
 static bool present_one_frame_per_update()
 {
-    auto const* raw_value = getenv("MUNDO_VIDEO_SINK_PRESENT_ONE_PER_UPDATE");
+    char runtime_value[64];
+    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SINK_PRESENT_ONE_PER_UPDATE", runtime_value, sizeof(runtime_value));
     if (!raw_value)
         return true;
 
@@ -82,7 +139,8 @@ static bool present_one_frame_per_update()
 
 static bool coalesce_due_frames_per_update()
 {
-    auto const* raw_value = getenv("MUNDO_VIDEO_SINK_COALESCE_DUE_FRAMES");
+    char runtime_value[64];
+    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SINK_COALESCE_DUE_FRAMES", runtime_value, sizeof(runtime_value));
     if (!raw_value)
         return false;
 
@@ -94,7 +152,8 @@ static bool coalesce_due_frames_per_update()
 
 static AK::Duration cadence_gap_log_threshold()
 {
-    auto const* raw_value = getenv("MUNDO_VIDEO_CADENCE_GAP_LOG_MS");
+    char runtime_value[64];
+    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_CADENCE_GAP_LOG_MS", runtime_value, sizeof(runtime_value));
     if (!raw_value)
         return AK::Duration::from_milliseconds(120);
 
