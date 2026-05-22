@@ -164,6 +164,23 @@ static AK::Duration cadence_gap_log_threshold()
     return AK::Duration::from_milliseconds(max(value, 16));
 }
 
+static void log_runtime_user_note_if_changed()
+{
+    char note[256];
+    if (!runtime_video_control_value("MUNDO_VIDEO_USER_NOTE", note, sizeof(note)))
+        return;
+    if (note[0] == '\0')
+        return;
+
+    static char last_note[256] {};
+    if (!strcmp(note, last_note))
+        return;
+
+    memcpy(last_note, note, sizeof(last_note));
+    last_note[sizeof(last_note) - 1] = '\0';
+    dbgln("MUNDO_VIDEO_USER_NOTE {}", note);
+}
+
 ErrorOr<NonnullRefPtr<DisplayingVideoSink>> DisplayingVideoSink::try_create(NonnullRefPtr<MediaTimeProvider> const& time_provider)
 {
     return TRY(try_make_ref_counted<DisplayingVideoSink>(time_provider));
@@ -207,6 +224,7 @@ RefPtr<VideoDataProvider> DisplayingVideoSink::provider(Track const& track) cons
 
 DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
 {
+    log_runtime_user_note_if_changed();
     m_update_count++;
     if (m_provider == nullptr)
         return DisplayingVideoSinkUpdateResult::NoChange;
