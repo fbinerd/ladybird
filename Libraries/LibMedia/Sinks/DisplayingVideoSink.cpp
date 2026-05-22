@@ -233,16 +233,16 @@ void DisplayingVideoSink::log_runtime_video_snapshot(char const* note, AK::Durat
     auto size = m_current_frame.is_valid() ? m_current_frame.size() : Gfx::Size<u32> {};
 
     auto likely = "unknown"sv;
-    if (m_empty_provider_frame_count > 0 && !m_next_frame.is_valid() && !blocked)
-        likely = "provider_empty"sv;
-    else if (queue_max_size > 0 && queue_size + 1 >= queue_max_size)
+    if (queue_max_size > 0 && queue_size + 1 >= queue_max_size)
         likely = "queue_full_latency"sv;
+    else if (m_last_present_frame_age > AK::Duration::from_milliseconds(500))
+        likely = "video_late_vs_clock"sv;
+    else if (queue_max_size > 0 && queue_size < max(static_cast<size_t>(2), queue_max_size / 4) && !m_next_frame.is_valid() && !blocked)
+        likely = "provider_empty"sv;
     else if (m_last_present_frame_delta > AK::Duration::from_milliseconds(750) && m_last_present_frame_age < AK::Duration::from_milliseconds(100))
         likely = "timestamp_gap_or_webgl_delay"sv;
     else if (m_last_present_wall_delta > AK::Duration::from_milliseconds(250) && m_last_present_frame_age < AK::Duration::from_milliseconds(100))
         likely = "webgl_not_consuming_frame"sv;
-    else if (m_last_present_frame_age > AK::Duration::from_milliseconds(500))
-        likely = "video_late_vs_clock"sv;
 
     dbgln("MUNDO_VIDEO_SNAPSHOT note={} track_id={} current_time={}ms current_frame={}ms current_age={}ms next_frame={}ms next_wait={}ms queue={}/{} provider_blocked={} has_current={} has_next={} size={}x{} current_lazy={} presented={} provider_empty={} dropped_late={} coalesced={} hard_coalesced={} last_wall_delta={}ms last_media_delta={}ms last_frame_delta={}ms last_frame_age={}ms likely={}",
         note,
