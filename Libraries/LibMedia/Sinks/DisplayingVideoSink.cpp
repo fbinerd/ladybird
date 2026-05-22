@@ -208,9 +208,23 @@ void DisplayingVideoSink::verify_track(Track const& track) const
 void DisplayingVideoSink::set_provider(Track const& track, RefPtr<VideoDataProvider> const& provider)
 {
     verify_track(track);
+    auto provider_changed = m_provider != provider || !m_track.has_value() || m_track.value() != track;
     m_track = track;
     m_provider = provider;
-    dbgln("MUNDO_MEDIA_VIDEO_SINK set_provider track_id={} provider={}", track.identifier(), provider.ptr());
+    if (provider_changed) {
+        m_next_frame.clear();
+        m_current_frame.clear();
+        m_has_new_current_frame = false;
+        m_consecutive_late_frame_drop_count = 0;
+        m_last_present_wall_time.clear();
+        m_last_present_media_time.clear();
+        m_last_present_frame_time.clear();
+        m_last_present_wall_delta = AK::Duration::zero();
+        m_last_present_media_delta = AK::Duration::zero();
+        m_last_present_frame_delta = AK::Duration::zero();
+        m_last_present_frame_age = AK::Duration::zero();
+    }
+    dbgln("MUNDO_MEDIA_VIDEO_SINK set_provider track_id={} provider={} changed={}", track.identifier(), provider.ptr(), provider_changed);
     if (provider != nullptr)
         provider->start();
 }
