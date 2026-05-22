@@ -58,6 +58,8 @@ public:
     void seek(AK::Duration timestamp, SeekMode, SeekCompletionHandler&& = nullptr);
 
     bool is_blocked() const;
+    size_t queue_size() const;
+    size_t queue_max_size() const;
 
     TimeRanges buffered_time_ranges() const;
 

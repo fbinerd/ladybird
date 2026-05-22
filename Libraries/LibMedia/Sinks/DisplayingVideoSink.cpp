@@ -164,21 +164,20 @@ static AK::Duration cadence_gap_log_threshold()
     return AK::Duration::from_milliseconds(max(value, 16));
 }
 
-static void log_runtime_user_note_if_changed()
+static bool runtime_user_note_changed(char* note, size_t note_size)
 {
-    char note[256];
-    if (!runtime_video_control_value("MUNDO_VIDEO_USER_NOTE", note, sizeof(note)))
-        return;
+    if (!runtime_video_control_value("MUNDO_VIDEO_USER_NOTE", note, note_size))
+        return false;
     if (note[0] == '\0')
-        return;
+        return false;
 
     static char last_note[256] {};
     if (!strcmp(note, last_note))
-        return;
+        return false;
 
     memcpy(last_note, note, sizeof(last_note));
     last_note[sizeof(last_note) - 1] = '\0';
-    dbgln("MUNDO_VIDEO_USER_NOTE {}", note);
+    return true;
 }
 
 ErrorOr<NonnullRefPtr<DisplayingVideoSink>> DisplayingVideoSink::try_create(NonnullRefPtr<MediaTimeProvider> const& time_provider)
@@ -222,9 +221,61 @@ RefPtr<VideoDataProvider> DisplayingVideoSink::provider(Track const& track) cons
     return m_provider;
 }
 
+void DisplayingVideoSink::log_runtime_video_snapshot(char const* note, AK::Duration current_time) const
+{
+    auto current_frame_time = m_current_frame.is_valid() ? m_current_frame.timestamp() : AK::Duration::zero();
+    auto current_frame_age = m_current_frame.is_valid() && current_time > current_frame_time ? current_time - current_frame_time : AK::Duration::zero();
+    auto next_frame_time = m_next_frame.is_valid() ? m_next_frame.timestamp() : AK::Duration::zero();
+    auto next_frame_wait = m_next_frame.is_valid() && next_frame_time > current_time ? next_frame_time - current_time : AK::Duration::zero();
+    auto queue_size = m_provider ? m_provider->queue_size() : 0;
+    auto queue_max_size = m_provider ? m_provider->queue_max_size() : 0;
+    auto blocked = m_provider ? m_provider->is_blocked() : false;
+    auto size = m_current_frame.is_valid() ? m_current_frame.size() : Gfx::Size<u32> {};
+
+    auto likely = "unknown"sv;
+    if (m_empty_provider_frame_count > 0 && !m_next_frame.is_valid() && !blocked)
+        likely = "provider_empty"sv;
+    else if (queue_max_size > 0 && queue_size + 1 >= queue_max_size)
+        likely = "queue_full_latency"sv;
+    else if (m_last_present_frame_delta > AK::Duration::from_milliseconds(750) && m_last_present_frame_age < AK::Duration::from_milliseconds(100))
+        likely = "timestamp_gap_or_webgl_delay"sv;
+    else if (m_last_present_wall_delta > AK::Duration::from_milliseconds(250) && m_last_present_frame_age < AK::Duration::from_milliseconds(100))
+        likely = "webgl_not_consuming_frame"sv;
+    else if (m_last_present_frame_age > AK::Duration::from_milliseconds(500))
+        likely = "video_late_vs_clock"sv;
+
+    dbgln("MUNDO_VIDEO_SNAPSHOT note={} track_id={} current_time={}ms current_frame={}ms current_age={}ms next_frame={}ms next_wait={}ms queue={}/{} provider_blocked={} has_current={} has_next={} size={}x{} current_lazy={} presented={} provider_empty={} dropped_late={} coalesced={} hard_coalesced={} last_wall_delta={}ms last_media_delta={}ms last_frame_delta={}ms last_frame_age={}ms likely={}",
+        note,
+        m_track.has_value() ? m_track.value().identifier() : 0,
+        current_time.to_milliseconds(),
+        current_frame_time.to_milliseconds(),
+        current_frame_age.to_milliseconds(),
+        next_frame_time.to_milliseconds(),
+        next_frame_wait.to_milliseconds(),
+        queue_size,
+        queue_max_size,
+        blocked,
+        m_current_frame.is_valid(),
+        m_next_frame.is_valid(),
+        size.width(),
+        size.height(),
+        m_current_frame.has_lazy_bitmap(),
+        m_presented_frame_count,
+        m_empty_provider_frame_count,
+        m_dropped_late_frame_count,
+        m_coalesced_frame_count,
+        m_hard_late_coalesce_count,
+        m_last_present_wall_delta.to_milliseconds(),
+        m_last_present_media_delta.to_milliseconds(),
+        m_last_present_frame_delta.to_milliseconds(),
+        m_last_present_frame_age.to_milliseconds(),
+        likely);
+}
+
 DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
 {
-    log_runtime_user_note_if_changed();
+    char runtime_note[256];
+    auto note_changed = runtime_user_note_changed(runtime_note, sizeof(runtime_note));
     m_update_count++;
     if (m_provider == nullptr)
         return DisplayingVideoSinkUpdateResult::NoChange;
@@ -232,6 +283,10 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         return DisplayingVideoSinkUpdateResult::NoChange;
 
     auto current_time = m_time_provider->current_time();
+    if (note_changed) {
+        dbgln("MUNDO_VIDEO_USER_NOTE {}", runtime_note);
+        log_runtime_video_snapshot(runtime_note, current_time);
+    }
     if (m_update_count <= 8 || m_update_count % 120 == 0)
         dbgln("MUNDO_MEDIA_VIDEO_SINK update count={} track_id={} current_time={}ms has_next={} has_current={} current_lazy={}", m_update_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.is_valid(), m_current_frame.is_valid(), m_current_frame.has_lazy_bitmap());
     auto result = DisplayingVideoSinkUpdateResult::NoChange;
@@ -258,6 +313,10 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
             auto media_delta = current_time - m_last_present_media_time.value();
             auto frame_delta = presented_frame_time - m_last_present_frame_time.value();
             auto frame_age = current_time - presented_frame_time;
+            m_last_present_wall_delta = wall_delta;
+            m_last_present_media_delta = media_delta;
+            m_last_present_frame_delta = frame_delta;
+            m_last_present_frame_age = frame_age;
             auto cadence_threshold = cadence_gap_log_threshold();
             auto media_delta_threshold = AK::Duration::from_milliseconds(cadence_threshold.to_milliseconds() * 2);
             if (wall_delta > cadence_threshold || media_delta > media_delta_threshold) {

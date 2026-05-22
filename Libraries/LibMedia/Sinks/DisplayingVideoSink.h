@@ -54,6 +54,7 @@ private:
     static constexpr size_t DEFAULT_QUEUE_SIZE = 8;
 
     void verify_track(Track const&) const;
+    void log_runtime_video_snapshot(char const* note, AK::Duration current_time) const;
 
     NonnullRefPtr<MediaTimeProvider> m_time_provider;
     RefPtr<VideoDataProvider> m_provider;
@@ -71,6 +72,10 @@ private:
     size_t m_cadence_gap_log_count { 0 };
     size_t m_coalesced_frame_count { 0 };
     size_t m_hard_late_coalesce_count { 0 };
+    AK::Duration m_last_present_wall_delta { AK::Duration::zero() };
+    AK::Duration m_last_present_media_delta { AK::Duration::zero() };
+    AK::Duration m_last_present_frame_delta { AK::Duration::zero() };
+    AK::Duration m_last_present_frame_age { AK::Duration::zero() };
     Optional<MonotonicTime> m_last_present_wall_time;
     Optional<AK::Duration> m_last_present_media_time;
     Optional<AK::Duration> m_last_present_frame_time;

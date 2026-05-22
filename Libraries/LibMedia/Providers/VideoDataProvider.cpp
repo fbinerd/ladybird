@@ -412,6 +412,18 @@ bool VideoDataProvider::is_blocked() const
     return m_thread_data->is_blocked();
 }
 
+size_t VideoDataProvider::queue_size() const
+{
+    auto locker = m_thread_data->take_lock();
+    return m_thread_data->m_queue.size();
+}
+
+size_t VideoDataProvider::queue_max_size() const
+{
+    auto locker = m_thread_data->take_lock();
+    return m_thread_data->m_queue_max_size;
+}
+
 TimeRanges VideoDataProvider::buffered_time_ranges() const
 {
     return m_thread_data->buffered_time_ranges();
