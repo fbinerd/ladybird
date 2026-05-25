@@ -11,6 +11,7 @@
 #include <LibJS/Runtime/Promise.h>
 #include <LibMedia/IncrementallyPopulatedStream.h>
 #include <LibMedia/PlaybackManager.h>
+#include <LibMedia/RuntimeConfiguration.h>
 #include <LibMedia/Sinks/DisplayingVideoSink.h>
 #include <LibMedia/Track.h>
 #include <LibURL/Parser.h>
@@ -159,37 +160,38 @@ static bool mundo_is_vr_hls_url(String const& url)
 
 static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& current_src, u64 offset, ByteBuffer const& media_data)
 {
+    if (!::Media::RuntimeConfiguration::flag_enabled("MUNDO_HLS_SANITIZE_MANIFEST", false))
+        return {};
     if (offset != 0 || !current_src.contains(".m3u8"sv))
         return {};
 
     StringView manifest { media_data.bytes() };
-    if (!manifest.starts_with("#EXTM3U"sv) || !manifest.contains("pkey="sv))
+    if (!manifest.starts_with("#EXTM3U"sv))
         return {};
 
-    if (!manifest.contains(";ios"sv) && !manifest.contains("%3Bios"sv))
+    char pattern_buffer[128];
+    auto const* pattern = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_SANITIZE_MANIFEST_PATTERN", pattern_buffer, sizeof(pattern_buffer));
+    char replacement_buffer[128];
+    auto const* replacement = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_SANITIZE_MANIFEST_REPLACEMENT", replacement_buffer, sizeof(replacement_buffer));
+    if (!pattern || pattern[0] == '\0')
         return {};
 
-    auto sanitized_manifest = manifest.replace(";ios"sv, ""sv, ReplaceMode::All).replace("%3Bios"sv, ""sv, ReplaceMode::All);
+    auto sanitized_manifest = manifest.replace(StringView { pattern, strlen(pattern) }, replacement ? StringView { replacement, strlen(replacement) } : ""sv, ReplaceMode::All);
+    if (sanitized_manifest.length() == media_data.size())
+        return {};
+
     dbgln("MUNDO_MEDIA_ELEMENT sanitized_hls_manifest current_src={} original_size={} sanitized_size={}", current_src, media_data.size(), sanitized_manifest.length());
     return MUST(ByteBuffer::copy(sanitized_manifest.bytes()));
 }
 
 static bool mundo_env_flag_enabled(char const* name)
 {
-    auto const* raw_value = getenv(name);
-    if (!raw_value)
-        return false;
-
-    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+    return ::Media::RuntimeConfiguration::flag_enabled(name, false);
 }
 
 static bool mundo_env_flag_disabled(char const* name)
 {
-    auto const* raw_value = getenv(name);
-    if (!raw_value)
-        return false;
-
-    return !strcmp(raw_value, "0") || !strcmp(raw_value, "false") || !strcmp(raw_value, "no") || !strcmp(raw_value, "off");
+    return ::Media::RuntimeConfiguration::flag_disabled(name);
 }
 
 static bool mundo_nvdec_backend_requested()
@@ -213,7 +215,9 @@ static bool mundo_should_prefer_hevc_hls_source()
 
 static Optional<String> mundo_normalized_hls_source(StringView source)
 {
-    if (!source.contains("edge-hls.doppiocdn.org/hls/"sv))
+    if (!::Media::RuntimeConfiguration::flag_enabled("MUNDO_HLS_VARIANT_REWRITE", false))
+        return {};
+    if (!source.contains(".m3u8"sv))
         return {};
 
     auto query_offset = source.find('?');
@@ -221,9 +225,10 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
     auto query = query_offset.has_value() ? source.substring_view(*query_offset) : ""sv;
 
     Optional<StringView> normalized_path_base;
+    char target_quality_buffer[64];
     char const* target_quality = nullptr;
     if (path.contains("_vr/master/"sv)) {
-        target_quality = getenv("MUNDO_HLS_MAX_VR_QUALITY");
+        target_quality = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_MAX_VR_QUALITY", target_quality_buffer, sizeof(target_quality_buffer));
         if (target_quality && (!strcmp(target_quality, "0") || !strcmp(target_quality, "false") || !strcmp(target_quality, "no") || !strcmp(target_quality, "off") || !strcmp(target_quality, "source") || !strcmp(target_quality, "original")))
             return {};
         if ((!target_quality || target_quality[0] == '\0') && mundo_should_prefer_hevc_hls_source()) {
@@ -254,7 +259,7 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
             normalized_path_base = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
         }
     } else {
-        target_quality = getenv("MUNDO_HLS_AUX_QUALITY");
+        target_quality = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_AUX_QUALITY", target_quality_buffer, sizeof(target_quality_buffer));
         if (target_quality && (!strcmp(target_quality, "0") || !strcmp(target_quality, "false") || !strcmp(target_quality, "no") || !strcmp(target_quality, "off") || !strcmp(target_quality, "source") || !strcmp(target_quality, "original")))
             return {};
         if (!target_quality || target_quality[0] == '\0')

@@ -9,6 +9,7 @@
 #include <AK/SourceLocation.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
+#include <LibMedia/RuntimeConfiguration.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/Clipboard/SystemClipboard.h>
@@ -90,26 +91,12 @@ static AK::Duration media_forced_video_sink_update_min_interval()
 
 static bool pause_auxiliary_hls_when_vr_active()
 {
-    static auto enabled = [] {
-        auto const* raw_value = getenv("MUNDO_PAUSE_AUX_HLS_WHEN_VR_ACTIVE");
-        if (!raw_value)
-            return true;
-
-        return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
-    }();
-    return enabled;
+    return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_PAUSE_AUX_HLS_WHEN_VR_ACTIVE", false);
 }
 
 static bool suppress_auxiliary_hls_play_when_vr_active()
 {
-    static auto enabled = [] {
-        auto const* raw_value = getenv("MUNDO_SUPPRESS_AUX_HLS_PLAY_WHEN_VR_ACTIVE");
-        if (!raw_value)
-            return true;
-
-        return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
-    }();
-    return enabled;
+    return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_SUPPRESS_AUX_HLS_PLAY_WHEN_VR_ACTIVE", false);
 }
 
 static bool is_mundo_hls_url(String const& url)

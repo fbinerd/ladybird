@@ -11,6 +11,7 @@
 #include <LibMedia/Demuxer.h>
 #include <LibMedia/FFmpeg/FFmpegVideoDecoder.h>
 #include <LibMedia/Providers/MediaTimeProvider.h>
+#include <LibMedia/RuntimeConfiguration.h>
 #include <LibMedia/Sinks/VideoSink.h>
 #include <LibMedia/VideoDecoder.h>
 #include <LibMedia/VideoFrame.h>
@@ -18,66 +19,14 @@
 
 #include "VideoDataProvider.h"
 
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 namespace Media {
-
-static bool runtime_video_control_value(char const* key, char* buffer, size_t buffer_size)
-{
-    auto const* path = getenv("MUNDO_VIDEO_RUNTIME_CONTROL_FILE");
-    if (!path || !*path || buffer_size == 0)
-        return false;
-
-    FILE* file = fopen(path, "r");
-    if (!file)
-        return false;
-
-    char line[256];
-    auto key_length = strlen(key);
-    while (fgets(line, sizeof(line), file)) {
-        char* cursor = line;
-        while (*cursor == ' ' || *cursor == '\t')
-            cursor++;
-        if (*cursor == '#' || *cursor == '\n' || *cursor == '\0')
-            continue;
-        if (strncmp(cursor, key, key_length) != 0)
-            continue;
-        cursor += key_length;
-        while (*cursor == ' ' || *cursor == '\t')
-            cursor++;
-        if (*cursor != '=')
-            continue;
-        cursor++;
-        while (*cursor == ' ' || *cursor == '\t')
-            cursor++;
-        auto length = strcspn(cursor, "\r\n#");
-        while (length > 0 && (cursor[length - 1] == ' ' || cursor[length - 1] == '\t'))
-            length--;
-        if (length >= buffer_size)
-            length = buffer_size - 1;
-        memcpy(buffer, cursor, length);
-        buffer[length] = '\0';
-        fclose(file);
-        return true;
-    }
-
-    fclose(file);
-    return false;
-}
-
-static char const* runtime_or_environment_value(char const* key, char* buffer, size_t buffer_size)
-{
-    if (runtime_video_control_value(key, buffer, buffer_size))
-        return buffer;
-    return getenv(key);
-}
 
 static size_t video_frame_queue_size(Track const& track)
 {
     char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_FRAME_QUEUE_SIZE", runtime_value, sizeof(runtime_value));
+    auto const* raw_value = RuntimeConfiguration::value_or_environment("MUNDO_VIDEO_FRAME_QUEUE_SIZE", runtime_value, sizeof(runtime_value));
     auto pixel_count = static_cast<size_t>(track.video_data().pixel_width) * static_cast<size_t>(track.video_data().pixel_height);
     if (!raw_value) {
         if (pixel_count >= 1920 * 1080)
@@ -95,175 +44,118 @@ static size_t video_frame_queue_size(Track const& track)
     return clamp(static_cast<size_t>(value), static_cast<size_t>(1), VideoDataProvider::QUEUE_CAPACITY);
 }
 
+static bool adaptive_video_frame_queue_enabled()
+{
+    return RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_ADAPTIVE_QUEUE", true);
+}
+
+static int adaptive_video_queue_target_latency_ms()
+{
+    return RuntimeConfiguration::integer("MUNDO_VIDEO_ADAPTIVE_TARGET_LATENCY_MS", 1500, 250, 5000);
+}
+
+static size_t adaptive_video_queue_min_frames()
+{
+    return static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_ADAPTIVE_MIN_FRAMES", 24, 1, VideoDataProvider::QUEUE_CAPACITY));
+}
+
+static size_t adaptive_video_queue_max_frames()
+{
+    return static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_ADAPTIVE_MAX_FRAMES", 60, 1, VideoDataProvider::QUEUE_CAPACITY));
+}
+
+static size_t video_frame_queue_size_for_duration(Track const& track, AK::Duration frame_duration)
+{
+    auto fixed_queue_size = video_frame_queue_size(track);
+    auto pixel_count = static_cast<size_t>(track.video_data().pixel_width) * static_cast<size_t>(track.video_data().pixel_height);
+    if (!adaptive_video_frame_queue_enabled() || pixel_count < 1920 * 1080)
+        return fixed_queue_size;
+
+    auto frame_duration_ms = frame_duration.to_milliseconds();
+    if (frame_duration_ms <= 0)
+        return fixed_queue_size;
+
+    auto min_frames = adaptive_video_queue_min_frames();
+    auto max_frames = adaptive_video_queue_max_frames();
+    if (min_frames > max_frames) {
+        auto old_min_frames = min_frames;
+        min_frames = max_frames;
+        max_frames = old_min_frames;
+    }
+
+    auto target_latency_ms = adaptive_video_queue_target_latency_ms();
+    auto frames_for_target = static_cast<size_t>((target_latency_ms + frame_duration_ms - 1) / frame_duration_ms);
+    return clamp(frames_for_target, min_frames, max_frames);
+}
+
 static bool low_latency_video_queue_enabled()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_LOW_LATENCY_QUEUE", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return true;
-    return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+    return RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_LOW_LATENCY_QUEUE", true);
 }
 
 static AK::Duration stale_decoded_frame_drop_threshold()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_PROVIDER_STALE_DROP_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::max();
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
+    return RuntimeConfiguration::duration_ms("MUNDO_VIDEO_PROVIDER_STALE_DROP_MS", AK::Duration::max(), 16);
 }
 
 static bool stale_live_video_rebase_enabled()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_REBASE_STALE_LIVE", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return false;
-    return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+    return RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_REBASE_STALE_LIVE", false);
 }
 
 static bool stale_live_video_recovery_enabled()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_RECOVER_STALE_LIVE", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return false;
-    return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+    return RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_RECOVER_STALE_LIVE", false);
 }
 
 static size_t stale_live_video_recovery_drop_count()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_RECOVER_STALE_DROP_COUNT", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return 8;
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return 1;
-
-    return static_cast<size_t>(value);
+    return static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_RECOVER_STALE_DROP_COUNT", 8, 1, 1000000));
 }
 
 static AK::Duration stale_live_video_recovery_age()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_RECOVER_STALE_AGE_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::from_milliseconds(3000);
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
+    return RuntimeConfiguration::duration_ms("MUNDO_VIDEO_RECOVER_STALE_AGE_MS", AK::Duration::from_milliseconds(3000), 16);
 }
 
 static AK::Duration stale_live_video_recovery_latency()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_RECOVER_STALE_LATENCY_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::from_milliseconds(80);
-
-    auto value = atoi(raw_value);
-    if (value < 0)
-        return AK::Duration::zero();
-
-    return AK::Duration::from_milliseconds(value);
+    return AK::Duration::from_milliseconds(RuntimeConfiguration::integer("MUNDO_VIDEO_RECOVER_STALE_LATENCY_MS", 80, 0, 1000000));
 }
 
 static bool smooth_live_video_timestamp_gaps_enabled()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SMOOTH_TIMESTAMP_GAPS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return false;
-    return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+    return RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_SMOOTH_TIMESTAMP_GAPS", false);
 }
 
 static AK::Duration live_video_timestamp_gap_threshold()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_TIMESTAMP_GAP_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::from_milliseconds(250);
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
+    return RuntimeConfiguration::duration_ms("MUNDO_VIDEO_TIMESTAMP_GAP_MS", AK::Duration::from_milliseconds(250), 16);
 }
 
 static AK::Duration live_video_timestamp_gap_smooth_step()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_TIMESTAMP_SMOOTH_STEP_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::max();
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
+    return RuntimeConfiguration::duration_ms("MUNDO_VIDEO_TIMESTAMP_SMOOTH_STEP_MS", AK::Duration::max(), 16);
 }
 
 static bool bridge_live_video_segment_gaps_enabled()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_BRIDGE_SEGMENT_GAPS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return true;
-    return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+    return RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_BRIDGE_SEGMENT_GAPS", true);
 }
 
 static AK::Duration live_video_segment_gap_min()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SEGMENT_GAP_MIN_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::from_milliseconds(750);
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
+    return RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SEGMENT_GAP_MIN_MS", AK::Duration::from_milliseconds(750), 16);
 }
 
 static AK::Duration live_video_segment_gap_max()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SEGMENT_GAP_MAX_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::from_milliseconds(4500);
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
+    return RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SEGMENT_GAP_MAX_MS", AK::Duration::from_milliseconds(4500), 16);
 }
 
 static AK::Duration live_video_segment_frame_max_delta()
 {
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SEGMENT_FRAME_MAX_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::from_milliseconds(50);
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
+    return RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SEGMENT_FRAME_MAX_MS", AK::Duration::from_milliseconds(50), 16);
 }
 
 DecoderErrorOr<NonnullRefPtr<VideoDataProvider>> VideoDataProvider::try_create(NonnullRefPtr<Core::WeakEventLoopReference> const& main_thread_event_loop, NonnullRefPtr<Demuxer> const& demuxer, Track const& track, RefPtr<MediaTimeProvider> const& time_provider)
@@ -396,7 +288,7 @@ VideoDataProvider::ThreadData::ThreadData(NonnullRefPtr<Core::WeakEventLoopRefer
     , m_time_provider(time_provider)
 {
     m_queue_max_size = video_frame_queue_size(m_track);
-    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER frame_queue track_id={} capacity={} max_size={}", m_track.identifier(), QUEUE_CAPACITY, m_queue_max_size);
+    dbgln("MUNDO_MEDIA_VIDEO_PROVIDER frame_queue track_id={} capacity={} max_size={} adaptive={}", m_track.identifier(), QUEUE_CAPACITY, m_queue_max_size, adaptive_video_frame_queue_enabled());
 }
 
 DecoderErrorOr<void> VideoDataProvider::ThreadData::create_decoder()
@@ -1080,9 +972,16 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
                 auto locker = take_lock();
                 return m_queue.size();
             }();
-            auto runtime_queue_max_size = video_frame_queue_size(m_track);
+            auto runtime_queue_max_size = video_frame_queue_size_for_duration(m_track, frame->duration());
             if (runtime_queue_max_size != m_queue_max_size) {
-                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER runtime_queue_size_changed track_id={} old={} new={} queue_size={}", m_track.identifier(), m_queue_max_size, runtime_queue_max_size, queue_size);
+                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER runtime_queue_size_changed track_id={} old={} new={} queue_size={} adaptive={} frame_duration={}ms target_latency={}ms",
+                    m_track.identifier(),
+                    m_queue_max_size,
+                    runtime_queue_max_size,
+                    queue_size,
+                    adaptive_video_frame_queue_enabled(),
+                    frame->duration().to_milliseconds(),
+                    adaptive_video_queue_target_latency_ms());
                 m_queue_max_size = runtime_queue_max_size;
             }
 

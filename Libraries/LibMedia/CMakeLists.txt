@@ -8,6 +8,7 @@ set(SOURCES
     Containers/Matroska/Reader.cpp
     IncrementallyPopulatedStream.cpp
     PlaybackManager.cpp
+    RuntimeConfiguration.cpp
     PlaybackStates/StartingStateHandler.cpp
     PlaybackStates/PausedStateHandler.cpp
     PlaybackStates/PlaybackStateHandler.cpp
@@ -17,6 +18,7 @@ set(SOURCES
     Providers/VideoDataProvider.cpp
     Sinks/AudioMixingSink.cpp
     Sinks/DisplayingVideoSink.cpp
+    Sinks/VideoFrameScheduler.cpp
     TimedImage.cpp
     TimeRanges.cpp
     VideoFrame.cpp

@@ -72,6 +72,7 @@ private:
     size_t m_cadence_gap_log_count { 0 };
     size_t m_coalesced_frame_count { 0 };
     size_t m_hard_late_coalesce_count { 0 };
+    size_t m_gradual_catch_up_count { 0 };
     AK::Duration m_last_present_wall_delta { AK::Duration::zero() };
     AK::Duration m_last_present_media_delta { AK::Duration::zero() };
     AK::Duration m_last_present_frame_delta { AK::Duration::zero() };

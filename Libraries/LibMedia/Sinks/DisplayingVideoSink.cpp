@@ -8,165 +8,18 @@
 #include <LibMedia/Demuxer.h>
 #include <LibMedia/Providers/MediaTimeProvider.h>
 #include <LibMedia/Providers/VideoDataProvider.h>
+#include <LibMedia/RuntimeConfiguration.h>
+#include <LibMedia/Sinks/VideoFrameScheduler.h>
 
 #include "DisplayingVideoSink.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 namespace Media {
 
-static bool runtime_video_control_value(char const* key, char* buffer, size_t buffer_size)
-{
-    auto const* path = getenv("MUNDO_VIDEO_RUNTIME_CONTROL_FILE");
-    if (!path || !*path || buffer_size == 0)
-        return false;
-
-    FILE* file = fopen(path, "r");
-    if (!file)
-        return false;
-
-    char line[256];
-    auto key_length = strlen(key);
-    while (fgets(line, sizeof(line), file)) {
-        char* cursor = line;
-        while (*cursor == ' ' || *cursor == '\t')
-            cursor++;
-        if (*cursor == '#' || *cursor == '\n' || *cursor == '\0')
-            continue;
-        if (strncmp(cursor, key, key_length) != 0)
-            continue;
-        cursor += key_length;
-        while (*cursor == ' ' || *cursor == '\t')
-            cursor++;
-        if (*cursor != '=')
-            continue;
-        cursor++;
-        while (*cursor == ' ' || *cursor == '\t')
-            cursor++;
-        auto length = strcspn(cursor, "\r\n#");
-        while (length > 0 && (cursor[length - 1] == ' ' || cursor[length - 1] == '\t'))
-            length--;
-        if (length >= buffer_size)
-            length = buffer_size - 1;
-        memcpy(buffer, cursor, length);
-        buffer[length] = '\0';
-        fclose(file);
-        return true;
-    }
-
-    fclose(file);
-    return false;
-}
-
-static char const* runtime_or_environment_value(char const* key, char* buffer, size_t buffer_size)
-{
-    if (runtime_video_control_value(key, buffer, buffer_size))
-        return buffer;
-    return getenv(key);
-}
-
-static AK::Duration late_frame_age_threshold()
-{
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_LATE_DROP_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::max();
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
-}
-
-static AK::Duration hard_late_frame_coalesce_threshold()
-{
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_HARD_LATE_COALESCE_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::max();
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
-}
-
-static size_t max_consecutive_late_frame_drops()
-{
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_MAX_LATE_DROPS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return 24;
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return 0;
-
-    return static_cast<size_t>(value);
-}
-
-static size_t video_sink_drain_log_threshold()
-{
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SINK_DRAIN_LOG_THRESHOLD", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return 4;
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return 0;
-
-    return static_cast<size_t>(value);
-}
-
-static bool present_one_frame_per_update()
-{
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SINK_PRESENT_ONE_PER_UPDATE", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return true;
-
-    return strcasecmp(raw_value, "0") != 0
-        && strcasecmp(raw_value, "false") != 0
-        && strcasecmp(raw_value, "no") != 0
-        && strcasecmp(raw_value, "off") != 0;
-}
-
-static bool coalesce_due_frames_per_update()
-{
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_SINK_COALESCE_DUE_FRAMES", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return false;
-
-    return strcasecmp(raw_value, "0") != 0
-        && strcasecmp(raw_value, "false") != 0
-        && strcasecmp(raw_value, "no") != 0
-        && strcasecmp(raw_value, "off") != 0;
-}
-
-static AK::Duration cadence_gap_log_threshold()
-{
-    char runtime_value[64];
-    auto const* raw_value = runtime_or_environment_value("MUNDO_VIDEO_CADENCE_GAP_LOG_MS", runtime_value, sizeof(runtime_value));
-    if (!raw_value)
-        return AK::Duration::from_milliseconds(120);
-
-    auto value = atoi(raw_value);
-    if (value <= 0)
-        return AK::Duration::max();
-
-    return AK::Duration::from_milliseconds(max(value, 16));
-}
-
 static bool runtime_user_note_changed(char* note, size_t note_size)
 {
-    if (!runtime_video_control_value("MUNDO_VIDEO_USER_NOTE", note, note_size))
+    if (!RuntimeConfiguration::value("MUNDO_VIDEO_USER_NOTE", note, note_size))
         return false;
     if (note[0] == '\0')
         return false;
@@ -304,6 +157,8 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
     if (m_update_count <= 8 || m_update_count % 120 == 0)
         dbgln("MUNDO_MEDIA_VIDEO_SINK update count={} track_id={} current_time={}ms has_next={} has_current={} current_lazy={}", m_update_count, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.is_valid(), m_current_frame.is_valid(), m_current_frame.has_lazy_bitmap());
     auto result = DisplayingVideoSinkUpdateResult::NoChange;
+    auto scheduler = VideoFrameScheduler::from_runtime();
+    auto const& scheduler_config = scheduler.config();
     size_t retrieved_this_update = 0;
     size_t presented_this_update = 0;
     size_t dropped_late_this_update = 0;
@@ -331,7 +186,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
             m_last_present_media_delta = media_delta;
             m_last_present_frame_delta = frame_delta;
             m_last_present_frame_age = frame_age;
-            auto cadence_threshold = cadence_gap_log_threshold();
+            auto cadence_threshold = scheduler_config.cadence_gap_log_threshold;
             auto media_delta_threshold = AK::Duration::from_milliseconds(cadence_threshold.to_milliseconds() * 2);
             if (wall_delta > cadence_threshold || media_delta > media_delta_threshold) {
                 m_cadence_gap_log_count++;
@@ -379,10 +234,10 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
             break;
 
         auto frame_age = current_time - m_next_frame.timestamp();
-        auto late_frame_threshold = late_frame_age_threshold();
-        auto late_frame_drop_limit = max_consecutive_late_frame_drops();
-        auto hard_late_threshold = hard_late_frame_coalesce_threshold();
-        if (m_current_frame.is_valid() && frame_age > hard_late_threshold) {
+        auto late_frame_threshold = scheduler_config.late_frame_age_threshold;
+        auto late_frame_drop_limit = scheduler_config.max_consecutive_late_frame_drops;
+        auto hard_late_threshold = scheduler_config.hard_late_frame_coalesce_threshold;
+        if (scheduler.should_hard_coalesce_late_frame(m_current_frame.is_valid(), frame_age)) {
             TimedImage newest_due_frame;
             size_t hard_coalesced_frames = 0;
             auto oldest_late_frame_time = m_next_frame.timestamp();
@@ -427,7 +282,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         }
 
         if (m_current_frame.is_valid() && frame_age > late_frame_threshold) {
-            if (late_frame_drop_limit > 0 && m_consecutive_late_frame_drop_count >= late_frame_drop_limit) {
+            if (scheduler.should_report_late_drop_limit(m_consecutive_late_frame_drop_count)) {
                 m_late_drop_limit_hit_count++;
                 if (m_late_drop_limit_hit_count <= 16 || m_late_drop_limit_hit_count % 60 == 0)
                     dbgln("MUNDO_MEDIA_VIDEO_SINK late_drop_limit_hit count={} limit={} track_id={} current_time={}ms frame_time={}ms age={}ms action=coalesce_late_frame", m_late_drop_limit_hit_count, late_frame_drop_limit, m_track.has_value() ? m_track.value().identifier() : 0, current_time.to_milliseconds(), m_next_frame.timestamp().to_milliseconds(), frame_age.to_milliseconds());
@@ -446,7 +301,68 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
             }
         }
 
-        if (present_one_frame_per_update() && coalesce_due_frames_per_update()) {
+        if (m_current_frame.is_valid()) {
+            auto queue_size = m_provider->queue_size();
+            auto queue_max_size = m_provider->queue_max_size();
+            auto fullness_percent = scheduler_config.gradual_catch_up_fullness_percent;
+            if (scheduler.should_try_gradual_catch_up(m_current_frame.is_valid(), frame_age, queue_size, queue_max_size)) {
+                TimedImage catch_up_frame = move(m_next_frame);
+                size_t retrieved_for_catch_up = 0;
+                size_t coalesced_for_catch_up = 0;
+                auto oldest_frame_time = catch_up_frame.timestamp();
+                auto oldest_frame_age = current_time - oldest_frame_time;
+                auto max_frames = scheduler_config.gradual_catch_up_max_frames;
+
+                for (size_t frame_index = 1; frame_index < max_frames; ++frame_index) {
+                    m_next_frame = m_provider->retrieve_frame();
+                    if (!m_next_frame.is_valid()) {
+                        saw_provider_empty_this_update = true;
+                        m_empty_provider_frame_count++;
+                        if (m_empty_provider_frame_count <= 8 || m_empty_provider_frame_count % 120 == 0)
+                            dbgln("MUNDO_MEDIA_VIDEO_SINK provider_empty count={} track_id={} blocked={}", m_empty_provider_frame_count, m_track.has_value() ? m_track.value().identifier() : 0, m_provider->is_blocked());
+                        if (m_provider->is_blocked() && m_on_start_buffering)
+                            m_on_start_buffering();
+                        break;
+                    }
+                    retrieved_this_update++;
+                    retrieved_for_catch_up++;
+
+                    if (m_next_frame.timestamp() > current_time)
+                        break;
+
+                    catch_up_frame = move(m_next_frame);
+                    coalesced_for_catch_up++;
+                }
+
+                if (coalesced_for_catch_up > 0) {
+                    m_gradual_catch_up_count++;
+                    coalesced_this_update += coalesced_for_catch_up;
+                    if (m_gradual_catch_up_count <= 24 || m_gradual_catch_up_count % 60 == 0)
+                        dbgln("MUNDO_MEDIA_VIDEO_SINK gradual_catch_up count={} track_id={} current_time={}ms oldest_frame={}ms oldest_age={}ms presented_frame={}ms presented_age={}ms threshold={}ms coalesced={} retrieved={} queue={}/{} fullness={} max_frames={} provider_empty={} has_next={}",
+                            m_gradual_catch_up_count,
+                            m_track.has_value() ? m_track.value().identifier() : 0,
+                            current_time.to_milliseconds(),
+                            oldest_frame_time.to_milliseconds(),
+                            oldest_frame_age.to_milliseconds(),
+                            catch_up_frame.timestamp().to_milliseconds(),
+                            (current_time - catch_up_frame.timestamp()).to_milliseconds(),
+                            scheduler_config.gradual_catch_up_age_threshold.to_milliseconds(),
+                            coalesced_for_catch_up,
+                            retrieved_for_catch_up,
+                            queue_size,
+                            queue_max_size,
+                            fullness_percent,
+                            max_frames,
+                            saw_provider_empty_this_update,
+                            m_next_frame.is_valid());
+                }
+
+                present_frame(move(catch_up_frame));
+                break;
+            }
+        }
+
+        if (scheduler_config.present_one_frame_per_update && scheduler_config.coalesce_due_frames_per_update) {
             if (latest_presentable_frame.is_valid())
                 coalesced_this_update++;
             latest_presentable_frame = move(m_next_frame);
@@ -454,7 +370,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
         }
 
         present_frame(move(m_next_frame));
-        if (present_one_frame_per_update())
+        if (scheduler_config.present_one_frame_per_update)
             break;
     }
     if (latest_presentable_frame.is_valid())
@@ -471,7 +387,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                 saw_provider_empty_this_update,
                 m_next_frame.is_valid());
     }
-    auto drain_log_threshold = video_sink_drain_log_threshold();
+    auto drain_log_threshold = scheduler_config.drain_log_threshold;
     if (drain_log_threshold > 0 && (retrieved_this_update >= drain_log_threshold || dropped_late_this_update > 0 || (saw_provider_empty_this_update && retrieved_this_update > 0))) {
         m_drain_log_count++;
         if (m_drain_log_count <= 16 || m_drain_log_count % 60 == 0)
