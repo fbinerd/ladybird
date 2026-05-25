@@ -76,6 +76,9 @@ void DisplayingVideoSink::set_provider(Track const& track, RefPtr<VideoDataProvi
         m_last_present_media_delta = AK::Duration::zero();
         m_last_present_frame_delta = AK::Duration::zero();
         m_last_present_frame_age = AK::Duration::zero();
+        m_smoothness_penalty = 0;
+        m_smoothness_stable_present_count = 0;
+        m_smoothness_adaptation_log_count = 0;
     }
     dbgln("MUNDO_MEDIA_VIDEO_SINK set_provider track_id={} provider={} changed={}", track.identifier(), provider.ptr(), provider_changed);
     if (provider != nullptr)
@@ -139,6 +142,58 @@ void DisplayingVideoSink::log_runtime_video_snapshot(char const* note, AK::Durat
         likely);
 }
 
+void DisplayingVideoSink::adjust_smoothness_after_present(VideoFrameSchedulerConfig const& config, AK::Duration wall_delta, AK::Duration frame_age)
+{
+    if (!config.smoothness_adaptation_enabled || config.smoothness_max_penalty == 0)
+        return;
+
+    auto previous_penalty = m_smoothness_penalty;
+    if (wall_delta > config.smoothness_large_wall_gap_threshold || frame_age > config.smoothness_large_frame_age_threshold) {
+        m_smoothness_penalty = min(config.smoothness_max_penalty, m_smoothness_penalty + 2);
+        m_smoothness_stable_present_count = 0;
+    } else if (wall_delta > config.smoothness_wall_gap_threshold || frame_age > config.smoothness_frame_age_threshold) {
+        m_smoothness_penalty = min(config.smoothness_max_penalty, m_smoothness_penalty + 1);
+        m_smoothness_stable_present_count = 0;
+    } else if (m_smoothness_penalty > 0) {
+        m_smoothness_stable_present_count++;
+        if (m_smoothness_stable_present_count >= config.smoothness_stable_presentations) {
+            m_smoothness_penalty--;
+            m_smoothness_stable_present_count = 0;
+        }
+    }
+
+    if (m_smoothness_penalty != previous_penalty) {
+        m_smoothness_adaptation_log_count++;
+        if (m_smoothness_adaptation_log_count <= 32 || m_smoothness_adaptation_log_count % 60 == 0)
+            dbgln("MUNDO_MEDIA_VIDEO_SINK smoothness_adapt count={} track_id={} action={} penalty={} previous_penalty={} wall_delta={}ms frame_age={}ms stable={} thresholds={}/{}/{}ms max_penalty={}",
+                m_smoothness_adaptation_log_count,
+                m_track.has_value() ? m_track.value().identifier() : 0,
+                m_smoothness_penalty > previous_penalty ? "increase" : "decrease",
+                m_smoothness_penalty,
+                previous_penalty,
+                wall_delta.to_milliseconds(),
+                frame_age.to_milliseconds(),
+                m_smoothness_stable_present_count,
+                config.smoothness_wall_gap_threshold.to_milliseconds(),
+                config.smoothness_large_wall_gap_threshold.to_milliseconds(),
+                config.smoothness_frame_age_threshold.to_milliseconds(),
+                config.smoothness_max_penalty);
+    }
+}
+
+size_t DisplayingVideoSink::smoothness_adjusted_catch_up_budget(VideoFrameSchedulerConfig const& config, size_t base_budget) const
+{
+    if (!config.smoothness_adaptation_enabled || m_smoothness_penalty == 0)
+        return base_budget;
+
+    auto minimum_budget = static_cast<size_t>(2);
+    if (base_budget <= minimum_budget)
+        return base_budget;
+    if (m_smoothness_penalty >= base_budget - minimum_budget)
+        return minimum_budget;
+    return base_budget - m_smoothness_penalty;
+}
+
 DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
 {
     char runtime_note[256];
@@ -186,6 +241,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
             m_last_present_media_delta = media_delta;
             m_last_present_frame_delta = frame_delta;
             m_last_present_frame_age = frame_age;
+            adjust_smoothness_after_present(scheduler_config, wall_delta, frame_age);
             auto cadence_threshold = scheduler_config.cadence_gap_log_threshold;
             auto media_delta_threshold = AK::Duration::from_milliseconds(cadence_threshold.to_milliseconds() * 2);
             if (wall_delta > cadence_threshold || media_delta > media_delta_threshold) {
@@ -318,7 +374,8 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                     else
                         estimated_frame_duration = AK::Duration::from_milliseconds(17);
                 }
-                auto max_frames = scheduler.gradual_catch_up_frame_budget(frame_age, estimated_frame_duration);
+                auto requested_max_frames = scheduler.gradual_catch_up_frame_budget(frame_age, estimated_frame_duration);
+                auto max_frames = smoothness_adjusted_catch_up_budget(scheduler_config, requested_max_frames);
 
                 for (size_t frame_index = 1; frame_index < max_frames; ++frame_index) {
                     m_next_frame = m_provider->retrieve_frame();
@@ -345,7 +402,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                     m_gradual_catch_up_count++;
                     coalesced_this_update += coalesced_for_catch_up;
                     if (m_gradual_catch_up_count <= 24 || m_gradual_catch_up_count % 60 == 0)
-                        dbgln("MUNDO_MEDIA_VIDEO_SINK gradual_catch_up count={} track_id={} current_time={}ms oldest_frame={}ms oldest_age={}ms presented_frame={}ms presented_age={}ms threshold={}ms target_age={}ms frame_duration={}ms coalesced={} retrieved={} queue={}/{} fullness={} max_frames={} burst_max={} provider_empty={} has_next={}",
+                        dbgln("MUNDO_MEDIA_VIDEO_SINK gradual_catch_up count={} track_id={} current_time={}ms oldest_frame={}ms oldest_age={}ms presented_frame={}ms presented_age={}ms threshold={}ms target_age={}ms frame_duration={}ms coalesced={} retrieved={} queue={}/{} fullness={} max_frames={} requested_max_frames={} burst_max={} smoothness_penalty={} provider_empty={} has_next={}",
                             m_gradual_catch_up_count,
                             m_track.has_value() ? m_track.value().identifier() : 0,
                             current_time.to_milliseconds(),
@@ -362,7 +419,9 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                             queue_max_size,
                             fullness_percent,
                             max_frames,
+                            requested_max_frames,
                             scheduler_config.gradual_catch_up_burst_max_frames,
+                            m_smoothness_penalty,
                             saw_provider_empty_this_update,
                             m_next_frame.is_valid());
                 }

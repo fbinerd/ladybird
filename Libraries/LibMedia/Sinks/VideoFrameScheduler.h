@@ -17,14 +17,21 @@ struct MEDIA_API VideoFrameSchedulerConfig {
     AK::Duration gradual_catch_up_age_threshold { AK::Duration::from_milliseconds(500) };
     AK::Duration gradual_catch_up_target_age { AK::Duration::from_milliseconds(600) };
     AK::Duration cadence_gap_log_threshold { AK::Duration::from_milliseconds(120) };
+    AK::Duration smoothness_wall_gap_threshold { AK::Duration::from_milliseconds(250) };
+    AK::Duration smoothness_large_wall_gap_threshold { AK::Duration::from_milliseconds(750) };
+    AK::Duration smoothness_frame_age_threshold { AK::Duration::from_milliseconds(800) };
+    AK::Duration smoothness_large_frame_age_threshold { AK::Duration::from_milliseconds(1500) };
     size_t max_consecutive_late_frame_drops { 24 };
     size_t drain_log_threshold { 4 };
     size_t gradual_catch_up_max_frames { 3 };
     size_t gradual_catch_up_burst_max_frames { 4 };
     size_t gradual_catch_up_fullness_percent { 85 };
+    size_t smoothness_max_penalty { 6 };
+    size_t smoothness_stable_presentations { 180 };
     bool present_one_frame_per_update { true };
     bool coalesce_due_frames_per_update { false };
     bool gradual_catch_up_enabled { true };
+    bool smoothness_adaptation_enabled { true };
 };
 
 class MEDIA_API VideoFrameScheduler {

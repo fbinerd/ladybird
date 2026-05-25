@@ -14,6 +14,7 @@
 #include <LibMedia/Export.h>
 #include <LibMedia/Forward.h>
 #include <LibMedia/Sinks/VideoSink.h>
+#include <LibMedia/Sinks/VideoFrameScheduler.h>
 #include <LibMedia/TimedImage.h>
 #include <LibMedia/Track.h>
 
@@ -55,6 +56,8 @@ private:
 
     void verify_track(Track const&) const;
     void log_runtime_video_snapshot(char const* note, AK::Duration current_time) const;
+    void adjust_smoothness_after_present(VideoFrameSchedulerConfig const&, AK::Duration wall_delta, AK::Duration frame_age);
+    size_t smoothness_adjusted_catch_up_budget(VideoFrameSchedulerConfig const&, size_t base_budget) const;
 
     NonnullRefPtr<MediaTimeProvider> m_time_provider;
     RefPtr<VideoDataProvider> m_provider;
@@ -73,6 +76,9 @@ private:
     size_t m_coalesced_frame_count { 0 };
     size_t m_hard_late_coalesce_count { 0 };
     size_t m_gradual_catch_up_count { 0 };
+    size_t m_smoothness_penalty { 0 };
+    size_t m_smoothness_stable_present_count { 0 };
+    size_t m_smoothness_adaptation_log_count { 0 };
     AK::Duration m_last_present_wall_delta { AK::Duration::zero() };
     AK::Duration m_last_present_media_delta { AK::Duration::zero() };
     AK::Duration m_last_present_frame_delta { AK::Duration::zero() };

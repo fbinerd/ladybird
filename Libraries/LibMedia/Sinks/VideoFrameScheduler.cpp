@@ -17,14 +17,21 @@ VideoFrameScheduler VideoFrameScheduler::from_runtime()
     config.gradual_catch_up_age_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_GRADUAL_CATCH_UP_AGE_MS", AK::Duration::from_milliseconds(500), 16);
     config.gradual_catch_up_target_age = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_GRADUAL_CATCH_UP_TARGET_AGE_MS", AK::Duration::from_milliseconds(600), 16);
     config.cadence_gap_log_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_CADENCE_GAP_LOG_MS", AK::Duration::from_milliseconds(120), 16);
+    config.smoothness_wall_gap_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SMOOTHNESS_WALL_GAP_MS", AK::Duration::from_milliseconds(250), 16);
+    config.smoothness_large_wall_gap_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SMOOTHNESS_LARGE_WALL_GAP_MS", AK::Duration::from_milliseconds(750), 16);
+    config.smoothness_frame_age_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SMOOTHNESS_FRAME_AGE_MS", AK::Duration::from_milliseconds(800), 16);
+    config.smoothness_large_frame_age_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SMOOTHNESS_LARGE_FRAME_AGE_MS", AK::Duration::from_milliseconds(1500), 16);
     config.max_consecutive_late_frame_drops = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_MAX_LATE_DROPS", 24, 0, 1000000));
     config.drain_log_threshold = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_SINK_DRAIN_LOG_THRESHOLD", 4, 0, 1000000));
     config.gradual_catch_up_max_frames = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_GRADUAL_CATCH_UP_MAX_FRAMES", 3, 1, 12));
     config.gradual_catch_up_burst_max_frames = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_GRADUAL_CATCH_UP_BURST_MAX_FRAMES", 4, 1, 60));
     config.gradual_catch_up_fullness_percent = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_GRADUAL_CATCH_UP_FULLNESS_PERCENT", 85, 1, 100));
+    config.smoothness_max_penalty = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_SMOOTHNESS_MAX_PENALTY", 6, 0, 60));
+    config.smoothness_stable_presentations = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_SMOOTHNESS_STABLE_FRAMES", 180, 1, 1000000));
     config.present_one_frame_per_update = RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_SINK_PRESENT_ONE_PER_UPDATE", true);
     config.coalesce_due_frames_per_update = RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_SINK_COALESCE_DUE_FRAMES", false);
     config.gradual_catch_up_enabled = RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_GRADUAL_CATCH_UP", true);
+    config.smoothness_adaptation_enabled = RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_SMOOTHNESS_ADAPTIVE", true);
     return VideoFrameScheduler { config };
 }
 
