@@ -20,7 +20,7 @@ struct MEDIA_API VideoFrameSchedulerConfig {
     size_t max_consecutive_late_frame_drops { 24 };
     size_t drain_log_threshold { 4 };
     size_t gradual_catch_up_max_frames { 3 };
-    size_t gradual_catch_up_burst_max_frames { 12 };
+    size_t gradual_catch_up_burst_max_frames { 6 };
     size_t gradual_catch_up_fullness_percent { 85 };
     bool present_one_frame_per_update { true };
     bool coalesce_due_frames_per_update { false };
