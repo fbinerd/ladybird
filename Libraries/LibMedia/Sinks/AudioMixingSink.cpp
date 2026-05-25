@@ -38,6 +38,18 @@ static bool mundo_audio_skip_silent_gaps_enabled()
         && strcasecmp(raw_value, "off") != 0;
 }
 
+static AK::Duration mundo_audio_skip_silent_gap_max()
+{
+    auto const* raw_value = getenv("MUNDO_AUDIO_SKIP_SILENT_GAP_MAX_MS");
+    if (!raw_value || raw_value[0] == '\0')
+        return AK::Duration::from_milliseconds(250);
+
+    auto value = strtoul(raw_value, nullptr, 10);
+    if (value == 0)
+        return AK::Duration::zero();
+    return AK::Duration::from_milliseconds(min<u32>(static_cast<u32>(value), 5000));
+}
+
 ErrorOr<NonnullRefPtr<AudioMixingSink>> AudioMixingSink::try_create()
 {
     auto weak_ref = TRY(try_make_ref_counted<AudioMixingSinkWeakReference>());
@@ -237,7 +249,9 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
 
             auto first_sample_offset = current_block.timestamp_in_samples();
             if (first_sample_offset >= samples_end) {
-                if (mundo_audio_skip_silent_gaps_enabled() && !wrote_nonzero_sample && m_track_mixing_datas.size() == 1 && first_sample_offset > buffer_start) {
+                auto gap_duration = AK::Duration::from_time_units(first_sample_offset - buffer_start, 1, m_sample_specification.sample_rate());
+                auto max_gap_duration = mundo_audio_skip_silent_gap_max();
+                if (mundo_audio_skip_silent_gaps_enabled() && !wrote_nonzero_sample && m_track_mixing_datas.size() == 1 && first_sample_offset > buffer_start && (max_gap_duration > AK::Duration::zero() && gap_duration <= max_gap_duration)) {
                     auto old_buffer_start = buffer_start;
                     auto old_samples_end = samples_end;
                     buffer_start = first_sample_offset;
@@ -252,10 +266,25 @@ ReadonlySpan<float> AudioMixingSink::write_audio_data_to_playback_stream(Span<fl
                             old_samples_end,
                             buffer_start,
                             buffer_start - old_buffer_start,
-                            AK::Duration::from_time_units(buffer_start - old_buffer_start, 1, m_sample_specification.sample_rate()).to_milliseconds(),
+                            gap_duration.to_milliseconds(),
                             requested_sample_count,
                             samples_end);
                 } else {
+                    if (mundo_audio_skip_silent_gaps_enabled() && !wrote_nonzero_sample && m_track_mixing_datas.size() == 1 && first_sample_offset > buffer_start) {
+                        m_silent_gap_skip_count++;
+                        if (m_silent_gap_skip_count <= 16 || m_silent_gap_skip_count % 60 == 0)
+                            dbgln("MUNDO_AUDIO_SINK keep_silent_gap count={} track_id={} start={} end={} next_block={} gap_samples={} gap_ms={} max_gap_ms={} requested={} queue_end_min={}",
+                                m_silent_gap_skip_count,
+                                track.identifier(),
+                                buffer_start,
+                                samples_end,
+                                first_sample_offset,
+                                first_sample_offset - buffer_start,
+                                gap_duration.to_milliseconds(),
+                                max_gap_duration.to_milliseconds(),
+                                requested_sample_count,
+                                samples_end);
+                    }
                     break;
                 }
             }

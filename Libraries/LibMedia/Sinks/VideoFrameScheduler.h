@@ -21,6 +21,7 @@ struct MEDIA_API VideoFrameSchedulerConfig {
     AK::Duration smoothness_large_wall_gap_threshold { AK::Duration::from_milliseconds(750) };
     AK::Duration smoothness_frame_age_threshold { AK::Duration::from_milliseconds(800) };
     AK::Duration smoothness_large_frame_age_threshold { AK::Duration::from_milliseconds(1500) };
+    AK::Duration av_sync_max_video_age { AK::Duration::from_milliseconds(450) };
     size_t max_consecutive_late_frame_drops { 24 };
     size_t drain_log_threshold { 4 };
     size_t gradual_catch_up_max_frames { 3 };

@@ -21,6 +21,7 @@ VideoFrameScheduler VideoFrameScheduler::from_runtime()
     config.smoothness_large_wall_gap_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SMOOTHNESS_LARGE_WALL_GAP_MS", AK::Duration::from_milliseconds(750), 16);
     config.smoothness_frame_age_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SMOOTHNESS_FRAME_AGE_MS", AK::Duration::from_milliseconds(800), 16);
     config.smoothness_large_frame_age_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_SMOOTHNESS_LARGE_FRAME_AGE_MS", AK::Duration::from_milliseconds(1500), 16);
+    config.av_sync_max_video_age = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_AV_SYNC_MAX_AGE_MS", AK::Duration::from_milliseconds(450), 16);
     config.max_consecutive_late_frame_drops = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_MAX_LATE_DROPS", 24, 0, 1000000));
     config.drain_log_threshold = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_SINK_DRAIN_LOG_THRESHOLD", 4, 0, 1000000));
     config.gradual_catch_up_max_frames = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_GRADUAL_CATCH_UP_MAX_FRAMES", 3, 1, 12));

@@ -57,7 +57,7 @@ private:
     void verify_track(Track const&) const;
     void log_runtime_video_snapshot(char const* note, AK::Duration current_time) const;
     void adjust_smoothness_after_present(VideoFrameSchedulerConfig const&, AK::Duration wall_delta, AK::Duration frame_age);
-    size_t smoothness_adjusted_catch_up_budget(VideoFrameSchedulerConfig const&, size_t base_budget) const;
+    size_t smoothness_adjusted_catch_up_budget(VideoFrameSchedulerConfig const&, size_t base_budget, AK::Duration frame_age) const;
 
     NonnullRefPtr<MediaTimeProvider> m_time_provider;
     RefPtr<VideoDataProvider> m_provider;
