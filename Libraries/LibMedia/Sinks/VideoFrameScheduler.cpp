@@ -29,6 +29,7 @@ VideoFrameScheduler VideoFrameScheduler::from_runtime()
     config.gradual_catch_up_fullness_percent = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_GRADUAL_CATCH_UP_FULLNESS_PERCENT", 85, 1, 100));
     config.smoothness_max_penalty = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_SMOOTHNESS_MAX_PENALTY", 6, 0, 60));
     config.smoothness_stable_presentations = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_SMOOTHNESS_STABLE_FRAMES", 180, 1, 1000000));
+    config.av_sync_catch_up_max_frames = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_AV_SYNC_CATCH_UP_MAX_FRAMES", 12, 1, 120));
     config.present_one_frame_per_update = RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_SINK_PRESENT_ONE_PER_UPDATE", true);
     config.coalesce_due_frames_per_update = RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_SINK_COALESCE_DUE_FRAMES", false);
     config.gradual_catch_up_enabled = RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_GRADUAL_CATCH_UP", true);

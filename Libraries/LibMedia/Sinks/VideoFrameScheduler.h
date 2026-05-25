@@ -29,6 +29,7 @@ struct MEDIA_API VideoFrameSchedulerConfig {
     size_t gradual_catch_up_fullness_percent { 85 };
     size_t smoothness_max_penalty { 6 };
     size_t smoothness_stable_presentations { 180 };
+    size_t av_sync_catch_up_max_frames { 12 };
     bool present_one_frame_per_update { true };
     bool coalesce_due_frames_per_update { false };
     bool gradual_catch_up_enabled { true };

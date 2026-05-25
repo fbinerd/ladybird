@@ -186,9 +186,26 @@ void DisplayingVideoSink::adjust_smoothness_after_present(VideoFrameSchedulerCon
 
 size_t DisplayingVideoSink::smoothness_adjusted_catch_up_budget(VideoFrameSchedulerConfig const& config, size_t base_budget, AK::Duration frame_age) const
 {
+    if (frame_age > config.av_sync_max_video_age) {
+        auto frame_duration = m_last_present_frame_delta;
+        if (frame_duration <= AK::Duration::zero() || frame_duration > AK::Duration::from_milliseconds(250))
+            frame_duration = AK::Duration::from_milliseconds(17);
+
+        auto frame_duration_ms = frame_duration.to_milliseconds();
+        if (frame_duration_ms <= 0)
+            frame_duration_ms = 17;
+
+        auto target_age_ms = config.av_sync_max_video_age.to_milliseconds() / 2;
+        auto excess_age_ms = frame_age.to_milliseconds() - target_age_ms;
+        if (excess_age_ms <= 0)
+            return base_budget;
+
+        auto sync_budget = static_cast<size_t>((excess_age_ms + frame_duration_ms - 1) / frame_duration_ms) + 1;
+        sync_budget = min(sync_budget, config.av_sync_catch_up_max_frames);
+        return max(base_budget, sync_budget);
+    }
+
     if (!config.smoothness_adaptation_enabled || m_smoothness_penalty == 0)
-        return base_budget;
-    if (frame_age > config.av_sync_max_video_age)
         return base_budget;
 
     auto minimum_budget = static_cast<size_t>(2);
@@ -407,7 +424,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                     m_gradual_catch_up_count++;
                     coalesced_this_update += coalesced_for_catch_up;
                     if (m_gradual_catch_up_count <= 24 || m_gradual_catch_up_count % 60 == 0)
-                        dbgln("MUNDO_MEDIA_VIDEO_SINK gradual_catch_up count={} track_id={} current_time={}ms oldest_frame={}ms oldest_age={}ms presented_frame={}ms presented_age={}ms threshold={}ms target_age={}ms av_sync_max_age={}ms frame_duration={}ms coalesced={} retrieved={} queue={}/{} fullness={} max_frames={} requested_max_frames={} burst_max={} smoothness_penalty={} provider_empty={} has_next={}",
+                        dbgln("MUNDO_MEDIA_VIDEO_SINK gradual_catch_up count={} track_id={} current_time={}ms oldest_frame={}ms oldest_age={}ms presented_frame={}ms presented_age={}ms threshold={}ms target_age={}ms av_sync_max_age={}ms av_sync_budget_max={} frame_duration={}ms coalesced={} retrieved={} queue={}/{} fullness={} max_frames={} requested_max_frames={} burst_max={} smoothness_penalty={} provider_empty={} has_next={}",
                             m_gradual_catch_up_count,
                             m_track.has_value() ? m_track.value().identifier() : 0,
                             current_time.to_milliseconds(),
@@ -418,6 +435,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                             scheduler_config.gradual_catch_up_age_threshold.to_milliseconds(),
                             scheduler_config.gradual_catch_up_target_age.to_milliseconds(),
                             scheduler_config.av_sync_max_video_age.to_milliseconds(),
+                            scheduler_config.av_sync_catch_up_max_frames,
                             estimated_frame_duration.to_milliseconds(),
                             coalesced_for_catch_up,
                             retrieved_for_catch_up,
