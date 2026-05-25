@@ -160,7 +160,7 @@ static bool mundo_is_vr_hls_url(String const& url)
 
 static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& current_src, u64 offset, ByteBuffer const& media_data)
 {
-    if (!::Media::RuntimeConfiguration::flag_enabled("MUNDO_HLS_SANITIZE_MANIFEST", false))
+    if (!::Media::RuntimeConfiguration::flag_enabled("MUNDO_HLS_SANITIZE_MANIFEST", true))
         return {};
     if (offset != 0 || !current_src.contains(".m3u8"sv))
         return {};
@@ -169,18 +169,23 @@ static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& cur
     if (!manifest.starts_with("#EXTM3U"sv))
         return {};
 
+    auto sanitized_manifest = manifest
+                                  .replace(";ios"sv, ""sv, ReplaceMode::All)
+                                  .replace("%3Bios"sv, ""sv, ReplaceMode::All)
+                                  .replace("%3bios"sv, ""sv, ReplaceMode::All);
+
     char pattern_buffer[128];
     auto const* pattern = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_SANITIZE_MANIFEST_PATTERN", pattern_buffer, sizeof(pattern_buffer));
-    char replacement_buffer[128];
-    auto const* replacement = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_SANITIZE_MANIFEST_REPLACEMENT", replacement_buffer, sizeof(replacement_buffer));
-    if (!pattern || pattern[0] == '\0')
-        return {};
+    if (pattern && pattern[0] != '\0') {
+        char replacement_buffer[128];
+        auto const* replacement = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_SANITIZE_MANIFEST_REPLACEMENT", replacement_buffer, sizeof(replacement_buffer));
+        sanitized_manifest = StringView { sanitized_manifest.characters(), sanitized_manifest.length() }.replace(StringView { pattern, strlen(pattern) }, replacement ? StringView { replacement, strlen(replacement) } : ""sv, ReplaceMode::All);
+    }
 
-    auto sanitized_manifest = manifest.replace(StringView { pattern, strlen(pattern) }, replacement ? StringView { replacement, strlen(replacement) } : ""sv, ReplaceMode::All);
     if (sanitized_manifest.length() == media_data.size())
         return {};
 
-    dbgln("MUNDO_MEDIA_ELEMENT sanitized_hls_manifest current_src={} original_size={} sanitized_size={}", current_src, media_data.size(), sanitized_manifest.length());
+    dbgln("MUNDO_MEDIA_ELEMENT sanitized_hls_manifest current_src={} original_size={} sanitized_size={} reason=ffmpeg_compatibility", current_src, media_data.size(), sanitized_manifest.length());
     return MUST(ByteBuffer::copy(sanitized_manifest.bytes()));
 }
 
