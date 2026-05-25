@@ -11,6 +11,21 @@
 
 namespace Media {
 
+char const* hardware_video_frame_backend_name(HardwareVideoFrameBackend backend)
+{
+    switch (backend) {
+    case HardwareVideoFrameBackend::None:
+        return "none";
+    case HardwareVideoFrameBackend::Cuda:
+        return "cuda";
+    case HardwareVideoFrameBackend::Vaapi:
+        return "vaapi";
+    case HardwareVideoFrameBackend::DmaBuf:
+        return "dmabuf";
+    }
+    VERIFY_NOT_REACHED();
+}
+
 NV12VideoFrameData::~NV12VideoFrameData()
 {
     if (m_external_storage_cleanup)
@@ -86,6 +101,15 @@ VideoFrame::~VideoFrame() = default;
 NonnullRefPtr<Gfx::ImmutableBitmap> VideoFrame::immutable_bitmap() const
 {
     if (!m_bitmap) {
+        if (m_hardware_descriptor.has_value()) {
+            dbgln("MUNDO_MEDIA_VIDEO_FRAME hardware_bitmap_materialize frame_id={} backend={} zero_copy_capable={} requires_cpu_transfer={} size={}x{}",
+                m_hardware_descriptor->frame_id,
+                hardware_video_frame_backend_name(m_hardware_descriptor->backend),
+                m_hardware_descriptor->zero_copy_capable,
+                m_hardware_descriptor->requires_cpu_transfer,
+                m_hardware_descriptor->size.width(),
+                m_hardware_descriptor->size.height());
+        }
         VERIFY(m_bitmap_factory);
         auto bitmap_or_error = m_bitmap_factory();
         if (bitmap_or_error.is_error()) {
@@ -111,6 +135,11 @@ NV12VideoFrameData const* VideoFrame::nv12_data() const
         m_nv12_data_factory = {};
     }
     return m_nv12_data.ptr();
+}
+
+void VideoFrame::set_hardware_descriptor(HardwareVideoFrameDescriptor descriptor)
+{
+    m_hardware_descriptor = descriptor;
 }
 
 }

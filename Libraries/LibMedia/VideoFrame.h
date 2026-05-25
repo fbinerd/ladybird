@@ -9,6 +9,7 @@
 #include <AK/ByteBuffer.h>
 #include <AK/Function.h>
 #include <AK/NonnullRefPtr.h>
+#include <AK/Optional.h>
 #include <AK/RefCounted.h>
 #include <AK/RefPtr.h>
 #include <AK/Time.h>
@@ -19,6 +20,26 @@
 #include <LibMedia/Export.h>
 
 namespace Media {
+
+enum class HardwareVideoFrameBackend : u8 {
+    None,
+    Cuda,
+    Vaapi,
+    DmaBuf,
+};
+
+MEDIA_API char const* hardware_video_frame_backend_name(HardwareVideoFrameBackend);
+
+struct MEDIA_API HardwareVideoFrameDescriptor {
+    HardwareVideoFrameBackend backend { HardwareVideoFrameBackend::None };
+    u64 frame_id { 0 };
+    Gfx::Size<u32> size;
+    int hardware_format { 0 };
+    int software_format { 0 };
+    u8 bit_depth { 0 };
+    bool zero_copy_capable { false };
+    bool requires_cpu_transfer { true };
+};
 
 struct MEDIA_API NV12VideoFrameData : public RefCounted<NV12VideoFrameData> {
     ~NV12VideoFrameData();
@@ -105,6 +126,10 @@ public:
     bool has_lazy_bitmap() const { return m_bitmap == nullptr && m_bitmap_factory; }
     bool has_lazy_nv12_data() const { return m_nv12_data == nullptr && m_nv12_data_factory; }
     NV12VideoFrameData const* nv12_data() const;
+    Optional<HardwareVideoFrameDescriptor> const& hardware_descriptor() const { return m_hardware_descriptor; }
+    bool has_hardware_descriptor() const { return m_hardware_descriptor.has_value(); }
+    bool is_zero_copy_capable() const { return m_hardware_descriptor.has_value() && m_hardware_descriptor->zero_copy_capable; }
+    void set_hardware_descriptor(HardwareVideoFrameDescriptor);
 
 private:
     AK::Duration m_timestamp;
@@ -116,6 +141,7 @@ private:
     mutable BitmapFactory m_bitmap_factory;
     mutable RefPtr<NV12VideoFrameData> m_nv12_data;
     mutable NV12DataFactory m_nv12_data_factory;
+    Optional<HardwareVideoFrameDescriptor> m_hardware_descriptor;
 };
 
 }

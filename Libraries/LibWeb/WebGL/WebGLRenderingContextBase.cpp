@@ -669,6 +669,10 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         auto nv12_uv_stride = -1;
         size_t nv12_y_bytes = 0;
         size_t nv12_uv_bytes = 0;
+        auto const* hardware_backend = "none";
+        auto hardware_frame_id = 0ull;
+        auto zero_copy_capable = false;
+        auto requires_cpu_transfer = false;
         if (source_is_video) {
             auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
             if (auto const* media_frame = video->current_media_frame(); media_frame && media_frame->nv12_data()) {
@@ -680,14 +684,24 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 nv12_uv_stride = nv12_data->uv_stride;
                 nv12_y_bytes = nv12_data->y_plane_size();
                 nv12_uv_bytes = nv12_data->uv_plane_size();
+                if (auto const& hardware_descriptor = media_frame->hardware_descriptor(); hardware_descriptor.has_value()) {
+                    hardware_backend = Media::hardware_video_frame_backend_name(hardware_descriptor->backend);
+                    hardware_frame_id = hardware_descriptor->frame_id;
+                    zero_copy_capable = hardware_descriptor->zero_copy_capable;
+                    requires_cpu_transfer = hardware_descriptor->requires_cpu_transfer;
+                }
             }
         }
         if (has_nv12_frame || should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-            dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} has_nv12={} nv12_size={}x{} nv12_stride={}x{} nv12_bytes={}+{} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
+            dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} has_nv12={} frame_id={} hardware_backend={} zero_copy_capable={} requires_cpu_transfer={} nv12_size={}x{} nv12_stride={}x{} nv12_bytes={}+{} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
                 attempt_count,
                 reason,
                 source_is_video,
                 has_nv12_frame,
+                hardware_frame_id,
+                hardware_backend,
+                zero_copy_capable,
+                requires_cpu_transfer,
                 nv12_width,
                 nv12_height,
                 nv12_y_stride,
@@ -722,6 +736,16 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto const* media_frame = video->current_media_frame();
     if (!media_frame || !media_frame->nv12_data())
         return reject("missing_nv12_frame"sv);
+    auto const* hardware_backend = "none";
+    auto hardware_frame_id = 0ull;
+    auto zero_copy_capable = false;
+    auto requires_cpu_transfer = false;
+    if (auto const& hardware_descriptor = media_frame->hardware_descriptor(); hardware_descriptor.has_value()) {
+        hardware_backend = Media::hardware_video_frame_backend_name(hardware_descriptor->backend);
+        hardware_frame_id = hardware_descriptor->frame_id;
+        zero_copy_capable = hardware_descriptor->zero_copy_capable;
+        requires_cpu_transfer = hardware_descriptor->requires_cpu_transfer;
+    }
     auto const* nv12_data = media_frame->nv12_data();
     if (nv12_data->width <= 0 || nv12_data->height <= 0)
         return reject("empty_nv12_frame"sv);
@@ -932,6 +956,17 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, nv12_data->y_stride, nv12_data->height, nv12_data->y_plane_data(), nv12_data->y_plane_size(), m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
     auto reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, uv_texture_width, (nv12_data->height + 1) / 2, nv12_data->uv_plane_data(), nv12_data->uv_plane_size(), m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
 
+    if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=cpu_upload_required reason=no_gpu_interop_texture_handle y_bytes={} uv_bytes={} y_upload={} uv_upload={}",
+            attempt_count,
+            hardware_frame_id,
+            hardware_backend,
+            nv12_data->y_plane_size(),
+            nv12_data->uv_plane_size(),
+            used_y_plane_pbo ? "pbo"sv : "client"sv,
+            used_uv_plane_pbo ? "pbo"sv : "client"sv);
+    }
+
     glBindFramebuffer(GL_FRAMEBUFFER, m_mundo_video_nv12_framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previous_texture_2d, level);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
@@ -1025,9 +1060,13 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} upload_us={} size={}x{} offset={}x{} target_storage={} plane_storage={}/{} plane_upload={}/{} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} frame_id={} hardware_backend={} zero_copy_capable={} requires_cpu_transfer={} upload_us={} size={}x{} offset={}x{} target_storage={} plane_storage={}/{} plane_upload={}/{} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
             attempt_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
+            hardware_frame_id,
+            hardware_backend,
+            zero_copy_capable,
+            requires_cpu_transfer,
             upload_microseconds,
             nv12_data->width,
             nv12_data->height,

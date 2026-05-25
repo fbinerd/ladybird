@@ -314,6 +314,22 @@ struct HardwareTransferTiming {
     i64 transfer_microseconds { 0 };
 };
 
+static HardwareVideoFrameDescriptor hardware_descriptor_for_cuda_frame(AVCodecContext const* codec_context, AVFrame const* frame, u8 bit_depth)
+{
+    static u64 s_hardware_video_frame_id { 0 };
+
+    HardwareVideoFrameDescriptor descriptor;
+    descriptor.backend = HardwareVideoFrameBackend::Cuda;
+    descriptor.frame_id = ++s_hardware_video_frame_id;
+    descriptor.size = Gfx::Size<u32> { frame->width, frame->height };
+    descriptor.hardware_format = frame->format;
+    descriptor.software_format = codec_context->sw_pix_fmt;
+    descriptor.bit_depth = bit_depth;
+    descriptor.zero_copy_capable = true;
+    descriptor.requires_cpu_transfer = true;
+    return descriptor;
+}
+
 static void log_software_frame_while_hwaccel_requested(AVCodecContext const* codec_context, AVFrame const* frame)
 {
     if (!codec_context->hw_device_ctx)
@@ -1332,6 +1348,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
             auto size = Gfx::Size<u32> { m_frame->width, m_frame->height };
             auto timestamp = AK::Duration::from_microseconds(m_frame->pts);
             auto duration = AK::Duration::from_microseconds(m_frame->duration);
+            auto hardware_descriptor = hardware_descriptor_for_cuda_frame(m_codec_context, m_frame, bit_depth);
 
             auto source = DECODER_TRY_ALLOC(RetainedHardwareFrameSource::create(m_frame, cicp));
             auto source_for_bitmap = source;
@@ -1347,16 +1364,21 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
             static size_t s_deferred_hw_frame_count { 0 };
             auto count = ++s_deferred_hw_frame_count;
             if (count <= 8 || count % 120 == 0) {
-                dbgln("MUNDO_MEDIA_FFMPEG defer_hw_transfer count={} hw_format={} sw_pix_fmt={} size={}x{} timestamp={}ms",
+                dbgln("MUNDO_MEDIA_FFMPEG defer_hw_transfer count={} frame_id={} hw_format={} sw_pix_fmt={} size={}x{} timestamp={}ms zero_copy_capable={} requires_cpu_transfer={}",
                     count,
+                    hardware_descriptor.frame_id,
                     pixel_format_name(static_cast<AVPixelFormat>(m_frame->format)),
                     pixel_format_name(software_pixel_format),
                     m_frame->width,
                     m_frame->height,
-                    timestamp.to_milliseconds());
+                    timestamp.to_milliseconds(),
+                    hardware_descriptor.zero_copy_capable,
+                    hardware_descriptor.requires_cpu_transfer);
             }
 
-            return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap_factory), move(nv12_data_factory)));
+            auto video_frame = DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap_factory), move(nv12_data_factory)));
+            video_frame->set_hardware_descriptor(hardware_descriptor);
+            return video_frame;
         }
 
         if (!is_hardware_frame(m_frame))
@@ -1394,6 +1416,9 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         i64 copy_microseconds = 0;
         auto bitmap_start = MonotonicTime::now();
         RefPtr<Gfx::ImmutableBitmap> bitmap;
+        Optional<HardwareVideoFrameDescriptor> hardware_descriptor;
+        if (transfer_timing.transferred_from_hardware)
+            hardware_descriptor = hardware_descriptor_for_cuda_frame(m_codec_context, m_frame, bit_depth);
         auto used_direct_nv12_bitmap = false;
         auto used_lazy_nv12_bitmap = false;
         auto should_use_gpu_yuv_for_nv12 = transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12 && should_use_gpu_yuv_for_nv12_frame(frame->width, frame->height);
@@ -1435,8 +1460,9 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                         static size_t s_video_frame_pipeline_count { 0 };
                         auto count = ++s_video_frame_pipeline_count;
                         if (count <= 8 || count % 120 == 0) {
-                            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{}",
+                            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} frame_id={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{} zero_copy_capable={} requires_cpu_transfer={}",
                                 count,
+                                hardware_descriptor.has_value() ? hardware_descriptor->frame_id : 0,
                                 transfer_timing.transferred_from_hardware,
                                 false,
                                 true,
@@ -1448,11 +1474,16 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                                 target_size.width(),
                                 target_size.height(),
                                 source_width,
-                                source_height);
+                                source_height,
+                                hardware_descriptor.has_value() ? hardware_descriptor->zero_copy_capable : false,
+                                hardware_descriptor.has_value() ? hardware_descriptor->requires_cpu_transfer : false);
                         }
 
                         used_lazy_nv12_bitmap = true;
-                        return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap_factory), frame_data));
+                        auto video_frame = DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap_factory), frame_data));
+                        if (hardware_descriptor.has_value())
+                            video_frame->set_hardware_descriptor(*hardware_descriptor);
+                        return video_frame;
                     }
 
                     dbgln("MUNDO_MEDIA_FFMPEG lazy_nv12_bitmap_fallback size={}x{} error={}", frame->width, frame->height, owned_frame_data.error().string_literal());
@@ -1497,8 +1528,9 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         static size_t s_video_frame_pipeline_count { 0 };
         auto count = ++s_video_frame_pipeline_count;
         if (count <= 8 || count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{}",
+            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} frame_id={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{} zero_copy_capable={} requires_cpu_transfer={}",
                 count,
+                hardware_descriptor.has_value() ? hardware_descriptor->frame_id : 0,
                 transfer_timing.transferred_from_hardware,
                 used_direct_nv12_bitmap,
                 used_lazy_nv12_bitmap,
@@ -1510,10 +1542,15 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                 bitmap->width(),
                 bitmap->height(),
                 frame->width,
-                frame->height);
+                frame->height,
+                hardware_descriptor.has_value() ? hardware_descriptor->zero_copy_capable : false,
+                hardware_descriptor.has_value() ? hardware_descriptor->requires_cpu_transfer : false);
         }
 
-        return DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, bitmap.release_nonnull()));
+        auto video_frame = DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, bitmap.release_nonnull()));
+        if (hardware_descriptor.has_value())
+            video_frame->set_hardware_descriptor(*hardware_descriptor);
+        return video_frame;
     }
     case AVERROR(EAGAIN):
         return DecoderError::with_description(DecoderErrorCategory::NeedsMoreInput, "FFmpeg decoder has no frames available, send more input"sv);
