@@ -15,10 +15,12 @@ VideoFrameScheduler VideoFrameScheduler::from_runtime()
     config.late_frame_age_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_LATE_DROP_MS", AK::Duration::max(), 16);
     config.hard_late_frame_coalesce_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_HARD_LATE_COALESCE_MS", AK::Duration::max(), 16);
     config.gradual_catch_up_age_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_GRADUAL_CATCH_UP_AGE_MS", AK::Duration::from_milliseconds(500), 16);
+    config.gradual_catch_up_target_age = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_GRADUAL_CATCH_UP_TARGET_AGE_MS", AK::Duration::from_milliseconds(250), 16);
     config.cadence_gap_log_threshold = RuntimeConfiguration::duration_ms("MUNDO_VIDEO_CADENCE_GAP_LOG_MS", AK::Duration::from_milliseconds(120), 16);
     config.max_consecutive_late_frame_drops = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_MAX_LATE_DROPS", 24, 0, 1000000));
     config.drain_log_threshold = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_SINK_DRAIN_LOG_THRESHOLD", 4, 0, 1000000));
     config.gradual_catch_up_max_frames = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_GRADUAL_CATCH_UP_MAX_FRAMES", 3, 1, 12));
+    config.gradual_catch_up_burst_max_frames = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_GRADUAL_CATCH_UP_BURST_MAX_FRAMES", 12, 1, 60));
     config.gradual_catch_up_fullness_percent = static_cast<size_t>(RuntimeConfiguration::integer("MUNDO_VIDEO_GRADUAL_CATCH_UP_FULLNESS_PERCENT", 85, 1, 100));
     config.present_one_frame_per_update = RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_SINK_PRESENT_ONE_PER_UPDATE", true);
     config.coalesce_due_frames_per_update = RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_SINK_COALESCE_DUE_FRAMES", false);
@@ -62,6 +64,31 @@ bool VideoFrameScheduler::should_try_gradual_catch_up(bool has_current_frame, AK
     if (queue_max_size == 0)
         return false;
     return queue_size * 100 >= queue_max_size * m_config.gradual_catch_up_fullness_percent;
+}
+
+size_t VideoFrameScheduler::gradual_catch_up_frame_budget(AK::Duration frame_age, AK::Duration estimated_frame_duration) const
+{
+    auto normal_budget = m_config.gradual_catch_up_max_frames;
+    auto burst_budget = m_config.gradual_catch_up_burst_max_frames;
+    if (burst_budget <= normal_budget)
+        return normal_budget;
+    if (frame_age <= m_config.gradual_catch_up_target_age)
+        return normal_budget;
+
+    auto frame_duration_ms = estimated_frame_duration.to_milliseconds();
+    if (frame_duration_ms <= 0 || frame_duration_ms > 250)
+        frame_duration_ms = 17;
+
+    auto excess_age_ms = frame_age.to_milliseconds() - m_config.gradual_catch_up_target_age.to_milliseconds();
+    if (excess_age_ms <= 0)
+        return normal_budget;
+
+    auto frames_to_reach_target = static_cast<size_t>((excess_age_ms + frame_duration_ms - 1) / frame_duration_ms) + 1;
+    if (frames_to_reach_target < normal_budget)
+        return normal_budget;
+    if (frames_to_reach_target > burst_budget)
+        return burst_budget;
+    return frames_to_reach_target;
 }
 
 }

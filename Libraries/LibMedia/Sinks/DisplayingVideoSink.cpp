@@ -311,7 +311,14 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                 size_t coalesced_for_catch_up = 0;
                 auto oldest_frame_time = catch_up_frame.timestamp();
                 auto oldest_frame_age = current_time - oldest_frame_time;
-                auto max_frames = scheduler_config.gradual_catch_up_max_frames;
+                auto estimated_frame_duration = m_last_present_frame_delta;
+                if (estimated_frame_duration <= AK::Duration::zero() || estimated_frame_duration > AK::Duration::from_milliseconds(250)) {
+                    if (m_current_frame.is_valid() && catch_up_frame.timestamp() > m_current_frame.timestamp())
+                        estimated_frame_duration = catch_up_frame.timestamp() - m_current_frame.timestamp();
+                    else
+                        estimated_frame_duration = AK::Duration::from_milliseconds(17);
+                }
+                auto max_frames = scheduler.gradual_catch_up_frame_budget(frame_age, estimated_frame_duration);
 
                 for (size_t frame_index = 1; frame_index < max_frames; ++frame_index) {
                     m_next_frame = m_provider->retrieve_frame();
@@ -338,7 +345,7 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                     m_gradual_catch_up_count++;
                     coalesced_this_update += coalesced_for_catch_up;
                     if (m_gradual_catch_up_count <= 24 || m_gradual_catch_up_count % 60 == 0)
-                        dbgln("MUNDO_MEDIA_VIDEO_SINK gradual_catch_up count={} track_id={} current_time={}ms oldest_frame={}ms oldest_age={}ms presented_frame={}ms presented_age={}ms threshold={}ms coalesced={} retrieved={} queue={}/{} fullness={} max_frames={} provider_empty={} has_next={}",
+                        dbgln("MUNDO_MEDIA_VIDEO_SINK gradual_catch_up count={} track_id={} current_time={}ms oldest_frame={}ms oldest_age={}ms presented_frame={}ms presented_age={}ms threshold={}ms target_age={}ms frame_duration={}ms coalesced={} retrieved={} queue={}/{} fullness={} max_frames={} burst_max={} provider_empty={} has_next={}",
                             m_gradual_catch_up_count,
                             m_track.has_value() ? m_track.value().identifier() : 0,
                             current_time.to_milliseconds(),
@@ -347,12 +354,15 @@ DisplayingVideoSinkUpdateResult DisplayingVideoSink::update()
                             catch_up_frame.timestamp().to_milliseconds(),
                             (current_time - catch_up_frame.timestamp()).to_milliseconds(),
                             scheduler_config.gradual_catch_up_age_threshold.to_milliseconds(),
+                            scheduler_config.gradual_catch_up_target_age.to_milliseconds(),
+                            estimated_frame_duration.to_milliseconds(),
                             coalesced_for_catch_up,
                             retrieved_for_catch_up,
                             queue_size,
                             queue_max_size,
                             fullness_percent,
                             max_frames,
+                            scheduler_config.gradual_catch_up_burst_max_frames,
                             saw_provider_empty_this_update,
                             m_next_frame.is_valid());
                 }
