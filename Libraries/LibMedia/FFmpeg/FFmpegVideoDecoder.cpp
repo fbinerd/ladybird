@@ -1010,6 +1010,31 @@ static Atomic<bool>& cuda_gl_buffer_interop_disabled()
     static Atomic<bool> disabled { false };
     return disabled;
 }
+
+static void log_cuda_external_memory_symbols_once()
+{
+    static Atomic<bool> did_log { false };
+    if (did_log.exchange(true))
+        return;
+
+    auto* library = dlopen("libcuda.so.1", RTLD_LAZY);
+    if (!library) {
+        dbgln("MUNDO_MEDIA_FFMPEG cuda_external_memory_symbols source=nvdec_frame library=false import_memory=false destroy_memory=false mapped_buffer=false mapped_mipmap=false mip_level=false mip_destroy=false import_semaphore=false destroy_semaphore=false signal_semaphore=false wait_semaphore=false");
+        return;
+    }
+
+    dbgln("MUNDO_MEDIA_FFMPEG cuda_external_memory_symbols source=nvdec_frame library=true import_memory={} destroy_memory={} mapped_buffer={} mapped_mipmap={} mip_level={} mip_destroy={} import_semaphore={} destroy_semaphore={} signal_semaphore={} wait_semaphore={}",
+        dlsym(library, "cuImportExternalMemory") != nullptr,
+        dlsym(library, "cuDestroyExternalMemory") != nullptr,
+        dlsym(library, "cuExternalMemoryGetMappedBuffer") != nullptr,
+        dlsym(library, "cuExternalMemoryGetMappedMipmappedArray") != nullptr,
+        dlsym(library, "cuMipmappedArrayGetLevel") != nullptr,
+        dlsym(library, "cuMipmappedArrayDestroy") != nullptr,
+        dlsym(library, "cuImportExternalSemaphore") != nullptr,
+        dlsym(library, "cuDestroyExternalSemaphore") != nullptr,
+        dlsym(library, "cuSignalExternalSemaphoresAsync") != nullptr,
+        dlsym(library, "cuWaitExternalSemaphoresAsync") != nullptr);
+}
 #endif
 
 class RetainedHardwareFrameSource final : public HardwareVideoFrameHandle {
@@ -1034,6 +1059,10 @@ public:
         , m_frame(frame)
         , m_cicp(cicp)
     {
+#if defined(__linux__)
+        if (descriptor.backend == HardwareVideoFrameBackend::Cuda)
+            log_cuda_external_memory_symbols_once();
+#endif
     }
 
     ~RetainedHardwareFrameSource()
