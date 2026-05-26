@@ -51,6 +51,9 @@ extern "C" {
 #include <core/SkSurface.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__)
+#    include <dlfcn.h>
+#endif
 
 #ifndef GL_PIXEL_UNPACK_BUFFER
 #    define GL_PIXEL_UNPACK_BUFFER GL_PIXEL_UNPACK_BUFFER_NV
@@ -109,6 +112,95 @@ static bool mundo_webgl_video_nv12_shader_black_probe_enabled()
         return false;
 
     return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+static bool mundo_webgl_cuda_gl_interop_probe_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_CUDA_GL_INTEROP_PROBE");
+    if (!raw_value)
+        return true;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
+static void probe_mundo_cuda_gl_interop(size_t attempt_count)
+{
+#if defined(__linux__)
+    if (!mundo_webgl_cuda_gl_interop_probe_enabled())
+        return;
+
+    static size_t s_probe_count { 0 };
+    auto probe_count = ++s_probe_count;
+    if (probe_count != 1 && probe_count % 720 != 0)
+        return;
+
+    using CUresult = int;
+    using CUdevice = int;
+    using CuInit = CUresult (*)(unsigned int);
+    using CuDriverGetVersion = CUresult (*)(int*);
+    using CuDeviceGetCount = CUresult (*)(int*);
+    using CuGLGetDevices = CUresult (*)(unsigned int*, CUdevice*, unsigned int, unsigned int);
+
+    static void* s_cuda_library { nullptr };
+    static bool s_cuda_library_load_attempted { false };
+    if (!s_cuda_library_load_attempted) {
+        s_cuda_library_load_attempted = true;
+        s_cuda_library = dlopen("libcuda.so.1", RTLD_LAZY);
+    }
+    if (!s_cuda_library) {
+        dbgln("MUNDO_WEBGL_CUDA_GL_INTEROP_PROBE attempt={} probe={} status=unavailable reason=libcuda_load_failed", attempt_count, probe_count);
+        return;
+    }
+
+    auto* cu_init = reinterpret_cast<CuInit>(dlsym(s_cuda_library, "cuInit"));
+    auto* cu_driver_get_version = reinterpret_cast<CuDriverGetVersion>(dlsym(s_cuda_library, "cuDriverGetVersion"));
+    auto* cu_device_get_count = reinterpret_cast<CuDeviceGetCount>(dlsym(s_cuda_library, "cuDeviceGetCount"));
+    auto* cu_gl_get_devices = reinterpret_cast<CuGLGetDevices>(dlsym(s_cuda_library, "cuGLGetDevices_v2"));
+    if (!cu_gl_get_devices)
+        cu_gl_get_devices = reinterpret_cast<CuGLGetDevices>(dlsym(s_cuda_library, "cuGLGetDevices"));
+
+    if (!cu_init || !cu_driver_get_version || !cu_device_get_count || !cu_gl_get_devices) {
+        dbgln("MUNDO_WEBGL_CUDA_GL_INTEROP_PROBE attempt={} probe={} status=unavailable reason=missing_symbol cuInit={} cuDriverGetVersion={} cuDeviceGetCount={} cuGLGetDevices={}",
+            attempt_count,
+            probe_count,
+            cu_init != nullptr,
+            cu_driver_get_version != nullptr,
+            cu_device_get_count != nullptr,
+            cu_gl_get_devices != nullptr);
+        return;
+    }
+
+    auto init_result = cu_init(0);
+    int driver_version = 0;
+    auto driver_result = cu_driver_get_version(&driver_version);
+    int device_count = 0;
+    auto device_count_result = cu_device_get_count(&device_count);
+
+    CUdevice all_devices[8] {};
+    unsigned int gl_all_count = 0;
+    auto gl_all_result = cu_gl_get_devices(&gl_all_count, all_devices, 8, 1);
+
+    CUdevice current_devices[8] {};
+    unsigned int gl_current_count = 0;
+    auto gl_current_result = cu_gl_get_devices(&gl_current_count, current_devices, 8, 2);
+
+    dbgln("MUNDO_WEBGL_CUDA_GL_INTEROP_PROBE attempt={} probe={} status=probed init_result={} driver_result={} driver_version={} device_count_result={} device_count={} gl_all_result={} gl_all_count={} gl_all_device0={} gl_current_result={} gl_current_count={} gl_current_device0={}",
+        attempt_count,
+        probe_count,
+        init_result,
+        driver_result,
+        driver_version,
+        device_count_result,
+        device_count,
+        gl_all_result,
+        gl_all_count,
+        gl_all_count > 0 ? all_devices[0] : -1,
+        gl_current_result,
+        gl_current_count,
+        gl_current_count > 0 ? current_devices[0] : -1);
+#else
+    (void)attempt_count;
+#endif
 }
 
 static constexpr Optional<Gfx::ExportFormat> determine_export_format(WebIDL::UnsignedLong format, WebIDL::UnsignedLong type)
@@ -977,6 +1069,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, uv_texture_width, (nv12_data->height + 1) / 2, nv12_data->uv_plane_data(), nv12_data->uv_plane_size(), m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
 
     if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+        probe_mundo_cuda_gl_interop(attempt_count);
         dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=cpu_upload_required reason=no_gpu_interop_texture_handle has_hardware_handle={} gl_api=gles_angle_or_egl y_bytes={} uv_bytes={} y_upload={} uv_upload={}",
             attempt_count,
             hardware_frame_id,
