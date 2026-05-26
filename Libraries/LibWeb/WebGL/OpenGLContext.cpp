@@ -342,18 +342,47 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
         return;
     }
 
+    auto* cu_init = reinterpret_cast<tcuInit*>(dlsym(library, "cuInit"));
+    auto* cu_get_error_name = reinterpret_cast<tcuGetErrorName*>(dlsym(library, "cuGetErrorName"));
     auto* cu_import_external_memory = reinterpret_cast<tcuImportExternalMemory*>(dlsym(library, "cuImportExternalMemory"));
     auto* cu_destroy_external_memory = reinterpret_cast<tcuDestroyExternalMemory*>(dlsym(library, "cuDestroyExternalMemory"));
     auto* cu_external_memory_get_mapped_mipmapped_array = reinterpret_cast<tcuExternalMemoryGetMappedMipmappedArray*>(dlsym(library, "cuExternalMemoryGetMappedMipmappedArray"));
     auto* cu_mipmapped_array_destroy = reinterpret_cast<tcuMipmappedArrayDestroy*>(dlsym(library, "cuMipmappedArrayDestroy"));
-    if (!cu_import_external_memory || !cu_destroy_external_memory || !cu_external_memory_get_mapped_mipmapped_array || !cu_mipmapped_array_destroy) {
+    if (!cu_init || !cu_import_external_memory || !cu_destroy_external_memory || !cu_external_memory_get_mapped_mipmapped_array || !cu_mipmapped_array_destroy) {
         if (log_count <= 8 || log_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed reason=missing_symbols import_memory={} destroy_memory={} mapped_mipmap={} mip_destroy={}",
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed reason=missing_symbols init={} get_error_name={} import_memory={} destroy_memory={} mapped_mipmap={} mip_destroy={}",
                 log_count,
+                cu_init != nullptr,
+                cu_get_error_name != nullptr,
                 cu_import_external_memory != nullptr,
                 cu_destroy_external_memory != nullptr,
                 cu_external_memory_get_mapped_mipmapped_array != nullptr,
                 cu_mipmapped_array_destroy != nullptr);
+        }
+        return;
+    }
+
+    auto cuda_error_name = [&](CUresult result) -> char const* {
+        if (!cu_get_error_name)
+            return "unavailable";
+        char const* name = nullptr;
+        if (cu_get_error_name(result, &name) == CUDA_SUCCESS && name)
+            return name;
+        return "unknown";
+    };
+
+    auto init_result = cu_init(0);
+    if (init_result != CUDA_SUCCESS) {
+        if (log_count <= 8 || log_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=init result={} error={} size={}x{} allocation_size={} row_pitch={} modifier={}",
+                log_count,
+                static_cast<unsigned>(init_result),
+                cuda_error_name(init_result),
+                vulkan_image.info.extent.width,
+                vulkan_image.info.extent.height,
+                vulkan_image.info.allocation_size,
+                vulkan_image.info.row_pitch,
+                vulkan_image.info.modifier);
         }
         return;
     }
@@ -375,9 +404,11 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
     if (import_result != CUDA_SUCCESS) {
         close(import_fd);
         if (log_count <= 8 || log_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=import result={} size={}x{} allocation_size={} row_pitch={} modifier={}",
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=import init_result={} import_result={} import_error={} size={}x{} allocation_size={} row_pitch={} modifier={}",
                 log_count,
+                static_cast<unsigned>(init_result),
                 static_cast<unsigned>(import_result),
+                cuda_error_name(import_result),
                 vulkan_image.info.extent.width,
                 vulkan_image.info.extent.height,
                 vulkan_image.info.allocation_size,
@@ -404,11 +435,13 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
     cu_destroy_external_memory(external_memory);
 
     if (log_count <= 8 || log_count % 120 == 0) {
-        dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status={} import_result={} map_result={} size={}x{} allocation_size={} row_pitch={} modifier={}",
+        dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status={} init_result={} import_result={} map_result={} map_error={} size={}x{} allocation_size={} row_pitch={} modifier={}",
             log_count,
             map_result == CUDA_SUCCESS ? "ok" : "failed",
+            static_cast<unsigned>(init_result),
             static_cast<unsigned>(import_result),
             static_cast<unsigned>(map_result),
+            cuda_error_name(map_result),
             vulkan_image.info.extent.width,
             vulkan_image.info.extent.height,
             vulkan_image.info.allocation_size,
