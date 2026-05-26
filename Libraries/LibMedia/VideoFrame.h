@@ -41,11 +41,26 @@ struct MEDIA_API HardwareVideoFrameDescriptor {
     bool requires_cpu_transfer { true };
 };
 
+struct MEDIA_API HardwareVideoFrameGLTextureUploadRequest {
+    u32 texture_target { 0 };
+    u32 y_texture { 0 };
+    u32 uv_texture { 0 };
+    u32 width { 0 };
+    u32 height { 0 };
+    u32 uv_width { 0 };
+    u32 uv_height { 0 };
+};
+
+struct MEDIA_API HardwareVideoFrameGLTextureUploadResult {
+    u64 upload_microseconds { 0 };
+};
+
 class MEDIA_API HardwareVideoFrameHandle : public RefCounted<HardwareVideoFrameHandle> {
 public:
     virtual ~HardwareVideoFrameHandle();
 
     HardwareVideoFrameDescriptor const& descriptor() const { return m_descriptor; }
+    virtual ErrorOr<HardwareVideoFrameGLTextureUploadResult> upload_to_gl_textures(HardwareVideoFrameGLTextureUploadRequest const&) const;
 
 protected:
     explicit HardwareVideoFrameHandle(HardwareVideoFrameDescriptor descriptor)
@@ -137,10 +152,12 @@ public:
 
     u8 bit_depth() const { return m_bit_depth; }
     CodingIndependentCodePoints& cicp() { return m_cicp; }
+    CodingIndependentCodePoints const& cicp() const { return m_cicp; }
 
     NonnullRefPtr<Gfx::ImmutableBitmap> immutable_bitmap() const;
     bool has_lazy_bitmap() const { return m_bitmap == nullptr && m_bitmap_factory; }
     bool has_lazy_nv12_data() const { return m_nv12_data == nullptr && m_nv12_data_factory; }
+    NV12VideoFrameData const* cached_nv12_data() const { return m_nv12_data.ptr(); }
     NV12VideoFrameData const* nv12_data() const;
     Optional<HardwareVideoFrameDescriptor> const& hardware_descriptor() const { return m_hardware_descriptor; }
     bool has_hardware_descriptor() const { return m_hardware_descriptor.has_value(); }

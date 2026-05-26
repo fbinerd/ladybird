@@ -20,12 +20,19 @@
 
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__)
+#    include <dlfcn.h>
+#endif
 
 extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/log.h>
 }
+
+#if defined(__linux__)
+#    include <ffnvcodec/dynlink_cuda.h>
+#endif
 
 namespace Media::FFmpeg {
 
@@ -1097,11 +1104,160 @@ public:
         return nv12_data;
     }
 
+    virtual ErrorOr<HardwareVideoFrameGLTextureUploadResult> upload_to_gl_textures(HardwareVideoFrameGLTextureUploadRequest const& request) const override
+    {
+#if defined(__linux__)
+        if (m_frame->format != AV_PIX_FMT_CUDA)
+            return Error::from_string_literal("Retained frame is not a CUDA frame");
+        if (!m_frame->data[0] || !m_frame->data[1])
+            return Error::from_string_literal("CUDA frame does not expose both NV12 planes");
+        if (m_frame->linesize[0] <= 0 || m_frame->linesize[1] <= 0)
+            return Error::from_string_literal("CUDA frame has invalid plane pitch");
+        if (!request.y_texture || !request.uv_texture || !request.texture_target)
+            return Error::from_string_literal("Invalid GL texture upload request");
+
+        auto* functions = TRY(cuda_gl_functions());
+        auto* cuda_context = cuda_context_from_frame();
+        if (!cuda_context)
+            return Error::from_string_literal("CUDA frame has no associated CUDA context");
+
+        CUcontext previous_context { nullptr };
+        auto push_result = functions->cuCtxPushCurrent(cuda_context);
+        if (push_result != CUDA_SUCCESS)
+            return Error::from_string_literal("Failed to push CUDA context for GL texture upload");
+        auto pop_context = ScopeGuard([&] {
+            functions->cuCtxPopCurrent(&previous_context);
+        });
+
+        auto upload_start = MonotonicTime::now();
+        TRY(copy_cuda_plane_to_gl_texture(*functions, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), request.y_texture, request.texture_target, request.width, request.height));
+        TRY(copy_cuda_plane_to_gl_texture(*functions, reinterpret_cast<CUdeviceptr>(m_frame->data[1]), static_cast<size_t>(m_frame->linesize[1]), request.uv_texture, request.texture_target, request.uv_width * 2, request.uv_height));
+        auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
+
+        m_was_gpu_uploaded = true;
+        static size_t s_cuda_gl_texture_upload_count { 0 };
+        auto count = ++s_cuda_gl_texture_upload_count;
+        if (count <= 8 || count % 120 == 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload count={} frame_id={} size={}x{} uv={}x{} y_pitch={} uv_pitch={} upload_us={}",
+                count,
+                descriptor().frame_id,
+                request.width,
+                request.height,
+                request.uv_width,
+                request.uv_height,
+                m_frame->linesize[0],
+                m_frame->linesize[1],
+                upload_microseconds);
+        }
+
+        return HardwareVideoFrameGLTextureUploadResult { .upload_microseconds = static_cast<u64>(upload_microseconds) };
+#else
+        (void)request;
+        return Error::from_string_literal("CUDA GL texture upload is only implemented on Linux");
+#endif
+    }
+
 private:
+#if defined(__linux__)
+    struct CudaGLFunctions {
+        void* library { nullptr };
+        tcuCtxPushCurrent_v2* cuCtxPushCurrent { nullptr };
+        tcuCtxPopCurrent_v2* cuCtxPopCurrent { nullptr };
+        tcuGraphicsGLRegisterImage* cuGraphicsGLRegisterImage { nullptr };
+        tcuGraphicsUnregisterResource* cuGraphicsUnregisterResource { nullptr };
+        tcuGraphicsMapResources* cuGraphicsMapResources { nullptr };
+        tcuGraphicsUnmapResources* cuGraphicsUnmapResources { nullptr };
+        tcuGraphicsSubResourceGetMappedArray* cuGraphicsSubResourceGetMappedArray { nullptr };
+        tcuMemcpy2D_v2* cuMemcpy2D { nullptr };
+    };
+
+    struct MinimalAVCUDADeviceContext {
+        CUcontext cuda_ctx { nullptr };
+        CUstream stream { nullptr };
+        void* internal { nullptr };
+    };
+
+    static ErrorOr<CudaGLFunctions*> cuda_gl_functions()
+    {
+        static CudaGLFunctions s_functions;
+        static bool s_load_attempted { false };
+        if (!s_load_attempted) {
+            s_load_attempted = true;
+            s_functions.library = dlopen("libcuda.so.1", RTLD_LAZY);
+            if (s_functions.library) {
+                s_functions.cuCtxPushCurrent = reinterpret_cast<tcuCtxPushCurrent_v2*>(dlsym(s_functions.library, "cuCtxPushCurrent_v2"));
+                s_functions.cuCtxPopCurrent = reinterpret_cast<tcuCtxPopCurrent_v2*>(dlsym(s_functions.library, "cuCtxPopCurrent_v2"));
+                s_functions.cuGraphicsGLRegisterImage = reinterpret_cast<tcuGraphicsGLRegisterImage*>(dlsym(s_functions.library, "cuGraphicsGLRegisterImage"));
+                s_functions.cuGraphicsUnregisterResource = reinterpret_cast<tcuGraphicsUnregisterResource*>(dlsym(s_functions.library, "cuGraphicsUnregisterResource"));
+                s_functions.cuGraphicsMapResources = reinterpret_cast<tcuGraphicsMapResources*>(dlsym(s_functions.library, "cuGraphicsMapResources"));
+                s_functions.cuGraphicsUnmapResources = reinterpret_cast<tcuGraphicsUnmapResources*>(dlsym(s_functions.library, "cuGraphicsUnmapResources"));
+                s_functions.cuGraphicsSubResourceGetMappedArray = reinterpret_cast<tcuGraphicsSubResourceGetMappedArray*>(dlsym(s_functions.library, "cuGraphicsSubResourceGetMappedArray"));
+                s_functions.cuMemcpy2D = reinterpret_cast<tcuMemcpy2D_v2*>(dlsym(s_functions.library, "cuMemcpy2D_v2"));
+            }
+        }
+
+        if (!s_functions.library)
+            return Error::from_string_literal("Failed to load libcuda.so.1");
+        if (!s_functions.cuCtxPushCurrent || !s_functions.cuCtxPopCurrent || !s_functions.cuGraphicsGLRegisterImage || !s_functions.cuGraphicsUnregisterResource || !s_functions.cuGraphicsMapResources || !s_functions.cuGraphicsUnmapResources || !s_functions.cuGraphicsSubResourceGetMappedArray || !s_functions.cuMemcpy2D)
+            return Error::from_string_literal("Missing CUDA GL interop symbols");
+        return &s_functions;
+    }
+
+    CUcontext cuda_context_from_frame() const
+    {
+        if (!m_frame->hw_frames_ctx || !m_frame->hw_frames_ctx->data)
+            return nullptr;
+        auto* frames_context = reinterpret_cast<AVHWFramesContext*>(m_frame->hw_frames_ctx->data);
+        if (!frames_context->device_ctx)
+            return nullptr;
+        auto* device_context = frames_context->device_ctx;
+        if (!device_context->hwctx)
+            return nullptr;
+        return reinterpret_cast<MinimalAVCUDADeviceContext*>(device_context->hwctx)->cuda_ctx;
+    }
+
+    static ErrorOr<void> copy_cuda_plane_to_gl_texture(CudaGLFunctions& functions, CUdeviceptr source, size_t source_pitch, u32 texture, u32 texture_target, u32 width_in_bytes, u32 height)
+    {
+        CUgraphicsResource resource { nullptr };
+        auto register_result = functions.cuGraphicsGLRegisterImage(&resource, texture, texture_target, CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD);
+        if (register_result != CUDA_SUCCESS)
+            return Error::from_string_literal("Failed to register GL texture with CUDA");
+        auto unregister_resource = ScopeGuard([&] {
+            functions.cuGraphicsUnregisterResource(resource);
+        });
+
+        auto map_result = functions.cuGraphicsMapResources(1, &resource, nullptr);
+        if (map_result != CUDA_SUCCESS)
+            return Error::from_string_literal("Failed to map CUDA graphics resource");
+        auto unmap_resource = ScopeGuard([&] {
+            functions.cuGraphicsUnmapResources(1, &resource, nullptr);
+        });
+
+        CUarray array { nullptr };
+        auto array_result = functions.cuGraphicsSubResourceGetMappedArray(&array, resource, 0, 0);
+        if (array_result != CUDA_SUCCESS || !array)
+            return Error::from_string_literal("Failed to get mapped CUDA array from GL texture");
+
+        CUDA_MEMCPY2D copy {};
+        copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        copy.srcDevice = source;
+        copy.srcPitch = source_pitch;
+        copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+        copy.dstArray = array;
+        copy.WidthInBytes = width_in_bytes;
+        copy.Height = height;
+        auto copy_result = functions.cuMemcpy2D(&copy);
+        if (copy_result != CUDA_SUCCESS)
+            return Error::from_string_literal("Failed to copy CUDA plane into GL texture");
+        return {};
+    }
+#endif
+
     AVFrame* m_frame { nullptr };
     CodingIndependentCodePoints m_cicp;
     RefPtr<NV12VideoFrameData> m_nv12_data;
     bool m_was_transferred { false };
+    mutable bool m_was_gpu_uploaded { false };
 };
 
 static DecoderErrorOr<void> copy_planar_frame_to_yuv_data(AVFrame const* frame, Gfx::YUVData& yuv_data, Gfx::Size<u32> size, Subsampling subsampling, size_t component_size)

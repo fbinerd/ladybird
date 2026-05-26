@@ -28,6 +28,11 @@ char const* hardware_video_frame_backend_name(HardwareVideoFrameBackend backend)
 
 HardwareVideoFrameHandle::~HardwareVideoFrameHandle() = default;
 
+ErrorOr<HardwareVideoFrameGLTextureUploadResult> HardwareVideoFrameHandle::upload_to_gl_textures(HardwareVideoFrameGLTextureUploadRequest const&) const
+{
+    return Error::from_string_literal("Hardware frame handle does not support GL texture upload");
+}
+
 NV12VideoFrameData::~NV12VideoFrameData()
 {
     if (m_external_storage_cleanup)
