@@ -879,7 +879,15 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto visible_uv_width = (video_width + 1) / 2;
     auto uv_texture_height = (video_height + 1) / 2;
     auto const* nv12_data = media_frame->cached_nv12_data();
-    auto can_attempt_hardware_gl_upload = has_hardware_handle && zero_copy_capable && !is_sub_image;
+    static bool s_cuda_gl_buffer_upload_disabled { false };
+    auto can_attempt_hardware_gl_upload = has_hardware_handle && zero_copy_capable && !is_sub_image && !s_cuda_gl_buffer_upload_disabled;
+    if (s_cuda_gl_buffer_upload_disabled && has_hardware_handle && zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason=cuda_gl_buffer_interop_disabled has_hardware_handle={} gl_api=gles_angle_or_egl",
+            attempt_count,
+            hardware_frame_id,
+            hardware_backend,
+            has_hardware_handle);
+    }
 
     auto validate_nv12_data = [&]() -> bool {
         if (!nv12_data)
@@ -1237,8 +1245,11 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 used_hardware_gl_upload = true;
                 hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
             } else {
-                if (upload_result.is_error())
+                if (upload_result.is_error()) {
                     hardware_gl_upload_failure_reason = upload_result.error().string_literal();
+                    if (hardware_gl_upload_failure_reason == "CUDA GL upload buffer interop disabled after mismatched mapping"sv)
+                        s_cuda_gl_buffer_upload_disabled = true;
+                }
                 if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
                     dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl",
                         attempt_count,

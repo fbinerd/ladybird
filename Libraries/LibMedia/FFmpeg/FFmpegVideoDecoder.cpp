@@ -12,6 +12,7 @@
 #include <LibThreading/ConditionVariable.h>
 #include <LibThreading/Mutex.h>
 #include <LibThreading/ThreadPool.h>
+#include <AK/Atomic.h>
 #include <AK/ByteBuffer.h>
 #include <AK/Time.h>
 
@@ -1003,6 +1004,14 @@ static bool lazy_hardware_frame_transfer_enabled()
     return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
+#if defined(__linux__)
+static Atomic<bool>& cuda_gl_buffer_interop_disabled()
+{
+    static Atomic<bool> disabled { false };
+    return disabled;
+}
+#endif
+
 class RetainedHardwareFrameSource final : public HardwareVideoFrameHandle {
 public:
     static ErrorOr<NonnullRefPtr<RetainedHardwareFrameSource>> create(AVFrame const* frame, CodingIndependentCodePoints const& cicp, HardwareVideoFrameDescriptor descriptor)
@@ -1132,6 +1141,8 @@ public:
 
         auto upload_start = MonotonicTime::now();
         if (request.y_upload_buffer && request.uv_upload_buffer) {
+            if (cuda_gl_buffer_interop_disabled().load())
+                return Error::from_string_literal("CUDA GL upload buffer interop disabled after mismatched mapping");
             TRY(copy_cuda_plane_to_gl_buffer(*functions, "y", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), request.y_upload_buffer, request.width, request.height, request.y_upload_buffer_size));
             TRY(copy_cuda_plane_to_gl_buffer(*functions, "uv", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[1]), static_cast<size_t>(m_frame->linesize[1]), request.uv_upload_buffer, request.uv_width * 2, request.uv_height, request.uv_upload_buffer_size));
         } else {
@@ -1307,6 +1318,13 @@ private:
         if (pointer_result != CUDA_SUCCESS || mapped_size < required_size) {
             dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_buffer_upload_error frame_id={} plane={} step=pointer result={} buffer={} width_bytes={} height={} pitch={} mapped_size={} required_size={} gl_reported_buffer_size={}",
                 frame_id, plane_name, static_cast<int>(pointer_result), buffer, width_in_bytes, height, source_pitch, mapped_size, required_size, buffer_size);
+            if (pointer_result == CUDA_SUCCESS && buffer_size >= required_size && mapped_size < required_size) {
+                auto was_disabled = cuda_gl_buffer_interop_disabled().exchange(true);
+                if (!was_disabled) {
+                    dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_buffer_interop_disabled reason=mapped_size_mismatch plane={} buffer={} mapped_size={} required_size={} gl_reported_buffer_size={}",
+                        plane_name, buffer, mapped_size, required_size, buffer_size);
+                }
+            }
             return Error::from_string_literal("Failed to get mapped CUDA pointer from GL upload buffer");
         }
 
