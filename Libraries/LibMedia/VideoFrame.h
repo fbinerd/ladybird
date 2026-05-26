@@ -41,6 +41,22 @@ struct MEDIA_API HardwareVideoFrameDescriptor {
     bool requires_cpu_transfer { true };
 };
 
+class MEDIA_API HardwareVideoFrameHandle : public RefCounted<HardwareVideoFrameHandle> {
+public:
+    virtual ~HardwareVideoFrameHandle();
+
+    HardwareVideoFrameDescriptor const& descriptor() const { return m_descriptor; }
+
+protected:
+    explicit HardwareVideoFrameHandle(HardwareVideoFrameDescriptor descriptor)
+        : m_descriptor(descriptor)
+    {
+    }
+
+private:
+    HardwareVideoFrameDescriptor m_descriptor;
+};
+
 struct MEDIA_API NV12VideoFrameData : public RefCounted<NV12VideoFrameData> {
     ~NV12VideoFrameData();
 
@@ -130,6 +146,8 @@ public:
     bool has_hardware_descriptor() const { return m_hardware_descriptor.has_value(); }
     bool is_zero_copy_capable() const { return m_hardware_descriptor.has_value() && m_hardware_descriptor->zero_copy_capable; }
     void set_hardware_descriptor(HardwareVideoFrameDescriptor);
+    HardwareVideoFrameHandle const* hardware_handle() const { return m_hardware_handle.ptr(); }
+    void set_hardware_handle(NonnullRefPtr<HardwareVideoFrameHandle>);
 
 private:
     AK::Duration m_timestamp;
@@ -142,6 +160,7 @@ private:
     mutable RefPtr<NV12VideoFrameData> m_nv12_data;
     mutable NV12DataFactory m_nv12_data_factory;
     Optional<HardwareVideoFrameDescriptor> m_hardware_descriptor;
+    RefPtr<HardwareVideoFrameHandle> m_hardware_handle;
 };
 
 }

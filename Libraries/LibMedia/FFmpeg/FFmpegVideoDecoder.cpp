@@ -995,9 +995,9 @@ static bool lazy_hardware_frame_transfer_enabled()
     return strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
-class RetainedHardwareFrameSource final : public RefCounted<RetainedHardwareFrameSource> {
+class RetainedHardwareFrameSource final : public HardwareVideoFrameHandle {
 public:
-    static ErrorOr<NonnullRefPtr<RetainedHardwareFrameSource>> create(AVFrame const* frame, CodingIndependentCodePoints const& cicp)
+    static ErrorOr<NonnullRefPtr<RetainedHardwareFrameSource>> create(AVFrame const* frame, CodingIndependentCodePoints const& cicp, HardwareVideoFrameDescriptor descriptor)
     {
         auto* retained_frame = av_frame_alloc();
         if (!retained_frame)
@@ -1009,11 +1009,12 @@ public:
             return Error::from_errno(ENOMEM);
         }
 
-        return make_ref_counted<RetainedHardwareFrameSource>(retained_frame, cicp);
+        return make_ref_counted<RetainedHardwareFrameSource>(retained_frame, cicp, descriptor);
     }
 
-    RetainedHardwareFrameSource(AVFrame* frame, CodingIndependentCodePoints cicp)
-        : m_frame(frame)
+    RetainedHardwareFrameSource(AVFrame* frame, CodingIndependentCodePoints cicp, HardwareVideoFrameDescriptor descriptor)
+        : HardwareVideoFrameHandle(descriptor)
+        , m_frame(frame)
         , m_cicp(cicp)
     {
     }
@@ -1030,6 +1031,19 @@ public:
                     m_frame ? m_frame->width : 0,
                     m_frame ? m_frame->height : 0);
             }
+        }
+        static size_t s_retained_hw_frame_destroy_count { 0 };
+        auto destroy_count = ++s_retained_hw_frame_destroy_count;
+        if (destroy_count <= 8 || destroy_count % 120 == 0) {
+            auto const& hardware_descriptor = descriptor();
+            dbgln("MUNDO_MEDIA_FFMPEG retained_hw_frame_destroy count={} frame_id={} backend={} transferred={} hw_format={} size={}x{}",
+                destroy_count,
+                hardware_descriptor.frame_id,
+                hardware_video_frame_backend_name(hardware_descriptor.backend),
+                m_was_transferred,
+                m_frame ? pixel_format_name(static_cast<AVPixelFormat>(m_frame->format)) : "unknown",
+                m_frame ? m_frame->width : 0,
+                m_frame ? m_frame->height : 0);
         }
         av_frame_free(&m_frame);
     }
@@ -1068,8 +1082,9 @@ public:
         static size_t s_lazy_hw_transfer_count { 0 };
         auto count = ++s_lazy_hw_transfer_count;
         if (count <= 8 || count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG lazy_hw_transfer count={} hw_format={} sw_format={} size={}x{} transfer_us={} retain_us={}",
+            dbgln("MUNDO_MEDIA_FFMPEG lazy_hw_transfer count={} frame_id={} hw_format={} sw_format={} size={}x{} transfer_us={} retain_us={}",
                 count,
+                descriptor().frame_id,
                 pixel_format_name(static_cast<AVPixelFormat>(m_frame->format)),
                 pixel_format_name(static_cast<AVPixelFormat>(transfer_frame->format)),
                 transfer_frame->width,
@@ -1350,7 +1365,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
             auto duration = AK::Duration::from_microseconds(m_frame->duration);
             auto hardware_descriptor = hardware_descriptor_for_cuda_frame(m_codec_context, m_frame, bit_depth);
 
-            auto source = DECODER_TRY_ALLOC(RetainedHardwareFrameSource::create(m_frame, cicp));
+            auto source = DECODER_TRY_ALLOC(RetainedHardwareFrameSource::create(m_frame, cicp, hardware_descriptor));
             auto source_for_bitmap = source;
             auto bitmap_factory = [source_for_bitmap]() mutable -> ErrorOr<NonnullRefPtr<Gfx::ImmutableBitmap>> {
                 auto frame_data = TRY(source_for_bitmap->nv12_data());
@@ -1377,7 +1392,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
             }
 
             auto video_frame = DECODER_TRY_ALLOC(try_make<VideoFrame>(timestamp, duration, size, bit_depth, cicp, move(bitmap_factory), move(nv12_data_factory)));
-            video_frame->set_hardware_descriptor(hardware_descriptor);
+            video_frame->set_hardware_handle(source);
             return video_frame;
         }
 

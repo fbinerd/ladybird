@@ -673,6 +673,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         auto hardware_frame_id = 0ull;
         auto zero_copy_capable = false;
         auto requires_cpu_transfer = false;
+        auto has_hardware_handle = false;
         if (source_is_video) {
             auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
             if (auto const* media_frame = video->current_media_frame(); media_frame && media_frame->nv12_data()) {
@@ -690,10 +691,11 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     zero_copy_capable = hardware_descriptor->zero_copy_capable;
                     requires_cpu_transfer = hardware_descriptor->requires_cpu_transfer;
                 }
+                has_hardware_handle = media_frame->hardware_handle() != nullptr;
             }
         }
         if (has_nv12_frame || should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-            dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} has_nv12={} frame_id={} hardware_backend={} zero_copy_capable={} requires_cpu_transfer={} nv12_size={}x{} nv12_stride={}x{} nv12_bytes={}+{} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
+            dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} has_nv12={} frame_id={} hardware_backend={} zero_copy_capable={} requires_cpu_transfer={} has_hardware_handle={} nv12_size={}x{} nv12_stride={}x{} nv12_bytes={}+{} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
                 attempt_count,
                 reason,
                 source_is_video,
@@ -702,6 +704,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 hardware_backend,
                 zero_copy_capable,
                 requires_cpu_transfer,
+                has_hardware_handle,
                 nv12_width,
                 nv12_height,
                 nv12_y_stride,
@@ -740,6 +743,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto hardware_frame_id = 0ull;
     auto zero_copy_capable = false;
     auto requires_cpu_transfer = false;
+    auto has_hardware_handle = media_frame->hardware_handle() != nullptr;
     if (auto const& hardware_descriptor = media_frame->hardware_descriptor(); hardware_descriptor.has_value()) {
         hardware_backend = Media::hardware_video_frame_backend_name(hardware_descriptor->backend);
         hardware_frame_id = hardware_descriptor->frame_id;
@@ -957,10 +961,11 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, uv_texture_width, (nv12_data->height + 1) / 2, nv12_data->uv_plane_data(), nv12_data->uv_plane_size(), m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
 
     if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=cpu_upload_required reason=no_gpu_interop_texture_handle y_bytes={} uv_bytes={} y_upload={} uv_upload={}",
+        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=cpu_upload_required reason=no_gpu_interop_texture_handle has_hardware_handle={} gl_api=gles_angle_or_egl y_bytes={} uv_bytes={} y_upload={} uv_upload={}",
             attempt_count,
             hardware_frame_id,
             hardware_backend,
+            has_hardware_handle,
             nv12_data->y_plane_size(),
             nv12_data->uv_plane_size(),
             used_y_plane_pbo ? "pbo"sv : "client"sv,
@@ -1060,13 +1065,14 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} frame_id={} hardware_backend={} zero_copy_capable={} requires_cpu_transfer={} upload_us={} size={}x{} offset={}x{} target_storage={} plane_storage={}/{} plane_upload={}/{} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} frame_id={} hardware_backend={} zero_copy_capable={} requires_cpu_transfer={} has_hardware_handle={} upload_us={} size={}x{} offset={}x{} target_storage={} plane_storage={}/{} plane_upload={}/{} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
             attempt_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             hardware_frame_id,
             hardware_backend,
             zero_copy_capable,
             requires_cpu_transfer,
+            has_hardware_handle,
             upload_microseconds,
             nv12_data->width,
             nv12_data->height,

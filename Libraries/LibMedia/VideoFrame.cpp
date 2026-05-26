@@ -26,6 +26,8 @@ char const* hardware_video_frame_backend_name(HardwareVideoFrameBackend backend)
     VERIFY_NOT_REACHED();
 }
 
+HardwareVideoFrameHandle::~HardwareVideoFrameHandle() = default;
+
 NV12VideoFrameData::~NV12VideoFrameData()
 {
     if (m_external_storage_cleanup)
@@ -140,6 +142,12 @@ NV12VideoFrameData const* VideoFrame::nv12_data() const
 void VideoFrame::set_hardware_descriptor(HardwareVideoFrameDescriptor descriptor)
 {
     m_hardware_descriptor = descriptor;
+}
+
+void VideoFrame::set_hardware_handle(NonnullRefPtr<HardwareVideoFrameHandle> handle)
+{
+    m_hardware_descriptor = handle->descriptor();
+    m_hardware_handle = move(handle);
 }
 
 }
