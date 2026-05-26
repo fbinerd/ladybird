@@ -330,6 +330,8 @@ void OpenGLContext::allocate_iosurface_painting_surface()
 #endif
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
+static constexpr unsigned cuda_external_memory_dedicated_flag = 1u;
+
 static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage const& vulkan_image, size_t log_count)
 {
     if (dma_buf_fd < 0)
@@ -476,6 +478,7 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
     memory_handle_desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
     memory_handle_desc.handle.fd = import_fd;
     memory_handle_desc.size = static_cast<unsigned long long>(vulkan_image.info.allocation_size);
+    memory_handle_desc.flags = cuda_external_memory_dedicated_flag;
 
     CUexternalMemory external_memory { nullptr };
     auto import_result = cu_import_external_memory(&external_memory, &memory_handle_desc);
@@ -483,13 +486,14 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
         close(import_fd);
         release_context();
         if (log_count <= 8 || log_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=import init_result={} import_result={} import_error={} previous_context={} primary_context={} size={}x{} allocation_size={} row_pitch={} modifier={}",
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=import init_result={} import_result={} import_error={} previous_context={} primary_context={} dedicated={} size={}x{} allocation_size={} row_pitch={} modifier={}",
                 log_count,
                 static_cast<unsigned>(init_result),
                 static_cast<unsigned>(import_result),
                 cuda_error_name(import_result),
                 previous_context,
                 primary_context,
+                memory_handle_desc.flags == cuda_external_memory_dedicated_flag,
                 vulkan_image.info.extent.width,
                 vulkan_image.info.extent.height,
                 vulkan_image.info.allocation_size,
@@ -517,7 +521,7 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
     release_context();
 
     if (log_count <= 8 || log_count % 120 == 0) {
-        dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status={} init_result={} import_result={} map_result={} map_error={} previous_context={} primary_context={} size={}x{} allocation_size={} row_pitch={} modifier={}",
+        dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status={} init_result={} import_result={} map_result={} map_error={} previous_context={} primary_context={} dedicated={} size={}x{} allocation_size={} row_pitch={} modifier={}",
             log_count,
             map_result == CUDA_SUCCESS ? "ok" : "failed",
             static_cast<unsigned>(init_result),
@@ -526,6 +530,7 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
             cuda_error_name(map_result),
             previous_context,
             primary_context,
+            memory_handle_desc.flags == cuda_external_memory_dedicated_flag,
             vulkan_image.info.extent.width,
             vulkan_image.info.extent.height,
             vulkan_image.info.allocation_size,
