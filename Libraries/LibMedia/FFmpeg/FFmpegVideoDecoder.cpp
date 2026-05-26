@@ -1305,8 +1305,8 @@ private:
         size_t mapped_size { 0 };
         auto pointer_result = functions.cuGraphicsResourceGetMappedPointer(&mapped_pointer, &mapped_size, resource);
         if (pointer_result != CUDA_SUCCESS || mapped_size < required_size) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_buffer_upload_error frame_id={} plane={} step=pointer result={} buffer={} width_bytes={} height={} pitch={} mapped_size={} required_size={}",
-                frame_id, plane_name, static_cast<int>(pointer_result), buffer, width_in_bytes, height, source_pitch, mapped_size, required_size);
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_buffer_upload_error frame_id={} plane={} step=pointer result={} buffer={} width_bytes={} height={} pitch={} mapped_size={} required_size={} gl_reported_buffer_size={}",
+                frame_id, plane_name, static_cast<int>(pointer_result), buffer, width_in_bytes, height, source_pitch, mapped_size, required_size, buffer_size);
             return Error::from_string_literal("Failed to get mapped CUDA pointer from GL upload buffer");
         }
 

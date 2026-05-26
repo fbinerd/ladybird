@@ -1139,6 +1139,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 pbo_size = static_cast<size_t>(allocated_size);
             else
                 pbo_size = 0;
+            glFinish();
             return CudaUploadBuffer { .buffer = pbo, .size = pbo_size, .error = error };
         };
 
