@@ -1188,6 +1188,16 @@ private:
         tcuGraphicsGLRegisterBuffer* cuGraphicsGLRegisterBuffer { nullptr };
         tcuGraphicsResourceGetMappedPointer* cuGraphicsResourceGetMappedPointer { nullptr };
         tcuMemcpy2D_v2* cuMemcpy2D { nullptr };
+        tcuImportExternalMemory* cuImportExternalMemory { nullptr };
+        tcuDestroyExternalMemory* cuDestroyExternalMemory { nullptr };
+        tcuExternalMemoryGetMappedBuffer* cuExternalMemoryGetMappedBuffer { nullptr };
+        tcuExternalMemoryGetMappedMipmappedArray* cuExternalMemoryGetMappedMipmappedArray { nullptr };
+        tcuMipmappedArrayGetLevel* cuMipmappedArrayGetLevel { nullptr };
+        tcuMipmappedArrayDestroy* cuMipmappedArrayDestroy { nullptr };
+        tcuImportExternalSemaphore* cuImportExternalSemaphore { nullptr };
+        tcuDestroyExternalSemaphore* cuDestroyExternalSemaphore { nullptr };
+        tcuSignalExternalSemaphoresAsync* cuSignalExternalSemaphoresAsync { nullptr };
+        tcuWaitExternalSemaphoresAsync* cuWaitExternalSemaphoresAsync { nullptr };
     };
 
     struct MinimalAVCUDADeviceContext {
@@ -1214,6 +1224,27 @@ private:
                 s_functions.cuGraphicsGLRegisterBuffer = reinterpret_cast<tcuGraphicsGLRegisterBuffer*>(dlsym(s_functions.library, "cuGraphicsGLRegisterBuffer"));
                 s_functions.cuGraphicsResourceGetMappedPointer = reinterpret_cast<tcuGraphicsResourceGetMappedPointer*>(dlsym(s_functions.library, "cuGraphicsResourceGetMappedPointer_v2"));
                 s_functions.cuMemcpy2D = reinterpret_cast<tcuMemcpy2D_v2*>(dlsym(s_functions.library, "cuMemcpy2D_v2"));
+                s_functions.cuImportExternalMemory = reinterpret_cast<tcuImportExternalMemory*>(dlsym(s_functions.library, "cuImportExternalMemory"));
+                s_functions.cuDestroyExternalMemory = reinterpret_cast<tcuDestroyExternalMemory*>(dlsym(s_functions.library, "cuDestroyExternalMemory"));
+                s_functions.cuExternalMemoryGetMappedBuffer = reinterpret_cast<tcuExternalMemoryGetMappedBuffer*>(dlsym(s_functions.library, "cuExternalMemoryGetMappedBuffer"));
+                s_functions.cuExternalMemoryGetMappedMipmappedArray = reinterpret_cast<tcuExternalMemoryGetMappedMipmappedArray*>(dlsym(s_functions.library, "cuExternalMemoryGetMappedMipmappedArray"));
+                s_functions.cuMipmappedArrayGetLevel = reinterpret_cast<tcuMipmappedArrayGetLevel*>(dlsym(s_functions.library, "cuMipmappedArrayGetLevel"));
+                s_functions.cuMipmappedArrayDestroy = reinterpret_cast<tcuMipmappedArrayDestroy*>(dlsym(s_functions.library, "cuMipmappedArrayDestroy"));
+                s_functions.cuImportExternalSemaphore = reinterpret_cast<tcuImportExternalSemaphore*>(dlsym(s_functions.library, "cuImportExternalSemaphore"));
+                s_functions.cuDestroyExternalSemaphore = reinterpret_cast<tcuDestroyExternalSemaphore*>(dlsym(s_functions.library, "cuDestroyExternalSemaphore"));
+                s_functions.cuSignalExternalSemaphoresAsync = reinterpret_cast<tcuSignalExternalSemaphoresAsync*>(dlsym(s_functions.library, "cuSignalExternalSemaphoresAsync"));
+                s_functions.cuWaitExternalSemaphoresAsync = reinterpret_cast<tcuWaitExternalSemaphoresAsync*>(dlsym(s_functions.library, "cuWaitExternalSemaphoresAsync"));
+                dbgln("MUNDO_MEDIA_FFMPEG cuda_external_memory_symbols import_memory={} destroy_memory={} mapped_buffer={} mapped_mipmap={} mip_level={} mip_destroy={} import_semaphore={} destroy_semaphore={} signal_semaphore={} wait_semaphore={}",
+                    s_functions.cuImportExternalMemory != nullptr,
+                    s_functions.cuDestroyExternalMemory != nullptr,
+                    s_functions.cuExternalMemoryGetMappedBuffer != nullptr,
+                    s_functions.cuExternalMemoryGetMappedMipmappedArray != nullptr,
+                    s_functions.cuMipmappedArrayGetLevel != nullptr,
+                    s_functions.cuMipmappedArrayDestroy != nullptr,
+                    s_functions.cuImportExternalSemaphore != nullptr,
+                    s_functions.cuDestroyExternalSemaphore != nullptr,
+                    s_functions.cuSignalExternalSemaphoresAsync != nullptr,
+                    s_functions.cuWaitExternalSemaphoresAsync != nullptr);
             }
         }
 

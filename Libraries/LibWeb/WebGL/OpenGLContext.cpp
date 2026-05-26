@@ -351,9 +351,31 @@ void OpenGLContext::allocate_vkimage_painting_surface()
             renderable_modifiers.append(egl_modifiers[i]);
         }
     }
+    static size_t s_dmabuf_caps_log_count { 0 };
+    auto dmabuf_caps_log_count = ++s_dmabuf_caps_log_count;
+    if (dmabuf_caps_log_count <= 8 || dmabuf_caps_log_count % 120 == 0) {
+        dbgln("MUNDO_WEBGL_VULKAN_DMABUF_CAPS count={} size={}x{} drm_format={} egl_formats={} egl_modifiers={} renderable_modifiers={}",
+            dmabuf_caps_log_count,
+            m_size.width(),
+            m_size.height(),
+            drm_format,
+            num_formats,
+            num_modifiers,
+            renderable_modifiers.size());
+    }
 
     auto vulkan_image = MUST(Gfx::create_shared_vulkan_image(m_skia_backend_context->vulkan_context(), m_size.width(), m_size.height(), vulkan_format, renderable_modifiers));
     m_painting_surface = Gfx::PaintingSurface::create_from_vkimage(m_skia_backend_context, vulkan_image, Gfx::PaintingSurface::Origin::BottomLeft);
+    auto dma_buf_fd = vulkan_image->get_dma_buf_fd();
+    if (dmabuf_caps_log_count <= 8 || dmabuf_caps_log_count % 120 == 0) {
+        dbgln("MUNDO_WEBGL_VULKAN_DMABUF_SURFACE count={} size={}x{} row_pitch={} modifier={} fd_valid={}",
+            dmabuf_caps_log_count,
+            m_size.width(),
+            m_size.height(),
+            vulkan_image->info.row_pitch,
+            vulkan_image->info.modifier,
+            dma_buf_fd >= 0);
+    }
 
     EGLAttrib attribs[] = {
         EGL_WIDTH,
@@ -363,7 +385,7 @@ void OpenGLContext::allocate_vkimage_painting_surface()
         EGL_LINUX_DRM_FOURCC_EXT,
         drm_format,
         EGL_DMA_BUF_PLANE0_FD_EXT,
-        vulkan_image->get_dma_buf_fd(), // EGL takes ownership of the fd
+        dma_buf_fd, // EGL takes ownership of the fd
         EGL_DMA_BUF_PLANE0_OFFSET_EXT,
         0,
         EGL_DMA_BUF_PLANE0_PITCH_EXT,
