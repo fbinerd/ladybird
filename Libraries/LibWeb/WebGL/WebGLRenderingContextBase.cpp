@@ -61,6 +61,18 @@ extern "C" {
 #ifndef GL_PIXEL_UNPACK_BUFFER_BINDING
 #    define GL_PIXEL_UNPACK_BUFFER_BINDING GL_PIXEL_UNPACK_BUFFER_BINDING_NV
 #endif
+#ifndef GL_RED_EXT
+#    define GL_RED_EXT 0x1903
+#endif
+#ifndef GL_RG_EXT
+#    define GL_RG_EXT 0x8227
+#endif
+#ifndef GL_R8_EXT
+#    define GL_R8_EXT 0x8229
+#endif
+#ifndef GL_RG8_EXT
+#    define GL_RG8_EXT 0x822B
+#endif
 
 namespace Web::WebGL {
 
@@ -678,11 +690,11 @@ static bool link_mundo_video_nv12_program(GLuint program)
 }
 
 template<typename PlaneTextureState, typename PlaneUploadPBOs>
-static bool upload_mundo_video_nv12_plane_texture(GLuint texture, GLenum unit, GLenum format, int width, int height, void const* data, size_t byte_count, PlaneTextureState& state, PlaneUploadPBOs& pbos, bool& used_pbo)
+static bool upload_mundo_video_nv12_plane_texture(GLuint texture, GLenum unit, GLenum internal_format, GLenum format, int width, int height, void const* data, size_t byte_count, PlaneTextureState& state, PlaneUploadPBOs& pbos, bool& used_pbo)
 {
     glActiveTexture(unit);
     glBindTexture(GL_TEXTURE_2D, texture);
-    auto reused_storage = state.width == width && state.height == height && state.format == format;
+    auto reused_storage = state.width == width && state.height == height && state.internal_format == internal_format && state.format == format;
     auto const use_pbo = mundo_webgl_video_pbo_upload_enabled() && byte_count > 0;
     GLint previous_unpack_buffer = 0;
     if (use_pbo) {
@@ -708,9 +720,10 @@ static bool upload_mundo_video_nv12_plane_texture(GLuint texture, GLenum unit, G
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        glTexImage2D(GL_TEXTURE_2D, 0, internal_format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
         state.width = width;
         state.height = height;
+        state.internal_format = internal_format;
         state.format = format;
     } else if (!data && byte_count == 0) {
         if (used_pbo)
@@ -910,6 +923,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             uniform sampler2D u_uv_plane;
             uniform vec2 u_y_coord_scale;
             uniform vec2 u_uv_coord_scale;
+            uniform float u_uv_second_channel_is_alpha;
             uniform float u_y_offset;
             uniform float u_y_scale;
             uniform vec3 u_r_coefficients;
@@ -918,7 +932,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             void main()
             {
                 float y = (texture2D(u_y_plane, v_tex_coord * u_y_coord_scale).r - u_y_offset) * u_y_scale;
-                vec2 uv = texture2D(u_uv_plane, v_tex_coord * u_uv_coord_scale).ra - vec2(0.5, 0.5);
+                vec4 uv_sample = texture2D(u_uv_plane, v_tex_coord * u_uv_coord_scale);
+                vec2 uv = vec2(uv_sample.r, mix(uv_sample.g, uv_sample.a, u_uv_second_channel_is_alpha)) - vec2(0.5, 0.5);
                 vec3 yuv = vec3(y, uv.x, uv.y);
                 gl_FragColor = vec4(dot(yuv, u_r_coefficients), dot(yuv, u_g_coefficients), dot(yuv, u_b_coefficients), 1.0);
             }
@@ -946,6 +961,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         m_mundo_video_nv12_uniform_locations.uv_plane = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_plane");
         m_mundo_video_nv12_uniform_locations.y_coord_scale = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_coord_scale");
         m_mundo_video_nv12_uniform_locations.uv_coord_scale = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_coord_scale");
+        m_mundo_video_nv12_uniform_locations.uv_second_channel_is_alpha = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_second_channel_is_alpha");
         m_mundo_video_nv12_uniform_locations.y_offset = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_offset");
         m_mundo_video_nv12_uniform_locations.y_scale = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_scale");
         m_mundo_video_nv12_uniform_locations.r_coefficients = glGetUniformLocation(m_mundo_video_nv12_program, "u_r_coefficients");
@@ -1095,30 +1111,49 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     StringView hardware_gl_upload_failure_reason = "not_attempted"sv;
 
     if (can_attempt_hardware_gl_upload) {
-        reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, video_width, video_height, nullptr, 0, m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
-        reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, visible_uv_width, uv_texture_height, nullptr, 0, m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
-        auto upload_result = media_frame->hardware_handle()->upload_to_gl_textures(Media::HardwareVideoFrameGLTextureUploadRequest {
-            .texture_target = GL_TEXTURE_2D,
-            .y_texture = m_mundo_video_nv12_y_texture,
-            .uv_texture = m_mundo_video_nv12_uv_texture,
-            .width = static_cast<u32>(video_width),
-            .height = static_cast<u32>(video_height),
-            .uv_width = static_cast<u32>(visible_uv_width),
-            .uv_height = static_cast<u32>(uv_texture_height),
-        });
-        if (!upload_result.is_error()) {
-            used_hardware_gl_upload = true;
-            hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
-        } else {
-            hardware_gl_upload_failure_reason = upload_result.error().string_literal();
+        reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_R8_EXT, GL_RED_EXT, video_width, video_height, nullptr, 0, m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
+        reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_RG8_EXT, GL_RG_EXT, visible_uv_width, uv_texture_height, nullptr, 0, m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
+        auto plane_texture_error = glGetError();
+        if (plane_texture_error != GL_NO_ERROR) {
+            hardware_gl_upload_failure_reason = "gpu_plane_texture_gl_error"sv;
             if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-                dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl",
+                dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason=gpu_plane_texture_gl_error gl_error={} has_hardware_handle={} y_format={}/{} uv_format={}/{}",
                     attempt_count,
                     hardware_frame_id,
                     hardware_backend,
-                    hardware_gl_upload_failure_reason,
-                    has_hardware_handle);
+                    plane_texture_error,
+                    has_hardware_handle,
+                    GL_R8_EXT,
+                    GL_RED_EXT,
+                    GL_RG8_EXT,
+                    GL_RG_EXT);
             }
+        } else {
+            auto upload_result = media_frame->hardware_handle()->upload_to_gl_textures(Media::HardwareVideoFrameGLTextureUploadRequest {
+                .texture_target = GL_TEXTURE_2D,
+                .y_texture = m_mundo_video_nv12_y_texture,
+                .uv_texture = m_mundo_video_nv12_uv_texture,
+                .width = static_cast<u32>(video_width),
+                .height = static_cast<u32>(video_height),
+                .uv_width = static_cast<u32>(visible_uv_width),
+                .uv_height = static_cast<u32>(uv_texture_height),
+            });
+            if (!upload_result.is_error()) {
+                used_hardware_gl_upload = true;
+                hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
+            } else {
+                hardware_gl_upload_failure_reason = upload_result.error().string_literal();
+                if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                    dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl",
+                        attempt_count,
+                        hardware_frame_id,
+                        hardware_backend,
+                        hardware_gl_upload_failure_reason,
+                        has_hardware_handle);
+                }
+            }
+        }
+        if (!used_hardware_gl_upload) {
             nv12_data = media_frame->nv12_data();
             if (!validate_nv12_data()) {
                 restore_state();
@@ -1137,8 +1172,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             }
             uv_texture_width = nv12_data->uv_stride / 2;
         }
-        reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, nv12_data->y_stride, nv12_data->height, nv12_data->y_plane_data(), nv12_data->y_plane_size(), m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
-        reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, uv_texture_width, uv_texture_height, nv12_data->uv_plane_data(), nv12_data->uv_plane_size(), m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
+        reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_LUMINANCE, GL_LUMINANCE, nv12_data->y_stride, nv12_data->height, nv12_data->y_plane_data(), nv12_data->y_plane_size(), m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
+        reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_LUMINANCE_ALPHA, GL_LUMINANCE_ALPHA, uv_texture_width, uv_texture_height, nv12_data->uv_plane_data(), nv12_data->uv_plane_size(), m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
     }
 
     if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
@@ -1221,6 +1256,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     glUniform1i(m_mundo_video_nv12_uniform_locations.uv_plane, 1);
     glUniform2f(m_mundo_video_nv12_uniform_locations.y_coord_scale, used_hardware_gl_upload ? 1.0f : static_cast<float>(video_width) / static_cast<float>(nv12_data->y_stride), 1.0f);
     glUniform2f(m_mundo_video_nv12_uniform_locations.uv_coord_scale, static_cast<float>(visible_uv_width) / static_cast<float>(uv_texture_width), 1.0f);
+    glUniform1f(m_mundo_video_nv12_uniform_locations.uv_second_channel_is_alpha, used_hardware_gl_upload ? 0.0f : 1.0f);
 
     auto const& cicp = used_hardware_gl_upload ? media_frame->cicp() : nv12_data->cicp;
     auto const is_full_range = cicp.video_full_range_flag() == Media::VideoFullRangeFlag::Full;

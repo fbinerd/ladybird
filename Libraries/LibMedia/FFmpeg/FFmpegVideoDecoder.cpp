@@ -1130,8 +1130,8 @@ public:
         });
 
         auto upload_start = MonotonicTime::now();
-        TRY(copy_cuda_plane_to_gl_texture(*functions, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), request.y_texture, request.texture_target, request.width, request.height));
-        TRY(copy_cuda_plane_to_gl_texture(*functions, reinterpret_cast<CUdeviceptr>(m_frame->data[1]), static_cast<size_t>(m_frame->linesize[1]), request.uv_texture, request.texture_target, request.uv_width * 2, request.uv_height));
+        TRY(copy_cuda_plane_to_gl_texture(*functions, "y", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), request.y_texture, request.texture_target, request.width, request.height));
+        TRY(copy_cuda_plane_to_gl_texture(*functions, "uv", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[1]), static_cast<size_t>(m_frame->linesize[1]), request.uv_texture, request.texture_target, request.uv_width * 2, request.uv_height));
         auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
 
         m_was_gpu_uploaded = true;
@@ -1216,27 +1216,36 @@ private:
         return reinterpret_cast<MinimalAVCUDADeviceContext*>(device_context->hwctx)->cuda_ctx;
     }
 
-    static ErrorOr<void> copy_cuda_plane_to_gl_texture(CudaGLFunctions& functions, CUdeviceptr source, size_t source_pitch, u32 texture, u32 texture_target, u32 width_in_bytes, u32 height)
+    static ErrorOr<void> copy_cuda_plane_to_gl_texture(CudaGLFunctions& functions, char const* plane_name, u64 frame_id, CUdeviceptr source, size_t source_pitch, u32 texture, u32 texture_target, u32 width_in_bytes, u32 height)
     {
         CUgraphicsResource resource { nullptr };
         auto register_result = functions.cuGraphicsGLRegisterImage(&resource, texture, texture_target, CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD);
-        if (register_result != CUDA_SUCCESS)
+        if (register_result != CUDA_SUCCESS) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=register result={} texture={} target={} width_bytes={} height={} pitch={}",
+                frame_id, plane_name, static_cast<int>(register_result), texture, texture_target, width_in_bytes, height, source_pitch);
             return Error::from_string_literal("Failed to register GL texture with CUDA");
+        }
         auto unregister_resource = ScopeGuard([&] {
             functions.cuGraphicsUnregisterResource(resource);
         });
 
         auto map_result = functions.cuGraphicsMapResources(1, &resource, nullptr);
-        if (map_result != CUDA_SUCCESS)
+        if (map_result != CUDA_SUCCESS) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=map result={} texture={} target={} width_bytes={} height={} pitch={}",
+                frame_id, plane_name, static_cast<int>(map_result), texture, texture_target, width_in_bytes, height, source_pitch);
             return Error::from_string_literal("Failed to map CUDA graphics resource");
+        }
         auto unmap_resource = ScopeGuard([&] {
             functions.cuGraphicsUnmapResources(1, &resource, nullptr);
         });
 
         CUarray array { nullptr };
         auto array_result = functions.cuGraphicsSubResourceGetMappedArray(&array, resource, 0, 0);
-        if (array_result != CUDA_SUCCESS || !array)
+        if (array_result != CUDA_SUCCESS || !array) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=array result={} array={} texture={} target={} width_bytes={} height={} pitch={}",
+                frame_id, plane_name, static_cast<int>(array_result), static_cast<void*>(array), texture, texture_target, width_in_bytes, height, source_pitch);
             return Error::from_string_literal("Failed to get mapped CUDA array from GL texture");
+        }
 
         CUDA_MEMCPY2D copy {};
         copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
@@ -1247,8 +1256,11 @@ private:
         copy.WidthInBytes = width_in_bytes;
         copy.Height = height;
         auto copy_result = functions.cuMemcpy2D(&copy);
-        if (copy_result != CUDA_SUCCESS)
+        if (copy_result != CUDA_SUCCESS) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=copy result={} texture={} target={} width_bytes={} height={} pitch={} source={}",
+                frame_id, plane_name, static_cast<int>(copy_result), texture, texture_target, width_in_bytes, height, source_pitch, source);
             return Error::from_string_literal("Failed to copy CUDA plane into GL texture");
+        }
         return {};
     }
 #endif

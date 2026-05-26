@@ -205,6 +205,7 @@ private:
     struct MundoVideoNV12PlaneTextureState {
         int width { 0 };
         int height { 0 };
+        unsigned internal_format { 0 };
         unsigned format { 0 };
     };
     MundoVideoNV12PlaneTextureState m_mundo_video_nv12_y_texture_state;
@@ -221,6 +222,7 @@ private:
         int uv_plane { -1 };
         int y_coord_scale { -1 };
         int uv_coord_scale { -1 };
+        int uv_second_channel_is_alpha { -1 };
         int y_offset { -1 };
         int y_scale { -1 };
         int r_coefficients { -1 };
