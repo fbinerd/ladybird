@@ -49,6 +49,10 @@ struct MEDIA_API HardwareVideoFrameGLTextureUploadRequest {
     u32 height { 0 };
     u32 uv_width { 0 };
     u32 uv_height { 0 };
+    u32 y_upload_buffer { 0 };
+    u32 uv_upload_buffer { 0 };
+    size_t y_upload_buffer_size { 0 };
+    size_t uv_upload_buffer_size { 0 };
 };
 
 struct MEDIA_API HardwareVideoFrameGLTextureUploadResult {

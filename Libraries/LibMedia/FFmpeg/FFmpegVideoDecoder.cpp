@@ -32,6 +32,7 @@ extern "C" {
 
 #if defined(__linux__)
 #    include <ffnvcodec/dynlink_cuda.h>
+typedef CUresult CUDAAPI tcuGraphicsGLRegisterBuffer(CUgraphicsResource* pCudaResource, GLuint buffer, unsigned int Flags);
 #endif
 
 namespace Media::FFmpeg {
@@ -1130,8 +1131,13 @@ public:
         });
 
         auto upload_start = MonotonicTime::now();
-        TRY(copy_cuda_plane_to_gl_texture(*functions, "y", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), request.y_texture, request.texture_target, request.width, request.height));
-        TRY(copy_cuda_plane_to_gl_texture(*functions, "uv", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[1]), static_cast<size_t>(m_frame->linesize[1]), request.uv_texture, request.texture_target, request.uv_width * 2, request.uv_height));
+        if (request.y_upload_buffer && request.uv_upload_buffer) {
+            TRY(copy_cuda_plane_to_gl_buffer(*functions, "y", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), request.y_upload_buffer, request.width, request.height, request.y_upload_buffer_size));
+            TRY(copy_cuda_plane_to_gl_buffer(*functions, "uv", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[1]), static_cast<size_t>(m_frame->linesize[1]), request.uv_upload_buffer, request.uv_width * 2, request.uv_height, request.uv_upload_buffer_size));
+        } else {
+            TRY(copy_cuda_plane_to_gl_texture(*functions, "y", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), request.y_texture, request.texture_target, request.width, request.height));
+            TRY(copy_cuda_plane_to_gl_texture(*functions, "uv", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[1]), static_cast<size_t>(m_frame->linesize[1]), request.uv_texture, request.texture_target, request.uv_width * 2, request.uv_height));
+        }
         auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
 
         m_was_gpu_uploaded = true;
@@ -1168,6 +1174,8 @@ private:
         tcuGraphicsMapResources* cuGraphicsMapResources { nullptr };
         tcuGraphicsUnmapResources* cuGraphicsUnmapResources { nullptr };
         tcuGraphicsSubResourceGetMappedArray* cuGraphicsSubResourceGetMappedArray { nullptr };
+        tcuGraphicsGLRegisterBuffer* cuGraphicsGLRegisterBuffer { nullptr };
+        tcuGraphicsResourceGetMappedPointer* cuGraphicsResourceGetMappedPointer { nullptr };
         tcuMemcpy2D_v2* cuMemcpy2D { nullptr };
     };
 
@@ -1192,13 +1200,15 @@ private:
                 s_functions.cuGraphicsMapResources = reinterpret_cast<tcuGraphicsMapResources*>(dlsym(s_functions.library, "cuGraphicsMapResources"));
                 s_functions.cuGraphicsUnmapResources = reinterpret_cast<tcuGraphicsUnmapResources*>(dlsym(s_functions.library, "cuGraphicsUnmapResources"));
                 s_functions.cuGraphicsSubResourceGetMappedArray = reinterpret_cast<tcuGraphicsSubResourceGetMappedArray*>(dlsym(s_functions.library, "cuGraphicsSubResourceGetMappedArray"));
+                s_functions.cuGraphicsGLRegisterBuffer = reinterpret_cast<tcuGraphicsGLRegisterBuffer*>(dlsym(s_functions.library, "cuGraphicsGLRegisterBuffer"));
+                s_functions.cuGraphicsResourceGetMappedPointer = reinterpret_cast<tcuGraphicsResourceGetMappedPointer*>(dlsym(s_functions.library, "cuGraphicsResourceGetMappedPointer_v2"));
                 s_functions.cuMemcpy2D = reinterpret_cast<tcuMemcpy2D_v2*>(dlsym(s_functions.library, "cuMemcpy2D_v2"));
             }
         }
 
         if (!s_functions.library)
             return Error::from_string_literal("Failed to load libcuda.so.1");
-        if (!s_functions.cuCtxPushCurrent || !s_functions.cuCtxPopCurrent || !s_functions.cuGraphicsGLRegisterImage || !s_functions.cuGraphicsUnregisterResource || !s_functions.cuGraphicsMapResources || !s_functions.cuGraphicsUnmapResources || !s_functions.cuGraphicsSubResourceGetMappedArray || !s_functions.cuMemcpy2D)
+        if (!s_functions.cuCtxPushCurrent || !s_functions.cuCtxPopCurrent || !s_functions.cuGraphicsGLRegisterImage || !s_functions.cuGraphicsGLRegisterBuffer || !s_functions.cuGraphicsUnregisterResource || !s_functions.cuGraphicsMapResources || !s_functions.cuGraphicsUnmapResources || !s_functions.cuGraphicsSubResourceGetMappedArray || !s_functions.cuGraphicsResourceGetMappedPointer || !s_functions.cuMemcpy2D)
             return Error::from_string_literal("Missing CUDA GL interop symbols");
         return &s_functions;
     }
@@ -1260,6 +1270,60 @@ private:
             dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=copy result={} texture={} target={} width_bytes={} height={} pitch={} source={}",
                 frame_id, plane_name, static_cast<int>(copy_result), texture, texture_target, width_in_bytes, height, source_pitch, source);
             return Error::from_string_literal("Failed to copy CUDA plane into GL texture");
+        }
+        return {};
+    }
+
+    static ErrorOr<void> copy_cuda_plane_to_gl_buffer(CudaGLFunctions& functions, char const* plane_name, u64 frame_id, CUdeviceptr source, size_t source_pitch, u32 buffer, u32 width_in_bytes, u32 height, size_t buffer_size)
+    {
+        auto required_size = static_cast<size_t>(width_in_bytes) * static_cast<size_t>(height);
+        if (buffer_size < required_size)
+            return Error::from_string_literal("GL upload buffer is smaller than CUDA plane copy");
+
+        CUgraphicsResource resource { nullptr };
+        auto register_result = functions.cuGraphicsGLRegisterBuffer(&resource, buffer, CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD);
+        if (register_result != CUDA_SUCCESS) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_buffer_upload_error frame_id={} plane={} step=register result={} buffer={} width_bytes={} height={} pitch={} buffer_size={}",
+                frame_id, plane_name, static_cast<int>(register_result), buffer, width_in_bytes, height, source_pitch, buffer_size);
+            return Error::from_string_literal("Failed to register GL upload buffer with CUDA");
+        }
+        auto unregister_resource = ScopeGuard([&] {
+            functions.cuGraphicsUnregisterResource(resource);
+        });
+
+        auto map_result = functions.cuGraphicsMapResources(1, &resource, nullptr);
+        if (map_result != CUDA_SUCCESS) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_buffer_upload_error frame_id={} plane={} step=map result={} buffer={} width_bytes={} height={} pitch={} buffer_size={}",
+                frame_id, plane_name, static_cast<int>(map_result), buffer, width_in_bytes, height, source_pitch, buffer_size);
+            return Error::from_string_literal("Failed to map CUDA graphics buffer");
+        }
+        auto unmap_resource = ScopeGuard([&] {
+            functions.cuGraphicsUnmapResources(1, &resource, nullptr);
+        });
+
+        CUdeviceptr mapped_pointer {};
+        size_t mapped_size { 0 };
+        auto pointer_result = functions.cuGraphicsResourceGetMappedPointer(&mapped_pointer, &mapped_size, resource);
+        if (pointer_result != CUDA_SUCCESS || mapped_size < required_size) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_buffer_upload_error frame_id={} plane={} step=pointer result={} buffer={} width_bytes={} height={} pitch={} mapped_size={} required_size={}",
+                frame_id, plane_name, static_cast<int>(pointer_result), buffer, width_in_bytes, height, source_pitch, mapped_size, required_size);
+            return Error::from_string_literal("Failed to get mapped CUDA pointer from GL upload buffer");
+        }
+
+        CUDA_MEMCPY2D copy {};
+        copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        copy.srcDevice = source;
+        copy.srcPitch = source_pitch;
+        copy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+        copy.dstDevice = mapped_pointer;
+        copy.dstPitch = width_in_bytes;
+        copy.WidthInBytes = width_in_bytes;
+        copy.Height = height;
+        auto copy_result = functions.cuMemcpy2D(&copy);
+        if (copy_result != CUDA_SUCCESS) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_buffer_upload_error frame_id={} plane={} step=copy result={} buffer={} width_bytes={} height={} pitch={} mapped_size={} source={} destination={}",
+                frame_id, plane_name, static_cast<int>(copy_result), buffer, width_in_bytes, height, source_pitch, mapped_size, source, mapped_pointer);
+            return Error::from_string_literal("Failed to copy CUDA plane into GL upload buffer");
         }
         return {};
     }
