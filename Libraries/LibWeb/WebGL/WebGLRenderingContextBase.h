@@ -217,6 +217,8 @@ private:
     };
     MundoVideoNV12PlaneUploadPBOs m_mundo_video_nv12_y_upload_pbos;
     MundoVideoNV12PlaneUploadPBOs m_mundo_video_nv12_uv_upload_pbos;
+    MundoVideoNV12PlaneUploadPBOs m_mundo_video_nv12_y_cuda_upload_pbos;
+    MundoVideoNV12PlaneUploadPBOs m_mundo_video_nv12_uv_cuda_upload_pbos;
     struct MundoVideoNV12UniformLocations {
         int y_plane { -1 };
         int uv_plane { -1 };

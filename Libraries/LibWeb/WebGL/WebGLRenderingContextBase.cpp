@@ -73,6 +73,9 @@ extern "C" {
 #ifndef GL_RG8_EXT
 #    define GL_RG8_EXT 0x822B
 #endif
+#ifndef GL_BUFFER_SIZE
+#    define GL_BUFFER_SIZE 0x8764
+#endif
 
 namespace Web::WebGL {
 
@@ -1113,39 +1116,64 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     if (can_attempt_hardware_gl_upload) {
         reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_R8_EXT, GL_RED_EXT, video_width, video_height, nullptr, 0, m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
         reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_RG8_EXT, GL_RG_EXT, visible_uv_width, uv_texture_height, nullptr, 0, m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
-        auto prepare_cuda_upload_buffer = [](MundoVideoNV12PlaneUploadPBOs& pbos, size_t byte_count) -> GLuint {
+        struct CudaUploadBuffer {
+            GLuint buffer { 0 };
+            size_t size { 0 };
+            GLenum error { GL_NO_ERROR };
+        };
+        auto prepare_cuda_upload_buffer = [](MundoVideoNV12PlaneUploadPBOs& pbos, size_t byte_count) -> CudaUploadBuffer {
             auto pbo_index = pbos.index++ % 3;
             auto& pbo = pbos.buffers[pbo_index];
             auto& pbo_size = pbos.sizes[pbo_index];
             if (!pbo)
                 glGenBuffers(1, &pbo);
             if (!pbo)
-                return 0;
+                return {};
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-            if (pbo_size < byte_count) {
-                glBufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(byte_count), nullptr, GL_STREAM_DRAW);
-                pbo_size = byte_count;
-            }
-            return pbo;
+            glBufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(byte_count), nullptr, GL_STREAM_DRAW);
+            auto error = glGetError();
+            GLint allocated_size = 0;
+            if (error == GL_NO_ERROR)
+                glGetBufferParameteriv(GL_PIXEL_UNPACK_BUFFER, GL_BUFFER_SIZE, &allocated_size);
+            if (allocated_size > 0)
+                pbo_size = static_cast<size_t>(allocated_size);
+            else
+                pbo_size = 0;
+            return CudaUploadBuffer { .buffer = pbo, .size = pbo_size, .error = error };
         };
 
         GLint previous_unpack_buffer = 0;
         glGetIntegervRobustANGLE(GL_PIXEL_UNPACK_BUFFER_BINDING, 1, nullptr, &previous_unpack_buffer);
         auto y_upload_buffer_size = static_cast<size_t>(video_width) * static_cast<size_t>(video_height);
         auto uv_upload_buffer_size = static_cast<size_t>(visible_uv_width) * 2u * static_cast<size_t>(uv_texture_height);
-        auto y_upload_buffer = prepare_cuda_upload_buffer(m_mundo_video_nv12_y_upload_pbos, y_upload_buffer_size);
-        auto uv_upload_buffer = prepare_cuda_upload_buffer(m_mundo_video_nv12_uv_upload_pbos, uv_upload_buffer_size);
+        auto y_upload_buffer = prepare_cuda_upload_buffer(m_mundo_video_nv12_y_cuda_upload_pbos, y_upload_buffer_size);
+        auto uv_upload_buffer = prepare_cuda_upload_buffer(m_mundo_video_nv12_uv_cuda_upload_pbos, uv_upload_buffer_size);
         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, previous_unpack_buffer);
-        auto plane_texture_error = glGetError();
-        if (!y_upload_buffer || !uv_upload_buffer) {
+        auto plane_texture_error = y_upload_buffer.error != GL_NO_ERROR ? y_upload_buffer.error : uv_upload_buffer.error;
+        if (!y_upload_buffer.buffer || !uv_upload_buffer.buffer) {
             hardware_gl_upload_failure_reason = "gpu_upload_buffer_create_failed"sv;
             if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
                 dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason=gpu_upload_buffer_create_failed y_buffer={} uv_buffer={} has_hardware_handle={}",
                     attempt_count,
                     hardware_frame_id,
                     hardware_backend,
-                    y_upload_buffer,
-                    uv_upload_buffer,
+                    y_upload_buffer.buffer,
+                    uv_upload_buffer.buffer,
+                    has_hardware_handle);
+            }
+        } else if (y_upload_buffer.size < y_upload_buffer_size || uv_upload_buffer.size < uv_upload_buffer_size) {
+            hardware_gl_upload_failure_reason = "gpu_upload_buffer_gl_size_mismatch"sv;
+            if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason=gpu_upload_buffer_gl_size_mismatch y_buffer={} y_size={}/{} uv_buffer={} uv_size={}/{} has_hardware_handle={}",
+                    attempt_count,
+                    hardware_frame_id,
+                    hardware_backend,
+                    y_upload_buffer.buffer,
+                    y_upload_buffer.size,
+                    y_upload_buffer_size,
+                    uv_upload_buffer.buffer,
+                    uv_upload_buffer.size,
+                    uv_upload_buffer_size,
                     has_hardware_handle);
             }
         } else if (plane_texture_error != GL_NO_ERROR) {
@@ -1171,19 +1199,19 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 .height = static_cast<u32>(video_height),
                 .uv_width = static_cast<u32>(visible_uv_width),
                 .uv_height = static_cast<u32>(uv_texture_height),
-                .y_upload_buffer = y_upload_buffer,
-                .uv_upload_buffer = uv_upload_buffer,
-                .y_upload_buffer_size = y_upload_buffer_size,
-                .uv_upload_buffer_size = uv_upload_buffer_size,
+                .y_upload_buffer = y_upload_buffer.buffer,
+                .uv_upload_buffer = uv_upload_buffer.buffer,
+                .y_upload_buffer_size = y_upload_buffer.size,
+                .uv_upload_buffer_size = uv_upload_buffer.size,
             });
             if (!upload_result.is_error()) {
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, m_mundo_video_nv12_y_texture);
-                glBindBuffer(GL_PIXEL_UNPACK_BUFFER, y_upload_buffer);
+                glBindBuffer(GL_PIXEL_UNPACK_BUFFER, y_upload_buffer.buffer);
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, video_width, video_height, GL_RED_EXT, GL_UNSIGNED_BYTE, nullptr);
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, m_mundo_video_nv12_uv_texture);
-                glBindBuffer(GL_PIXEL_UNPACK_BUFFER, uv_upload_buffer);
+                glBindBuffer(GL_PIXEL_UNPACK_BUFFER, uv_upload_buffer.buffer);
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, visible_uv_width, uv_texture_height, GL_RG_EXT, GL_UNSIGNED_BYTE, nullptr);
                 glBindBuffer(GL_PIXEL_UNPACK_BUFFER, previous_unpack_buffer);
                 auto pbo_texture_error = glGetError();
@@ -1196,8 +1224,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             hardware_backend,
                             pbo_texture_error,
                             has_hardware_handle,
-                            y_upload_buffer,
-                            uv_upload_buffer);
+                            y_upload_buffer.buffer,
+                            uv_upload_buffer.buffer);
                     }
                 } else {
                     used_hardware_gl_upload = true;
