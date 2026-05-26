@@ -34,6 +34,7 @@ struct VulkanImage : public RefCounted<VulkanImage> {
     VulkanContext const& context;
 
     int get_dma_buf_fd() const;
+    int get_opaque_fd() const;
     void transition_layout(VkImageLayout old_layout, VkImageLayout new_layout);
     VulkanImage(VulkanContext const& context)
         : context(context)
@@ -55,6 +56,7 @@ static inline uint32_t vk_format_to_drm_format(VkFormat format)
 }
 
 ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext const& context, uint32_t width, uint32_t height, VkFormat format, ReadonlySpan<uint64_t> modifiers);
+ErrorOr<NonnullRefPtr<VulkanImage>> create_opaque_fd_vulkan_image(VulkanContext const& context, uint32_t width, uint32_t height, VkFormat format);
 
 }
 
