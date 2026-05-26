@@ -344,16 +344,28 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
 
     auto* cu_init = reinterpret_cast<tcuInit*>(dlsym(library, "cuInit"));
     auto* cu_get_error_name = reinterpret_cast<tcuGetErrorName*>(dlsym(library, "cuGetErrorName"));
+    auto* cu_device_get = reinterpret_cast<tcuDeviceGet*>(dlsym(library, "cuDeviceGet"));
+    auto* cu_ctx_get_current = reinterpret_cast<tcuCtxGetCurrent*>(dlsym(library, "cuCtxGetCurrent"));
+    auto* cu_ctx_push_current = reinterpret_cast<tcuCtxPushCurrent_v2*>(dlsym(library, "cuCtxPushCurrent_v2"));
+    auto* cu_ctx_pop_current = reinterpret_cast<tcuCtxPopCurrent_v2*>(dlsym(library, "cuCtxPopCurrent_v2"));
+    auto* cu_device_primary_ctx_retain = reinterpret_cast<tcuDevicePrimaryCtxRetain*>(dlsym(library, "cuDevicePrimaryCtxRetain"));
+    auto* cu_device_primary_ctx_release = reinterpret_cast<tcuDevicePrimaryCtxRelease*>(dlsym(library, "cuDevicePrimaryCtxRelease"));
     auto* cu_import_external_memory = reinterpret_cast<tcuImportExternalMemory*>(dlsym(library, "cuImportExternalMemory"));
     auto* cu_destroy_external_memory = reinterpret_cast<tcuDestroyExternalMemory*>(dlsym(library, "cuDestroyExternalMemory"));
     auto* cu_external_memory_get_mapped_mipmapped_array = reinterpret_cast<tcuExternalMemoryGetMappedMipmappedArray*>(dlsym(library, "cuExternalMemoryGetMappedMipmappedArray"));
     auto* cu_mipmapped_array_destroy = reinterpret_cast<tcuMipmappedArrayDestroy*>(dlsym(library, "cuMipmappedArrayDestroy"));
-    if (!cu_init || !cu_import_external_memory || !cu_destroy_external_memory || !cu_external_memory_get_mapped_mipmapped_array || !cu_mipmapped_array_destroy) {
+    if (!cu_init || !cu_device_get || !cu_ctx_get_current || !cu_ctx_push_current || !cu_ctx_pop_current || !cu_device_primary_ctx_retain || !cu_device_primary_ctx_release || !cu_import_external_memory || !cu_destroy_external_memory || !cu_external_memory_get_mapped_mipmapped_array || !cu_mipmapped_array_destroy) {
         if (log_count <= 8 || log_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed reason=missing_symbols init={} get_error_name={} import_memory={} destroy_memory={} mapped_mipmap={} mip_destroy={}",
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed reason=missing_symbols init={} get_error_name={} device_get={} ctx_get_current={} ctx_push={} ctx_pop={} primary_retain={} primary_release={} import_memory={} destroy_memory={} mapped_mipmap={} mip_destroy={}",
                 log_count,
                 cu_init != nullptr,
                 cu_get_error_name != nullptr,
+                cu_device_get != nullptr,
+                cu_ctx_get_current != nullptr,
+                cu_ctx_push_current != nullptr,
+                cu_ctx_pop_current != nullptr,
+                cu_device_primary_ctx_retain != nullptr,
+                cu_device_primary_ctx_release != nullptr,
                 cu_import_external_memory != nullptr,
                 cu_destroy_external_memory != nullptr,
                 cu_external_memory_get_mapped_mipmapped_array != nullptr,
@@ -387,8 +399,74 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
         return;
     }
 
+    CUcontext previous_context { nullptr };
+    auto get_current_context_result = cu_ctx_get_current(&previous_context);
+    if (get_current_context_result != CUDA_SUCCESS) {
+        if (log_count <= 8 || log_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=get_current_context result={} error={}",
+                log_count,
+                static_cast<unsigned>(get_current_context_result),
+                cuda_error_name(get_current_context_result));
+        }
+        return;
+    }
+
+    CUdevice device { 0 };
+    auto device_result = cu_device_get(&device, 0);
+    if (device_result != CUDA_SUCCESS) {
+        if (log_count <= 8 || log_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=device_get result={} error={}",
+                log_count,
+                static_cast<unsigned>(device_result),
+                cuda_error_name(device_result));
+        }
+        return;
+    }
+
+    CUcontext primary_context { nullptr };
+    auto retain_result = cu_device_primary_ctx_retain(&primary_context, device);
+    if (retain_result != CUDA_SUCCESS || !primary_context) {
+        if (log_count <= 8 || log_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=primary_ctx_retain result={} error={} context={}",
+                log_count,
+                static_cast<unsigned>(retain_result),
+                cuda_error_name(retain_result),
+                primary_context);
+        }
+        return;
+    }
+
+    auto push_result = cu_ctx_push_current(primary_context);
+    if (push_result != CUDA_SUCCESS) {
+        cu_device_primary_ctx_release(device);
+        if (log_count <= 8 || log_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=ctx_push result={} error={}",
+                log_count,
+                static_cast<unsigned>(push_result),
+                cuda_error_name(push_result));
+        }
+        return;
+    }
+
+    auto release_context = [&] {
+        CUcontext popped_context { nullptr };
+        auto pop_result = cu_ctx_pop_current(&popped_context);
+        auto release_result = cu_device_primary_ctx_release(device);
+        if ((pop_result != CUDA_SUCCESS || release_result != CUDA_SUCCESS) && (log_count <= 8 || log_count % 120 == 0)) {
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=cleanup_warning pop_result={} pop_error={} release_result={} release_error={} previous_context={} popped_context={}",
+                log_count,
+                static_cast<unsigned>(pop_result),
+                cuda_error_name(pop_result),
+                static_cast<unsigned>(release_result),
+                cuda_error_name(release_result),
+                previous_context,
+                popped_context);
+        }
+    };
+
     auto import_fd = dup(dma_buf_fd);
     if (import_fd < 0) {
+        release_context();
         if (log_count <= 8 || log_count % 120 == 0)
             dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed reason=dup_fd", log_count);
         return;
@@ -403,12 +481,15 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
     auto import_result = cu_import_external_memory(&external_memory, &memory_handle_desc);
     if (import_result != CUDA_SUCCESS) {
         close(import_fd);
+        release_context();
         if (log_count <= 8 || log_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=import init_result={} import_result={} import_error={} size={}x{} allocation_size={} row_pitch={} modifier={}",
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=import init_result={} import_result={} import_error={} previous_context={} primary_context={} size={}x{} allocation_size={} row_pitch={} modifier={}",
                 log_count,
                 static_cast<unsigned>(init_result),
                 static_cast<unsigned>(import_result),
                 cuda_error_name(import_result),
+                previous_context,
+                primary_context,
                 vulkan_image.info.extent.width,
                 vulkan_image.info.extent.height,
                 vulkan_image.info.allocation_size,
@@ -433,15 +514,18 @@ static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage
     if (map_result == CUDA_SUCCESS && mipmapped_array)
         cu_mipmapped_array_destroy(mipmapped_array);
     cu_destroy_external_memory(external_memory);
+    release_context();
 
     if (log_count <= 8 || log_count % 120 == 0) {
-        dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status={} init_result={} import_result={} map_result={} map_error={} size={}x{} allocation_size={} row_pitch={} modifier={}",
+        dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status={} init_result={} import_result={} map_result={} map_error={} previous_context={} primary_context={} size={}x{} allocation_size={} row_pitch={} modifier={}",
             log_count,
             map_result == CUDA_SUCCESS ? "ok" : "failed",
             static_cast<unsigned>(init_result),
             static_cast<unsigned>(import_result),
             static_cast<unsigned>(map_result),
             cuda_error_name(map_result),
+            previous_context,
+            primary_context,
             vulkan_image.info.extent.width,
             vulkan_image.info.extent.height,
             vulkan_image.info.allocation_size,
