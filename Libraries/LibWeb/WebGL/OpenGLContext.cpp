@@ -28,6 +28,12 @@ extern "C" {
 }
 #include <GLES3/gl3.h>
 
+#ifdef USE_VULKAN_DMABUF_IMAGES
+#    include <ffnvcodec/dynlink_cuda.h>
+#    include <dlfcn.h>
+#    include <unistd.h>
+#endif
+
 // Enable WebGL if we're on MacOS and can use Metal or if we can use shareable Vulkan images
 #if defined(AK_OS_MACOS) || defined(USE_VULKAN_DMABUF_IMAGES)
 #    define ENABLE_WEBGL 1
@@ -324,6 +330,93 @@ void OpenGLContext::allocate_iosurface_painting_surface()
 #endif
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
+static void probe_cuda_import_for_vulkan_dmabuf(int dma_buf_fd, Gfx::VulkanImage const& vulkan_image, size_t log_count)
+{
+    if (dma_buf_fd < 0)
+        return;
+
+    auto* library = dlopen("libcuda.so.1", RTLD_LAZY);
+    if (!library) {
+        if (log_count <= 8 || log_count % 120 == 0)
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed reason=missing_libcuda", log_count);
+        return;
+    }
+
+    auto* cu_import_external_memory = reinterpret_cast<tcuImportExternalMemory*>(dlsym(library, "cuImportExternalMemory"));
+    auto* cu_destroy_external_memory = reinterpret_cast<tcuDestroyExternalMemory*>(dlsym(library, "cuDestroyExternalMemory"));
+    auto* cu_external_memory_get_mapped_mipmapped_array = reinterpret_cast<tcuExternalMemoryGetMappedMipmappedArray*>(dlsym(library, "cuExternalMemoryGetMappedMipmappedArray"));
+    auto* cu_mipmapped_array_destroy = reinterpret_cast<tcuMipmappedArrayDestroy*>(dlsym(library, "cuMipmappedArrayDestroy"));
+    if (!cu_import_external_memory || !cu_destroy_external_memory || !cu_external_memory_get_mapped_mipmapped_array || !cu_mipmapped_array_destroy) {
+        if (log_count <= 8 || log_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed reason=missing_symbols import_memory={} destroy_memory={} mapped_mipmap={} mip_destroy={}",
+                log_count,
+                cu_import_external_memory != nullptr,
+                cu_destroy_external_memory != nullptr,
+                cu_external_memory_get_mapped_mipmapped_array != nullptr,
+                cu_mipmapped_array_destroy != nullptr);
+        }
+        return;
+    }
+
+    auto import_fd = dup(dma_buf_fd);
+    if (import_fd < 0) {
+        if (log_count <= 8 || log_count % 120 == 0)
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed reason=dup_fd", log_count);
+        return;
+    }
+
+    CUDA_EXTERNAL_MEMORY_HANDLE_DESC memory_handle_desc {};
+    memory_handle_desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+    memory_handle_desc.handle.fd = import_fd;
+    memory_handle_desc.size = static_cast<unsigned long long>(vulkan_image.info.allocation_size);
+
+    CUexternalMemory external_memory { nullptr };
+    auto import_result = cu_import_external_memory(&external_memory, &memory_handle_desc);
+    if (import_result != CUDA_SUCCESS) {
+        close(import_fd);
+        if (log_count <= 8 || log_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status=failed step=import result={} size={}x{} allocation_size={} row_pitch={} modifier={}",
+                log_count,
+                static_cast<unsigned>(import_result),
+                vulkan_image.info.extent.width,
+                vulkan_image.info.extent.height,
+                vulkan_image.info.allocation_size,
+                vulkan_image.info.row_pitch,
+                vulkan_image.info.modifier);
+        }
+        return;
+    }
+
+    CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mipmapped_array_desc {};
+    mipmapped_array_desc.offset = 0;
+    mipmapped_array_desc.arrayDesc.Width = vulkan_image.info.extent.width;
+    mipmapped_array_desc.arrayDesc.Height = vulkan_image.info.extent.height;
+    mipmapped_array_desc.arrayDesc.Depth = 0;
+    mipmapped_array_desc.arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
+    mipmapped_array_desc.arrayDesc.NumChannels = 4;
+    mipmapped_array_desc.arrayDesc.Flags = 0;
+    mipmapped_array_desc.numLevels = 1;
+
+    CUmipmappedArray mipmapped_array { nullptr };
+    auto map_result = cu_external_memory_get_mapped_mipmapped_array(&mipmapped_array, external_memory, &mipmapped_array_desc);
+    if (map_result == CUDA_SUCCESS && mipmapped_array)
+        cu_mipmapped_array_destroy(mipmapped_array);
+    cu_destroy_external_memory(external_memory);
+
+    if (log_count <= 8 || log_count % 120 == 0) {
+        dbgln("MUNDO_WEBGL_VULKAN_CUDA_IMPORT_PROBE count={} status={} import_result={} map_result={} size={}x{} allocation_size={} row_pitch={} modifier={}",
+            log_count,
+            map_result == CUDA_SUCCESS ? "ok" : "failed",
+            static_cast<unsigned>(import_result),
+            static_cast<unsigned>(map_result),
+            vulkan_image.info.extent.width,
+            vulkan_image.info.extent.height,
+            vulkan_image.info.allocation_size,
+            vulkan_image.info.row_pitch,
+            vulkan_image.info.modifier);
+    }
+}
+
 void OpenGLContext::allocate_vkimage_painting_surface()
 {
     VkFormat vulkan_format = VK_FORMAT_B8G8R8A8_UNORM;
@@ -376,6 +469,7 @@ void OpenGLContext::allocate_vkimage_painting_surface()
             vulkan_image->info.modifier,
             dma_buf_fd >= 0);
     }
+    probe_cuda_import_for_vulkan_dmabuf(dma_buf_fd, *vulkan_image, dmabuf_caps_log_count);
 
     EGLAttrib attribs[] = {
         EGL_WIDTH,

@@ -241,6 +241,7 @@ ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext con
         .sharing_mode = image_info.sharingMode,
         .layout = layout,
         .row_pitch = subresource_layout.rowPitch,
+        .allocation_size = mem_reqs.size,
         .modifier = image_format_mod_props.drmFormatModifier,
     };
     return image;

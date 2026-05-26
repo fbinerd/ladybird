@@ -28,6 +28,7 @@ struct VulkanImage : public RefCounted<VulkanImage> {
         VkSharingMode sharing_mode;
         VkImageLayout layout;
         VkDeviceSize row_pitch; // for tiled images this is some implementation-specific value
+        VkDeviceSize allocation_size;
         uint64_t modifier { DRM_FORMAT_MOD_INVALID };
     } info;
     VulkanContext const& context;
