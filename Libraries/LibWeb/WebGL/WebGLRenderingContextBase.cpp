@@ -487,7 +487,12 @@ bool WebGLRenderingContextBase::texture_source_is_video_with_nv12_frame(TexImage
         return false;
     auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
     auto const* media_frame = video->current_media_frame();
-    return media_frame && media_frame->nv12_data();
+    if (!media_frame)
+        return false;
+    if (media_frame->nv12_data())
+        return true;
+    auto const& hardware_descriptor = media_frame->hardware_descriptor();
+    return media_frame->hardware_handle() && hardware_descriptor.has_value() && hardware_descriptor->zero_copy_capable;
 }
 
 bool WebGLRenderingContextBase::upload_texture_source_with_video_pbo(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Gfx::BitmapExportResult const& converted_texture, bool is_sub_image)
@@ -676,22 +681,23 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         auto has_hardware_handle = false;
         if (source_is_video) {
             auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
-            if (auto const* media_frame = video->current_media_frame(); media_frame && media_frame->nv12_data()) {
-                auto const* nv12_data = media_frame->nv12_data();
-                has_nv12_frame = true;
-                nv12_width = nv12_data->width;
-                nv12_height = nv12_data->height;
-                nv12_y_stride = nv12_data->y_stride;
-                nv12_uv_stride = nv12_data->uv_stride;
-                nv12_y_bytes = nv12_data->y_plane_size();
-                nv12_uv_bytes = nv12_data->uv_plane_size();
+            if (auto const* media_frame = video->current_media_frame()) {
+                has_hardware_handle = media_frame->hardware_handle() != nullptr;
                 if (auto const& hardware_descriptor = media_frame->hardware_descriptor(); hardware_descriptor.has_value()) {
                     hardware_backend = Media::hardware_video_frame_backend_name(hardware_descriptor->backend);
                     hardware_frame_id = hardware_descriptor->frame_id;
                     zero_copy_capable = hardware_descriptor->zero_copy_capable;
                     requires_cpu_transfer = hardware_descriptor->requires_cpu_transfer;
                 }
-                has_hardware_handle = media_frame->hardware_handle() != nullptr;
+                if (auto const* nv12_data = media_frame->nv12_data()) {
+                    has_nv12_frame = true;
+                    nv12_width = nv12_data->width;
+                    nv12_height = nv12_data->height;
+                    nv12_y_stride = nv12_data->y_stride;
+                    nv12_uv_stride = nv12_data->uv_stride;
+                    nv12_y_bytes = nv12_data->y_plane_size();
+                    nv12_uv_bytes = nv12_data->uv_plane_size();
+                }
             }
         }
         if (has_nv12_frame || should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
@@ -737,7 +743,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
     auto const* media_frame = video->current_media_frame();
-    if (!media_frame || !media_frame->nv12_data())
+    if (!media_frame)
         return reject("missing_nv12_frame"sv);
     auto const* hardware_backend = "none";
     auto hardware_frame_id = 0ull;
@@ -749,6 +755,16 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         hardware_frame_id = hardware_descriptor->frame_id;
         zero_copy_capable = hardware_descriptor->zero_copy_capable;
         requires_cpu_transfer = hardware_descriptor->requires_cpu_transfer;
+    }
+    if (!media_frame->nv12_data()) {
+        if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+            dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason=hardware_frame_without_cpu_nv12_or_interop_handle has_hardware_handle={} gl_api=gles_angle_or_egl",
+                attempt_count,
+                hardware_frame_id,
+                hardware_backend,
+                has_hardware_handle);
+        }
+        return reject("missing_nv12_frame"sv);
     }
     auto const* nv12_data = media_frame->nv12_data();
     if (nv12_data->width <= 0 || nv12_data->height <= 0)
