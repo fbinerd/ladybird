@@ -69,11 +69,7 @@ static bool mundo_webgl_video_cpu_bitmap_fallback_enabled()
     if (raw_value)
         return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 
-    auto const* require_hardware_decode = getenv("MUNDO_VIDEO_REQUIRE_HARDWARE_DECODE");
-    if (require_hardware_decode && require_hardware_decode[0] != '\0' && strcmp(require_hardware_decode, "0") && strcmp(require_hardware_decode, "false") && strcmp(require_hardware_decode, "no") && strcmp(require_hardware_decode, "off"))
-        return false;
-
-    return true;
+    return false;
 }
 
 static Optional<i64> mundo_webgl_slow_duration(MonotonicTime start)

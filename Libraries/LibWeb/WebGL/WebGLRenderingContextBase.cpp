@@ -1488,13 +1488,32 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     glBindFramebuffer(GL_FRAMEBUFFER, m_mundo_video_nv12_framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previous_texture_2d, level);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    auto framebuffer_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (framebuffer_status != GL_FRAMEBUFFER_COMPLETE) {
         if (!is_sub_image && reused_target_storage) {
             allocate_target_storage();
             reused_target_storage = false;
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previous_texture_2d, level);
         }
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        framebuffer_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (framebuffer_status != GL_FRAMEBUFFER_COMPLETE) {
+            dbgln("MUNDO_WEBGL_VIDEO_NV12_FRAMEBUFFER_INCOMPLETE attempt={} status={} target_texture={} target={} level={} internalformat={} format={} type={} size={}x{} is_sub_image={} reused_target_storage={} allocated_target_storage={} used_hardware_gl_upload={} y_texture={} uv_texture={}",
+                attempt_count,
+                framebuffer_status,
+                previous_texture_2d,
+                target,
+                level,
+                internalformat,
+                format,
+                type,
+                video_width,
+                video_height,
+                is_sub_image,
+                reused_target_storage,
+                allocated_target_storage,
+                used_hardware_gl_upload,
+                m_mundo_video_nv12_y_texture,
+                m_mundo_video_nv12_uv_texture);
             restore_state();
             return reject("framebuffer_incomplete"sv);
         }
