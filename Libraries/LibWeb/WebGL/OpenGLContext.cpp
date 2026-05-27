@@ -720,19 +720,40 @@ void OpenGLContext::probe_video_opaque_fd_texture_import(u32 width, u32 height, 
 
 ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count)
 {
+    auto log_failure = [&](StringView reason, u32 gl_error = 0) {
+        dbgln("MUNDO_WEBGL_VIDEO_OPAQUE_FD_TEXTURE_IMPORT count={} label={} status=failed reason={} gl_error={} size={}x{} vk_format={} gl_internal_format={}",
+            log_count,
+            label,
+            reason,
+            gl_error,
+            width,
+            height,
+            vulkan_format,
+            gl_internal_format);
+    };
+
     auto* gl_create_memory_objects_ext = reinterpret_cast<PFNGLCREATEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glCreateMemoryObjectsEXT"));
     auto* gl_delete_memory_objects_ext = reinterpret_cast<PFNGLDELETEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glDeleteMemoryObjectsEXT"));
     auto* gl_memory_object_parameteriv_ext = reinterpret_cast<PFNGLMEMORYOBJECTPARAMETERIVEXTPROC>(eglGetProcAddress("glMemoryObjectParameterivEXT"));
     auto* gl_import_memory_fd_ext = reinterpret_cast<PFNGLIMPORTMEMORYFDEXTPROC>(eglGetProcAddress("glImportMemoryFdEXT"));
     auto* gl_tex_storage_mem_2d_ext = reinterpret_cast<PFNGLTEXSTORAGEMEM2DEXTPROC>(eglGetProcAddress("glTexStorageMem2DEXT"));
 
-    if (!gl_create_memory_objects_ext || !gl_delete_memory_objects_ext || !gl_memory_object_parameteriv_ext || !gl_import_memory_fd_ext || !gl_tex_storage_mem_2d_ext)
+    if (!gl_create_memory_objects_ext || !gl_delete_memory_objects_ext || !gl_memory_object_parameteriv_ext || !gl_import_memory_fd_ext || !gl_tex_storage_mem_2d_ext) {
+        log_failure("missing_gl_memory_object_fd_extension"sv);
         return Error::from_string_literal("GL memory object fd extension functions are unavailable");
+    }
 
-    auto image = TRY(Gfx::create_opaque_fd_vulkan_image(m_skia_backend_context->vulkan_context(), width, height, static_cast<VkFormat>(vulkan_format)));
+    auto image_or_error = Gfx::create_opaque_fd_vulkan_image(m_skia_backend_context->vulkan_context(), width, height, static_cast<VkFormat>(vulkan_format));
+    if (image_or_error.is_error()) {
+        log_failure(image_or_error.error().string_literal());
+        return image_or_error.release_error();
+    }
+    auto image = image_or_error.release_value();
     auto fd = image->get_opaque_fd();
-    if (fd < 0)
+    if (fd < 0) {
+        log_failure("vulkan_opaque_fd_export_failed"sv);
         return Error::from_string_literal("Failed to export Vulkan opaque fd for GL texture import");
+    }
 
     GLuint memory_object { 0 };
     GLuint texture { 0 };
@@ -750,24 +771,32 @@ ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_impor
 
     gl_create_memory_objects_ext(1, &memory_object);
     auto create_error = glGetError();
-    if (create_error != GL_NO_ERROR || !memory_object)
+    if (create_error != GL_NO_ERROR || !memory_object) {
+        log_failure("gl_memory_object_create_failed"sv, create_error);
         return Error::from_string_literal("Failed to create GL memory object for video opaque fd");
+    }
 
     GLint dedicated = GL_TRUE;
     gl_memory_object_parameteriv_ext(memory_object, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
     auto parameter_error = glGetError();
-    if (parameter_error != GL_NO_ERROR)
+    if (parameter_error != GL_NO_ERROR) {
+        log_failure("gl_memory_object_dedicated_flag_failed"sv, parameter_error);
         return Error::from_string_literal("Failed to set GL memory object dedicated flag");
+    }
 
     gl_import_memory_fd_ext(memory_object, image->info.allocation_size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
     fd = -1; // glImportMemoryFdEXT takes ownership.
     auto import_error = glGetError();
-    if (import_error != GL_NO_ERROR)
+    if (import_error != GL_NO_ERROR) {
+        log_failure("gl_memory_object_fd_import_failed"sv, import_error);
         return Error::from_string_literal("Failed to import Vulkan opaque fd into GL memory object");
+    }
 
     glGenTextures(1, &texture);
-    if (!texture)
+    if (!texture) {
+        log_failure("gl_texture_create_failed"sv, glGetError());
         return Error::from_string_literal("Failed to create imported video GL texture");
+    }
 
     glBindTexture(GL_TEXTURE_2D, texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -776,8 +805,10 @@ ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_impor
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     gl_tex_storage_mem_2d_ext(GL_TEXTURE_2D, 1, gl_internal_format, width, height, memory_object, 0);
     auto storage_error = glGetError();
-    if (storage_error != GL_NO_ERROR)
+    if (storage_error != GL_NO_ERROR) {
+        log_failure("gl_texture_storage_mem_failed"sv, storage_error);
         return Error::from_string_literal("Failed to bind GL texture storage to imported video memory object");
+    }
 
     if (log_count <= 8 || log_count % 120 == 0) {
         dbgln("MUNDO_WEBGL_VIDEO_OPAQUE_FD_TEXTURE_IMPORT count={} label={} status=ok texture={} memory_object={} size={}x{} allocation_size={} vk_format={} gl_internal_format={}",
