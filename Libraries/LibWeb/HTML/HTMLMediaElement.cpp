@@ -306,9 +306,14 @@ static bool mundo_should_prefer_hevc_hls_source()
     return false;
 }
 
+static bool mundo_should_require_hardware_decode()
+{
+    return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_REQUIRE_HARDWARE_DECODE", false);
+}
+
 static Optional<String> mundo_normalized_hls_source(StringView source)
 {
-    if (!::Media::RuntimeConfiguration::flag_enabled("MUNDO_HLS_VARIANT_REWRITE", false))
+    if (!::Media::RuntimeConfiguration::flag_enabled("MUNDO_HLS_VARIANT_REWRITE", false) && !mundo_should_require_hardware_decode())
         return {};
     if (!source.contains(".m3u8"sv))
         return {};
@@ -324,6 +329,11 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
         target_quality = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_MAX_VR_QUALITY", target_quality_buffer, sizeof(target_quality_buffer));
         if (target_quality && (!strcmp(target_quality, "0") || !strcmp(target_quality, "false") || !strcmp(target_quality, "no") || !strcmp(target_quality, "off") || !strcmp(target_quality, "source") || !strcmp(target_quality, "original")))
             return {};
+        if ((!target_quality || target_quality[0] == '\0') && mundo_should_require_hardware_decode()) {
+            target_quality = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_GPU_ONLY_VR_QUALITY", target_quality_buffer, sizeof(target_quality_buffer));
+            if (!target_quality || target_quality[0] == '\0')
+                target_quality = "1440p60";
+        }
         if ((!target_quality || target_quality[0] == '\0') && mundo_should_prefer_hevc_hls_source()) {
             if (path.ends_with("_vr.m3u8"sv))
                 return {};
