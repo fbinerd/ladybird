@@ -920,7 +920,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto can_attempt_hardware_gl_upload = has_hardware_handle
         && zero_copy_capable
         && !is_sub_image
-        && ((cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture && !s_cuda_gl_direct_texture_upload_disabled)
+        && ((cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture)
             || (cuda_upload_mode == MundoWebGLVideoCudaUploadMode::PBO && !s_cuda_gl_buffer_upload_disabled));
     if (s_cuda_gl_buffer_upload_disabled && cuda_upload_mode == MundoWebGLVideoCudaUploadMode::PBO && has_hardware_handle && zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason=cuda_gl_buffer_interop_disabled has_hardware_handle={} gl_api=gles_angle_or_egl",
@@ -1249,7 +1249,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             }
 #endif
         }
-        if (!used_hardware_gl_upload && cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture) {
+        if (!used_hardware_gl_upload && cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture && !s_cuda_gl_direct_texture_upload_disabled) {
             auto upload_result = media_frame->hardware_handle()->upload_to_gl_textures(Media::HardwareVideoFrameGLTextureUploadRequest {
                 .texture_target = GL_TEXTURE_2D,
                 .y_texture = m_mundo_video_nv12_y_texture,
