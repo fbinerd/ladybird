@@ -23,6 +23,7 @@
 #include <string.h>
 #if defined(__linux__)
 #    include <dlfcn.h>
+#    include <unistd.h>
 #endif
 
 extern "C" {
@@ -1011,6 +1012,8 @@ static Atomic<bool>& cuda_gl_buffer_interop_disabled()
     return disabled;
 }
 
+static constexpr unsigned cuda_external_memory_dedicated_flag = 1u;
+
 static void log_cuda_external_memory_symbols_once()
 {
     static Atomic<bool> did_log { false };
@@ -1169,7 +1172,11 @@ public:
         });
 
         auto upload_start = MonotonicTime::now();
-        if (request.y_upload_buffer && request.uv_upload_buffer) {
+        auto use_external_memory_upload = request.texture_target == 0 && request.y_upload_buffer && request.uv_upload_buffer && request.y_upload_buffer_size && request.uv_upload_buffer_size;
+        if (use_external_memory_upload) {
+            TRY(copy_cuda_plane_to_external_memory_array(*functions, "y", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), static_cast<int>(request.y_upload_buffer), request.y_upload_buffer_size, true, request.width, request.height, 1, request.width, request.height));
+            TRY(copy_cuda_plane_to_external_memory_array(*functions, "uv", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[1]), static_cast<size_t>(m_frame->linesize[1]), static_cast<int>(request.uv_upload_buffer), request.uv_upload_buffer_size, true, request.uv_width * 2, request.uv_height, 2, request.uv_width, request.uv_height));
+        } else if (request.y_upload_buffer && request.uv_upload_buffer) {
             if (cuda_gl_buffer_interop_disabled().load())
                 return Error::from_string_literal("CUDA GL upload buffer interop disabled after mismatched mapping");
             TRY(copy_cuda_plane_to_gl_buffer(*functions, "y", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), request.y_upload_buffer, request.width, request.height, request.y_upload_buffer_size));
@@ -1184,9 +1191,10 @@ public:
         static size_t s_cuda_gl_texture_upload_count { 0 };
         auto count = ++s_cuda_gl_texture_upload_count;
         if (count <= 8 || count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload count={} frame_id={} size={}x{} uv={}x{} y_pitch={} uv_pitch={} upload_us={}",
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload count={} frame_id={} mode={} size={}x{} uv={}x{} y_pitch={} uv_pitch={} upload_us={}",
                 count,
                 descriptor().frame_id,
+                use_external_memory_upload ? "external_memory" : request.y_upload_buffer && request.uv_upload_buffer ? "pbo" : "texture",
                 request.width,
                 request.height,
                 request.uv_width,
@@ -1354,6 +1362,80 @@ private:
                 frame_id, plane_name, static_cast<int>(copy_result), cuda_error_name(functions, copy_result), texture, texture_target, width_in_bytes, height, source_pitch, source);
             return Error::from_string_literal("Failed to copy CUDA plane into GL texture");
         }
+        return {};
+    }
+
+    static ErrorOr<void> copy_cuda_plane_to_external_memory_array(CudaGLFunctions& functions, char const* plane_name, u64 frame_id, CUdeviceptr source, size_t source_pitch, int external_memory_fd, size_t external_memory_size, bool dedicated, u32 width_in_bytes, u32 height, unsigned num_channels, u32 array_width, u32 array_height)
+    {
+        if (!functions.cuImportExternalMemory || !functions.cuDestroyExternalMemory || !functions.cuExternalMemoryGetMappedMipmappedArray || !functions.cuMipmappedArrayGetLevel || !functions.cuMipmappedArrayDestroy)
+            return Error::from_string_literal("Missing CUDA external memory image symbols");
+        if (external_memory_fd < 0)
+            return Error::from_string_literal("Invalid CUDA external memory fd");
+
+        CUDA_EXTERNAL_MEMORY_HANDLE_DESC memory_handle_desc {};
+        memory_handle_desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+        memory_handle_desc.handle.fd = external_memory_fd;
+        memory_handle_desc.size = external_memory_size;
+        memory_handle_desc.flags = dedicated ? cuda_external_memory_dedicated_flag : 0;
+
+        CUexternalMemory external_memory { nullptr };
+        auto import_result = functions.cuImportExternalMemory(&external_memory, &memory_handle_desc);
+        if (import_result != CUDA_SUCCESS) {
+            close(external_memory_fd);
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_external_memory_upload_error frame_id={} plane={} step=import result={} error={} fd={} size={} dedicated={} width_bytes={} height={} pitch={} channels={}",
+                frame_id, plane_name, static_cast<int>(import_result), cuda_error_name(functions, import_result), external_memory_fd, external_memory_size, dedicated, width_in_bytes, height, source_pitch, num_channels);
+            return Error::from_string_literal("Failed to import external memory for CUDA video plane");
+        }
+        // CUDA takes ownership of the opaque fd after a successful import.
+        external_memory_fd = -1;
+        auto destroy_external_memory = ScopeGuard([&] {
+            functions.cuDestroyExternalMemory(external_memory);
+        });
+
+        CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mipmapped_array_desc {};
+        mipmapped_array_desc.offset = 0;
+        mipmapped_array_desc.arrayDesc.Width = array_width;
+        mipmapped_array_desc.arrayDesc.Height = array_height;
+        mipmapped_array_desc.arrayDesc.Depth = 0;
+        mipmapped_array_desc.arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
+        mipmapped_array_desc.arrayDesc.NumChannels = num_channels;
+        mipmapped_array_desc.arrayDesc.Flags = 0;
+        mipmapped_array_desc.numLevels = 1;
+
+        CUmipmappedArray mipmapped_array { nullptr };
+        auto mapped_array_result = functions.cuExternalMemoryGetMappedMipmappedArray(&mipmapped_array, external_memory, &mipmapped_array_desc);
+        if (mapped_array_result != CUDA_SUCCESS || !mipmapped_array) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_external_memory_upload_error frame_id={} plane={} step=map_mipmap result={} error={} size={} array={}x{} width_bytes={} height={} pitch={} channels={}",
+                frame_id, plane_name, static_cast<int>(mapped_array_result), cuda_error_name(functions, mapped_array_result), external_memory_size, array_width, array_height, width_in_bytes, height, source_pitch, num_channels);
+            return Error::from_string_literal("Failed to map CUDA external memory as mipmapped array");
+        }
+        auto destroy_mipmapped_array = ScopeGuard([&] {
+            functions.cuMipmappedArrayDestroy(mipmapped_array);
+        });
+
+        CUarray array { nullptr };
+        auto level_result = functions.cuMipmappedArrayGetLevel(&array, mipmapped_array, 0);
+        if (level_result != CUDA_SUCCESS || !array) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_external_memory_upload_error frame_id={} plane={} step=mipmap_level result={} error={} size={} array={}x{} width_bytes={} height={} pitch={} channels={}",
+                frame_id, plane_name, static_cast<int>(level_result), cuda_error_name(functions, level_result), external_memory_size, array_width, array_height, width_in_bytes, height, source_pitch, num_channels);
+            return Error::from_string_literal("Failed to get CUDA external memory array level");
+        }
+
+        CUDA_MEMCPY2D copy {};
+        copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        copy.srcDevice = source;
+        copy.srcPitch = source_pitch;
+        copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+        copy.dstArray = array;
+        copy.WidthInBytes = width_in_bytes;
+        copy.Height = height;
+        auto copy_result = functions.cuMemcpy2D(&copy);
+        if (copy_result != CUDA_SUCCESS) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_external_memory_upload_error frame_id={} plane={} step=copy result={} error={} size={} array={}x{} width_bytes={} height={} pitch={} source={} channels={}",
+                frame_id, plane_name, static_cast<int>(copy_result), cuda_error_name(functions, copy_result), external_memory_size, array_width, array_height, width_in_bytes, height, source_pitch, source, num_channels);
+            return Error::from_string_literal("Failed to copy CUDA plane into external memory array");
+        }
+
         return {};
     }
 

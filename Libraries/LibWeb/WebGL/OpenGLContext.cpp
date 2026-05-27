@@ -6,6 +6,7 @@
 
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
+#include <AK/ScopeGuard.h>
 #include <AK/String.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SharedImageBuffer.h>
@@ -715,6 +716,106 @@ void OpenGLContext::probe_video_opaque_fd_texture_import(u32 width, u32 height, 
     auto& vulkan_context = m_skia_backend_context->vulkan_context();
     probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_y_r8", width, height, VK_FORMAT_R8_UNORM, GL_R8_EXT, log_count, true);
     probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_uv_rg8", uv_width, uv_height, VK_FORMAT_R8G8_UNORM, GL_RG8_EXT, log_count, true);
+}
+
+ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count)
+{
+    auto* gl_create_memory_objects_ext = reinterpret_cast<PFNGLCREATEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glCreateMemoryObjectsEXT"));
+    auto* gl_delete_memory_objects_ext = reinterpret_cast<PFNGLDELETEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glDeleteMemoryObjectsEXT"));
+    auto* gl_memory_object_parameteriv_ext = reinterpret_cast<PFNGLMEMORYOBJECTPARAMETERIVEXTPROC>(eglGetProcAddress("glMemoryObjectParameterivEXT"));
+    auto* gl_import_memory_fd_ext = reinterpret_cast<PFNGLIMPORTMEMORYFDEXTPROC>(eglGetProcAddress("glImportMemoryFdEXT"));
+    auto* gl_tex_storage_mem_2d_ext = reinterpret_cast<PFNGLTEXSTORAGEMEM2DEXTPROC>(eglGetProcAddress("glTexStorageMem2DEXT"));
+
+    if (!gl_create_memory_objects_ext || !gl_delete_memory_objects_ext || !gl_memory_object_parameteriv_ext || !gl_import_memory_fd_ext || !gl_tex_storage_mem_2d_ext)
+        return Error::from_string_literal("GL memory object fd extension functions are unavailable");
+
+    auto image = TRY(Gfx::create_opaque_fd_vulkan_image(m_skia_backend_context->vulkan_context(), width, height, static_cast<VkFormat>(vulkan_format)));
+    auto fd = image->get_opaque_fd();
+    if (fd < 0)
+        return Error::from_string_literal("Failed to export Vulkan opaque fd for GL texture import");
+
+    GLuint memory_object { 0 };
+    GLuint texture { 0 };
+    auto cleanup = ArmedScopeGuard([&] {
+        if (texture)
+            glDeleteTextures(1, &texture);
+        if (memory_object)
+            gl_delete_memory_objects_ext(1, &memory_object);
+        if (fd >= 0)
+            close(fd);
+    });
+
+    while (glGetError() != GL_NO_ERROR) {
+    }
+
+    gl_create_memory_objects_ext(1, &memory_object);
+    auto create_error = glGetError();
+    if (create_error != GL_NO_ERROR || !memory_object)
+        return Error::from_string_literal("Failed to create GL memory object for video opaque fd");
+
+    GLint dedicated = GL_TRUE;
+    gl_memory_object_parameteriv_ext(memory_object, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
+    auto parameter_error = glGetError();
+    if (parameter_error != GL_NO_ERROR)
+        return Error::from_string_literal("Failed to set GL memory object dedicated flag");
+
+    gl_import_memory_fd_ext(memory_object, image->info.allocation_size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
+    fd = -1; // glImportMemoryFdEXT takes ownership.
+    auto import_error = glGetError();
+    if (import_error != GL_NO_ERROR)
+        return Error::from_string_literal("Failed to import Vulkan opaque fd into GL memory object");
+
+    glGenTextures(1, &texture);
+    if (!texture)
+        return Error::from_string_literal("Failed to create imported video GL texture");
+
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl_tex_storage_mem_2d_ext(GL_TEXTURE_2D, 1, gl_internal_format, width, height, memory_object, 0);
+    auto storage_error = glGetError();
+    if (storage_error != GL_NO_ERROR)
+        return Error::from_string_literal("Failed to bind GL texture storage to imported video memory object");
+
+    if (log_count <= 8 || log_count % 120 == 0) {
+        dbgln("MUNDO_WEBGL_VIDEO_OPAQUE_FD_TEXTURE_IMPORT count={} label={} status=ok texture={} memory_object={} size={}x{} allocation_size={} vk_format={} gl_internal_format={}",
+            log_count,
+            label,
+            texture,
+            memory_object,
+            width,
+            height,
+            image->info.allocation_size,
+            vulkan_format,
+            gl_internal_format);
+    }
+
+    cleanup.disarm();
+    return ImportedVideoOpaqueFDTexture {
+        .image = image,
+        .memory_object = memory_object,
+        .texture = texture,
+        .width = width,
+        .height = height,
+        .allocation_size = image->info.allocation_size,
+    };
+}
+
+void OpenGLContext::delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture& texture)
+{
+    auto* gl_delete_memory_objects_ext = reinterpret_cast<PFNGLDELETEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glDeleteMemoryObjectsEXT"));
+    if (texture.texture) {
+        auto gl_texture = static_cast<GLuint>(texture.texture);
+        glDeleteTextures(1, &gl_texture);
+        texture.texture = 0;
+    }
+    if (texture.memory_object && gl_delete_memory_objects_ext) {
+        auto memory_object = static_cast<GLuint>(texture.memory_object);
+        gl_delete_memory_objects_ext(1, &memory_object);
+        texture.memory_object = 0;
+    }
 }
 
 void OpenGLContext::allocate_vkimage_painting_surface()

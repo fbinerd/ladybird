@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <AK/Error.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefPtr.h>
@@ -13,6 +14,10 @@
 #include <LibGfx/Forward.h>
 #include <LibGfx/Size.h>
 #include <LibWeb/Export.h>
+
+#ifdef USE_VULKAN_DMABUF_IMAGES
+#    include <LibGfx/VulkanImage.h>
+#endif
 
 namespace Web::WebGL {
 
@@ -57,7 +62,18 @@ public:
     WebGLVersion webgl_version() const { return m_webgl_version; }
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
+    struct ImportedVideoOpaqueFDTexture {
+        NonnullRefPtr<Gfx::VulkanImage> image;
+        u32 memory_object { 0 };
+        u32 texture { 0 };
+        u32 width { 0 };
+        u32 height { 0 };
+        u64 allocation_size { 0 };
+    };
+
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
+    ErrorOr<ImportedVideoOpaqueFDTexture> create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count);
+    void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif
 
 private:
