@@ -202,6 +202,7 @@ size_t DisplayingVideoSink::smoothness_adjusted_catch_up_budget(VideoFrameSchedu
 
         auto sync_budget = static_cast<size_t>((excess_age_ms + frame_duration_ms - 1) / frame_duration_ms) + 1;
         sync_budget = min(sync_budget, config.av_sync_catch_up_max_frames);
+        sync_budget = min(sync_budget, config.gradual_catch_up_burst_max_frames);
         return max(base_budget, sync_budget);
     }
 
