@@ -28,6 +28,13 @@ extern "C" {
 }
 #include <GLES3/gl3.h>
 
+#ifndef GL_R8_EXT
+#    define GL_R8_EXT 0x8229
+#endif
+#ifndef GL_RG8_EXT
+#    define GL_RG8_EXT 0x822B
+#endif
+
 #ifdef USE_VULKAN_DMABUF_IMAGES
 #    include <ffnvcodec/dynlink_cuda.h>
 #    include <dlfcn.h>
@@ -593,7 +600,7 @@ static void probe_cuda_import_for_vulkan_opaque_fd(Gfx::VulkanContext const& con
         close(opaque_fd);
 }
 
-static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext const& context, VkFormat format, size_t log_count)
+static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext const& context, char const* label, u32 width, u32 height, VkFormat vk_format, GLenum gl_internal_format, size_t log_count)
 {
     auto const* extensions = reinterpret_cast<char const*>(glGetString(GL_EXTENSIONS));
     auto has_memory_object = gl_extension_list_contains(extensions, "GL_EXT_memory_object"sv);
@@ -621,11 +628,16 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
     if (!has_memory_object || !has_memory_object_fd || !gl_create_memory_objects_ext || !gl_delete_memory_objects_ext || !gl_memory_object_parameteriv_ext || !gl_import_memory_fd_ext || !gl_tex_storage_mem_2d_ext)
         return;
 
-    auto opaque_image_or_error = Gfx::create_opaque_fd_vulkan_image(context, 64, 64, format);
+    auto opaque_image_or_error = Gfx::create_opaque_fd_vulkan_image(context, width, height, vk_format);
     if (opaque_image_or_error.is_error()) {
         if (log_count <= 8 || log_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_PROBE count={} status=failed reason=create_image error={}",
+            dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_PROBE count={} label={} status=failed reason=create_image vk_format={} gl_internal_format={} size={}x{} error={}",
                 log_count,
+                label,
+                to_underlying(vk_format),
+                gl_internal_format,
+                width,
+                height,
                 opaque_image_or_error.error());
         }
         return;
@@ -635,7 +647,7 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
     auto opaque_fd = opaque_image->get_opaque_fd();
     if (opaque_fd < 0) {
         if (log_count <= 8 || log_count % 120 == 0)
-            dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_PROBE count={} status=failed reason=get_opaque_fd", log_count);
+            dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_PROBE count={} label={} status=failed reason=get_opaque_fd vk_format={} gl_internal_format={} size={}x{}", log_count, label, to_underlying(vk_format), gl_internal_format, width, height);
         return;
     }
 
@@ -666,7 +678,7 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        gl_tex_storage_mem_2d_ext(GL_TEXTURE_2D, 1, GL_RGBA8, opaque_image->info.extent.width, opaque_image->info.extent.height, memory_object, 0);
+        gl_tex_storage_mem_2d_ext(GL_TEXTURE_2D, 1, gl_internal_format, opaque_image->info.extent.width, opaque_image->info.extent.height, memory_object, 0);
     }
     auto storage_error = glGetError();
 
@@ -678,8 +690,9 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
         close(opaque_fd);
 
     if (log_count <= 8 || log_count % 120 == 0) {
-        dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_PROBE count={} status={} create_error={} parameter_error={} import_error={} storage_error={} memory_object={} texture={} size={}x{} allocation_size={}",
+        dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_PROBE count={} label={} status={} create_error={} parameter_error={} import_error={} storage_error={} memory_object={} texture={} size={}x{} allocation_size={} vk_format={} gl_internal_format={}",
             log_count,
+            label,
             create_error == GL_NO_ERROR && parameter_error == GL_NO_ERROR && import_error == GL_NO_ERROR && storage_error == GL_NO_ERROR ? "ok" : "failed",
             create_error,
             parameter_error,
@@ -689,8 +702,17 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
             texture,
             opaque_image->info.extent.width,
             opaque_image->info.extent.height,
-            opaque_image->info.allocation_size);
+            opaque_image->info.allocation_size,
+            to_underlying(vk_format),
+            gl_internal_format);
     }
+}
+
+void OpenGLContext::probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count)
+{
+    auto& vulkan_context = m_skia_backend_context->vulkan_context();
+    probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_y_r8", width, height, VK_FORMAT_R8_UNORM, GL_R8_EXT, log_count);
+    probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_uv_rg8", uv_width, uv_height, VK_FORMAT_R8G8_UNORM, GL_RG8_EXT, log_count);
 }
 
 void OpenGLContext::allocate_vkimage_painting_surface()
@@ -772,7 +794,7 @@ void OpenGLContext::allocate_vkimage_painting_surface()
 
     m_impl->surface = EGL_NO_SURFACE;
     eglMakeCurrent(m_impl->display, m_impl->surface, m_impl->surface, m_impl->context);
-    probe_gl_memory_object_fd_for_vulkan_opaque_fd(m_skia_backend_context->vulkan_context(), vulkan_format, dmabuf_caps_log_count);
+    probe_gl_memory_object_fd_for_vulkan_opaque_fd(m_skia_backend_context->vulkan_context(), "paint_bgra8", 64, 64, vulkan_format, GL_RGBA8, dmabuf_caps_log_count);
 
     glGenTextures(1, &m_impl->color_buffer);
     glBindTexture(GL_TEXTURE_2D, m_impl->color_buffer);

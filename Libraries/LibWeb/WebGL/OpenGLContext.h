@@ -56,6 +56,10 @@ public:
 
     WebGLVersion webgl_version() const { return m_webgl_version; }
 
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
+#endif
+
 private:
     NonnullRefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
     Gfx::IntSize m_size;
