@@ -894,9 +894,22 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto visible_uv_width = (video_width + 1) / 2;
     auto uv_texture_height = (video_height + 1) / 2;
     auto const* nv12_data = media_frame->cached_nv12_data();
-    static bool s_video_opaque_fd_plane_probe_done { false };
-    if (!s_video_opaque_fd_plane_probe_done && has_hardware_handle && zero_copy_capable && video_width > 0 && video_height > 0) {
-        s_video_opaque_fd_plane_probe_done = true;
+    static int s_video_opaque_fd_plane_probe_width { 0 };
+    static int s_video_opaque_fd_plane_probe_height { 0 };
+    if (has_hardware_handle && zero_copy_capable && video_width > 0 && video_height > 0 && (s_video_opaque_fd_plane_probe_width != video_width || s_video_opaque_fd_plane_probe_height != video_height)) {
+        s_video_opaque_fd_plane_probe_width = video_width;
+        s_video_opaque_fd_plane_probe_height = video_height;
+        dbgln("MUNDO_WEBGL_VIDEO_OPAQUE_FD_PLANE_PROBE_REQUEST attempt={} frame_id={} backend={} size={}x{} uv_size={}x{} has_hardware_handle={} zero_copy_capable={} requires_cpu_transfer={}",
+            attempt_count,
+            hardware_frame_id,
+            hardware_backend,
+            video_width,
+            video_height,
+            visible_uv_width,
+            uv_texture_height,
+            has_hardware_handle,
+            zero_copy_capable,
+            requires_cpu_transfer);
         context().probe_video_opaque_fd_texture_import(video_width, video_height, visible_uv_width, uv_texture_height, attempt_count);
     }
     static bool s_cuda_gl_buffer_upload_disabled { false };
