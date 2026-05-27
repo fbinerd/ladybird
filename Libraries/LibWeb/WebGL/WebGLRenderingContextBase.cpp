@@ -895,10 +895,22 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto uv_texture_height = (video_height + 1) / 2;
     auto const* nv12_data = media_frame->cached_nv12_data();
     static bool s_cuda_gl_buffer_upload_disabled { false };
+    static bool s_cuda_gl_direct_texture_upload_disabled { false };
     auto cuda_upload_mode = mundo_webgl_video_cuda_upload_mode();
-    auto can_attempt_hardware_gl_upload = has_hardware_handle && zero_copy_capable && !is_sub_image && (cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture || !s_cuda_gl_buffer_upload_disabled);
+    auto can_attempt_hardware_gl_upload = has_hardware_handle
+        && zero_copy_capable
+        && !is_sub_image
+        && ((cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture && !s_cuda_gl_direct_texture_upload_disabled)
+            || (cuda_upload_mode == MundoWebGLVideoCudaUploadMode::PBO && !s_cuda_gl_buffer_upload_disabled));
     if (s_cuda_gl_buffer_upload_disabled && cuda_upload_mode == MundoWebGLVideoCudaUploadMode::PBO && has_hardware_handle && zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason=cuda_gl_buffer_interop_disabled has_hardware_handle={} gl_api=gles_angle_or_egl",
+            attempt_count,
+            hardware_frame_id,
+            hardware_backend,
+            has_hardware_handle);
+    }
+    if (s_cuda_gl_direct_texture_upload_disabled && cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture && has_hardware_handle && zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason=cuda_gl_direct_texture_upload_disabled has_hardware_handle={} gl_api=gles_angle_or_egl",
             attempt_count,
             hardware_frame_id,
             hardware_backend,
@@ -1155,6 +1167,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
             } else {
                 hardware_gl_upload_failure_reason = upload_result.error().string_literal();
+                s_cuda_gl_direct_texture_upload_disabled = true;
                 if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
                     dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=texture",
                         attempt_count,

@@ -1209,6 +1209,7 @@ private:
         void* library { nullptr };
         tcuCtxPushCurrent_v2* cuCtxPushCurrent { nullptr };
         tcuCtxPopCurrent_v2* cuCtxPopCurrent { nullptr };
+        tcuGetErrorName* cuGetErrorName { nullptr };
         tcuGraphicsGLRegisterImage* cuGraphicsGLRegisterImage { nullptr };
         tcuGraphicsUnregisterResource* cuGraphicsUnregisterResource { nullptr };
         tcuGraphicsMapResources* cuGraphicsMapResources { nullptr };
@@ -1245,6 +1246,7 @@ private:
             if (s_functions.library) {
                 s_functions.cuCtxPushCurrent = reinterpret_cast<tcuCtxPushCurrent_v2*>(dlsym(s_functions.library, "cuCtxPushCurrent_v2"));
                 s_functions.cuCtxPopCurrent = reinterpret_cast<tcuCtxPopCurrent_v2*>(dlsym(s_functions.library, "cuCtxPopCurrent_v2"));
+                s_functions.cuGetErrorName = reinterpret_cast<tcuGetErrorName*>(dlsym(s_functions.library, "cuGetErrorName"));
                 s_functions.cuGraphicsGLRegisterImage = reinterpret_cast<tcuGraphicsGLRegisterImage*>(dlsym(s_functions.library, "cuGraphicsGLRegisterImage"));
                 s_functions.cuGraphicsUnregisterResource = reinterpret_cast<tcuGraphicsUnregisterResource*>(dlsym(s_functions.library, "cuGraphicsUnregisterResource"));
                 s_functions.cuGraphicsMapResources = reinterpret_cast<tcuGraphicsMapResources*>(dlsym(s_functions.library, "cuGraphicsMapResources"));
@@ -1284,6 +1286,16 @@ private:
         return &s_functions;
     }
 
+    static char const* cuda_error_name(CudaGLFunctions& functions, CUresult result)
+    {
+        if (!functions.cuGetErrorName)
+            return "unavailable";
+        char const* name = nullptr;
+        if (functions.cuGetErrorName(result, &name) == CUDA_SUCCESS && name)
+            return name;
+        return "unknown";
+    }
+
     CUcontext cuda_context_from_frame() const
     {
         if (!m_frame->hw_frames_ctx || !m_frame->hw_frames_ctx->data)
@@ -1302,8 +1314,8 @@ private:
         CUgraphicsResource resource { nullptr };
         auto register_result = functions.cuGraphicsGLRegisterImage(&resource, texture, texture_target, CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD);
         if (register_result != CUDA_SUCCESS) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=register result={} texture={} target={} width_bytes={} height={} pitch={}",
-                frame_id, plane_name, static_cast<int>(register_result), texture, texture_target, width_in_bytes, height, source_pitch);
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=register result={} error={} texture={} target={} width_bytes={} height={} pitch={}",
+                frame_id, plane_name, static_cast<int>(register_result), cuda_error_name(functions, register_result), texture, texture_target, width_in_bytes, height, source_pitch);
             return Error::from_string_literal("Failed to register GL texture with CUDA");
         }
         auto unregister_resource = ScopeGuard([&] {
@@ -1312,8 +1324,8 @@ private:
 
         auto map_result = functions.cuGraphicsMapResources(1, &resource, nullptr);
         if (map_result != CUDA_SUCCESS) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=map result={} texture={} target={} width_bytes={} height={} pitch={}",
-                frame_id, plane_name, static_cast<int>(map_result), texture, texture_target, width_in_bytes, height, source_pitch);
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=map result={} error={} texture={} target={} width_bytes={} height={} pitch={}",
+                frame_id, plane_name, static_cast<int>(map_result), cuda_error_name(functions, map_result), texture, texture_target, width_in_bytes, height, source_pitch);
             return Error::from_string_literal("Failed to map CUDA graphics resource");
         }
         auto unmap_resource = ScopeGuard([&] {
@@ -1323,8 +1335,8 @@ private:
         CUarray array { nullptr };
         auto array_result = functions.cuGraphicsSubResourceGetMappedArray(&array, resource, 0, 0);
         if (array_result != CUDA_SUCCESS || !array) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=array result={} array={} texture={} target={} width_bytes={} height={} pitch={}",
-                frame_id, plane_name, static_cast<int>(array_result), static_cast<void*>(array), texture, texture_target, width_in_bytes, height, source_pitch);
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=array result={} error={} array={} texture={} target={} width_bytes={} height={} pitch={}",
+                frame_id, plane_name, static_cast<int>(array_result), cuda_error_name(functions, array_result), static_cast<void*>(array), texture, texture_target, width_in_bytes, height, source_pitch);
             return Error::from_string_literal("Failed to get mapped CUDA array from GL texture");
         }
 
@@ -1338,8 +1350,8 @@ private:
         copy.Height = height;
         auto copy_result = functions.cuMemcpy2D(&copy);
         if (copy_result != CUDA_SUCCESS) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=copy result={} texture={} target={} width_bytes={} height={} pitch={} source={}",
-                frame_id, plane_name, static_cast<int>(copy_result), texture, texture_target, width_in_bytes, height, source_pitch, source);
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload_error frame_id={} plane={} step=copy result={} error={} texture={} target={} width_bytes={} height={} pitch={} source={}",
+                frame_id, plane_name, static_cast<int>(copy_result), cuda_error_name(functions, copy_result), texture, texture_target, width_in_bytes, height, source_pitch, source);
             return Error::from_string_literal("Failed to copy CUDA plane into GL texture");
         }
         return {};
