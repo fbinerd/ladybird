@@ -173,6 +173,19 @@ static bool should_keep_small_frame_on_software(AVCodecContext const* codec_cont
     return static_cast<unsigned long long>(codec_context->width) * static_cast<unsigned long long>(codec_context->height) < min_pixels;
 }
 
+static bool should_require_hardware_decode()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_REQUIRE_HARDWARE_DECODE");
+    if (!raw_value)
+        return false;
+
+    return raw_value[0] != '\0'
+        && strcmp(raw_value, "0")
+        && strcmp(raw_value, "false")
+        && strcmp(raw_value, "no")
+        && strcmp(raw_value, "off");
+}
+
 static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecoderBackend backend)
 {
     if (backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Software)
@@ -224,6 +237,16 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
         auto skipped_hardware_format = false;
         if (is_known_unsupported_nvdec_h264_resolution(codec_context)) {
             skipped_hardware_format = true;
+            if (should_require_hardware_decode()) {
+                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=none reason=nvdec_h264_resolution_or_level_limit require_hardware_decode=true codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                    avcodec_get_name(codec_context->codec_id),
+                    codec_profile_name(codec_context),
+                    codec_context->level,
+                    codec_context->width,
+                    codec_context->height,
+                    pixel_format_name(codec_context->sw_pix_fmt));
+                return AV_PIX_FMT_NONE;
+            }
             dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=nvdec_h264_resolution_or_level_limit codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
                 avcodec_get_name(codec_context->codec_id),
                 codec_profile_name(codec_context),
