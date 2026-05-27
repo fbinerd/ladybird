@@ -600,7 +600,7 @@ static void probe_cuda_import_for_vulkan_opaque_fd(Gfx::VulkanContext const& con
         close(opaque_fd);
 }
 
-static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext const& context, char const* label, u32 width, u32 height, VkFormat vk_format, GLenum gl_internal_format, size_t log_count)
+static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext const& context, char const* label, u32 width, u32 height, VkFormat vk_format, GLenum gl_internal_format, size_t log_count, bool force_log = false)
 {
     auto const* extensions = reinterpret_cast<char const*>(glGetString(GL_EXTENSIONS));
     auto has_memory_object = gl_extension_list_contains(extensions, "GL_EXT_memory_object"sv);
@@ -612,7 +612,9 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
     auto* gl_import_memory_fd_ext = reinterpret_cast<PFNGLIMPORTMEMORYFDEXTPROC>(eglGetProcAddress("glImportMemoryFdEXT"));
     auto* gl_tex_storage_mem_2d_ext = reinterpret_cast<PFNGLTEXSTORAGEMEM2DEXTPROC>(eglGetProcAddress("glTexStorageMem2DEXT"));
 
-    if (log_count <= 8 || log_count % 120 == 0) {
+    auto const should_log = force_log || log_count <= 8 || log_count % 120 == 0;
+
+    if (should_log) {
         dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_CAPS count={} memory_object={} memory_object_fd={} create_fn={} delete_fn={} parameter_fn={} import_fd_fn={} tex_storage_mem_2d_fn={} extensions_null={}",
             log_count,
             has_memory_object,
@@ -630,7 +632,7 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
 
     auto opaque_image_or_error = Gfx::create_opaque_fd_vulkan_image(context, width, height, vk_format);
     if (opaque_image_or_error.is_error()) {
-        if (log_count <= 8 || log_count % 120 == 0) {
+        if (should_log) {
             dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_PROBE count={} label={} status=failed reason=create_image vk_format={} gl_internal_format={} size={}x{} error={}",
                 log_count,
                 label,
@@ -646,7 +648,7 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
     auto opaque_image = opaque_image_or_error.release_value();
     auto opaque_fd = opaque_image->get_opaque_fd();
     if (opaque_fd < 0) {
-        if (log_count <= 8 || log_count % 120 == 0)
+        if (should_log)
             dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_PROBE count={} label={} status=failed reason=get_opaque_fd vk_format={} gl_internal_format={} size={}x{}", log_count, label, to_underlying(vk_format), gl_internal_format, width, height);
         return;
     }
@@ -689,7 +691,7 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
     if (opaque_fd >= 0)
         close(opaque_fd);
 
-    if (log_count <= 8 || log_count % 120 == 0) {
+    if (should_log) {
         dbgln("MUNDO_WEBGL_GL_MEMORY_OBJECT_FD_PROBE count={} label={} status={} create_error={} parameter_error={} import_error={} storage_error={} memory_object={} texture={} size={}x{} allocation_size={} vk_format={} gl_internal_format={}",
             log_count,
             label,
@@ -711,8 +713,8 @@ static void probe_gl_memory_object_fd_for_vulkan_opaque_fd(Gfx::VulkanContext co
 void OpenGLContext::probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count)
 {
     auto& vulkan_context = m_skia_backend_context->vulkan_context();
-    probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_y_r8", width, height, VK_FORMAT_R8_UNORM, GL_R8_EXT, log_count);
-    probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_uv_rg8", uv_width, uv_height, VK_FORMAT_R8G8_UNORM, GL_RG8_EXT, log_count);
+    probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_y_r8", width, height, VK_FORMAT_R8_UNORM, GL_R8_EXT, log_count, true);
+    probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_uv_rg8", uv_width, uv_height, VK_FORMAT_R8G8_UNORM, GL_RG8_EXT, log_count, true);
 }
 
 void OpenGLContext::allocate_vkimage_painting_surface()
