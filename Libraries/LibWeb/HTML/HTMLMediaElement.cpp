@@ -158,6 +158,100 @@ static bool mundo_is_vr_hls_url(String const& url)
     return mundo_is_hls_url(url) && url.contains("_vr/"sv);
 }
 
+static bool mundo_nvdec_backend_requested()
+{
+    auto const* raw_backend = getenv("MUNDO_VIDEO_DECODER_BACKEND");
+    if (!raw_backend)
+        return true;
+
+    return !strcmp(raw_backend, "nvdec") || !strcmp(raw_backend, "cuda");
+}
+
+static Optional<StringView> mundo_hls_stream_codecs(StringView stream_inf_line)
+{
+    auto codecs_offset = stream_inf_line.find("CODECS=\""sv);
+    if (!codecs_offset.has_value())
+        return {};
+
+    auto codecs = stream_inf_line.substring_view(*codecs_offset + "CODECS=\""sv.length());
+    auto end_offset = codecs.find('"');
+    if (!end_offset.has_value())
+        return {};
+
+    return codecs.substring_view(0, *end_offset);
+}
+
+static bool mundo_hls_stream_is_nvdec_unfriendly(StringView stream_inf_line)
+{
+    auto codecs = mundo_hls_stream_codecs(stream_inf_line);
+    if (!codecs.has_value())
+        return false;
+    return mundo_codec_list_contains_nvdec_unfriendly_h264(*codecs);
+}
+
+static Optional<ByteString> mundo_filter_hls_manifest_for_nvdec(StringView manifest)
+{
+    if (!::Media::RuntimeConfiguration::flag_enabled("MUNDO_HLS_FILTER_NVDEC_UNSUPPORTED", true))
+        return {};
+    if (!mundo_nvdec_backend_requested())
+        return {};
+
+    size_t stream_count = 0;
+    size_t filtered_stream_count = 0;
+    Optional<StringView> pending_stream_inf;
+    manifest.for_each_split_view('\n', SplitBehavior::KeepEmpty, [&](auto raw_line) {
+        auto line = raw_line.trim("\r"sv, TrimMode::Right);
+        if (line.starts_with("#EXT-X-STREAM-INF:"sv)) {
+            pending_stream_inf = line;
+            return IterationDecision::Continue;
+        }
+        if (pending_stream_inf.has_value() && !line.starts_with('#') && !line.is_empty()) {
+            ++stream_count;
+            if (mundo_hls_stream_is_nvdec_unfriendly(*pending_stream_inf))
+                ++filtered_stream_count;
+            pending_stream_inf.clear();
+        }
+        return IterationDecision::Continue;
+    });
+
+    if (filtered_stream_count == 0 || filtered_stream_count >= stream_count)
+        return {};
+
+    StringBuilder builder;
+    size_t removed_streams = 0;
+    pending_stream_inf.clear();
+    manifest.for_each_split_view('\n', SplitBehavior::KeepEmpty, [&](auto raw_line) {
+        auto line = raw_line.trim("\r"sv, TrimMode::Right);
+        if (line.starts_with("#EXT-X-STREAM-INF:"sv)) {
+            pending_stream_inf = raw_line;
+            return IterationDecision::Continue;
+        }
+        if (pending_stream_inf.has_value()) {
+            if (!line.starts_with('#') && !line.is_empty() && mundo_hls_stream_is_nvdec_unfriendly(*pending_stream_inf)) {
+                ++removed_streams;
+                pending_stream_inf.clear();
+                return IterationDecision::Continue;
+            }
+            builder.append(*pending_stream_inf);
+            builder.append('\n');
+            pending_stream_inf.clear();
+        }
+        builder.append(raw_line);
+        builder.append('\n');
+        return IterationDecision::Continue;
+    });
+    if (pending_stream_inf.has_value())
+        builder.append(*pending_stream_inf);
+
+    auto filtered_manifest = builder.to_byte_string();
+    dbgln("MUNDO_MEDIA_ELEMENT filtered_hls_manifest_for_nvdec streams={} removed={} original_size={} filtered_size={}",
+        stream_count,
+        removed_streams,
+        manifest.length(),
+        filtered_manifest.length());
+    return filtered_manifest;
+}
+
 static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& current_src, u64 offset, ByteBuffer const& media_data)
 {
     if (!::Media::RuntimeConfiguration::flag_enabled("MUNDO_HLS_SANITIZE_MANIFEST", true))
@@ -173,6 +267,9 @@ static Optional<ByteBuffer> mundo_sanitized_hls_manifest_chunk(String const& cur
                                   .replace(";ios"sv, ""sv, ReplaceMode::All)
                                   .replace("%3Bios"sv, ""sv, ReplaceMode::All)
                                   .replace("%3bios"sv, ""sv, ReplaceMode::All);
+
+    if (auto filtered_manifest = mundo_filter_hls_manifest_for_nvdec(StringView { sanitized_manifest.characters(), sanitized_manifest.length() }); filtered_manifest.has_value())
+        sanitized_manifest = filtered_manifest.release_value();
 
     char pattern_buffer[128];
     auto const* pattern = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_SANITIZE_MANIFEST_PATTERN", pattern_buffer, sizeof(pattern_buffer));
@@ -197,15 +294,6 @@ static bool mundo_env_flag_enabled(char const* name)
 static bool mundo_env_flag_disabled(char const* name)
 {
     return ::Media::RuntimeConfiguration::flag_disabled(name);
-}
-
-static bool mundo_nvdec_backend_requested()
-{
-    auto const* raw_backend = getenv("MUNDO_VIDEO_DECODER_BACKEND");
-    if (!raw_backend)
-        return true;
-
-    return !strcmp(raw_backend, "nvdec") || !strcmp(raw_backend, "cuda");
 }
 
 static bool mundo_should_prefer_hevc_hls_source()
