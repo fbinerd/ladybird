@@ -1155,7 +1155,8 @@ public:
             return Error::from_string_literal("CUDA frame does not expose both NV12 planes");
         if (m_frame->linesize[0] <= 0 || m_frame->linesize[1] <= 0)
             return Error::from_string_literal("CUDA frame has invalid plane pitch");
-        if (!request.y_texture || !request.uv_texture || !request.texture_target)
+        auto use_external_memory_upload = request.texture_target == 0 && request.y_upload_buffer && request.uv_upload_buffer && request.y_upload_buffer_size && request.uv_upload_buffer_size;
+        if (!request.y_texture || !request.uv_texture || (!request.texture_target && !use_external_memory_upload))
             return Error::from_string_literal("Invalid GL texture upload request");
 
         auto* functions = TRY(cuda_gl_functions());
@@ -1172,7 +1173,6 @@ public:
         });
 
         auto upload_start = MonotonicTime::now();
-        auto use_external_memory_upload = request.texture_target == 0 && request.y_upload_buffer && request.uv_upload_buffer && request.y_upload_buffer_size && request.uv_upload_buffer_size;
         if (use_external_memory_upload) {
             TRY(copy_cuda_plane_to_external_memory_array(*functions, "y", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[0]), static_cast<size_t>(m_frame->linesize[0]), static_cast<int>(request.y_upload_buffer), request.y_upload_buffer_size, true, request.width, request.height, 1, request.width, request.height));
             TRY(copy_cuda_plane_to_external_memory_array(*functions, "uv", descriptor().frame_id, reinterpret_cast<CUdeviceptr>(m_frame->data[1]), static_cast<size_t>(m_frame->linesize[1]), static_cast<int>(request.uv_upload_buffer), request.uv_upload_buffer_size, true, request.uv_width * 2, request.uv_height, 2, request.uv_width, request.uv_height));
