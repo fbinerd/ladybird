@@ -829,7 +829,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 }
             }
         }
-        if (has_nv12_frame || should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+        if (has_nv12_frame || has_hardware_handle || zero_copy_capable || should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
             dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} has_nv12={} frame_id={} hardware_backend={} zero_copy_capable={} requires_cpu_transfer={} has_hardware_handle={} nv12_size={}x{} nv12_stride={}x{} nv12_bytes={}+{} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
                 attempt_count,
                 reason,
