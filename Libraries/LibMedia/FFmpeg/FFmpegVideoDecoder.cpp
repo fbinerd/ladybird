@@ -359,7 +359,7 @@ static HardwareVideoFrameDescriptor hardware_descriptor_for_cuda_frame(AVCodecCo
     descriptor.software_format = codec_context->sw_pix_fmt;
     descriptor.bit_depth = bit_depth;
     descriptor.zero_copy_capable = true;
-    descriptor.requires_cpu_transfer = true;
+    descriptor.requires_cpu_transfer = false;
     return descriptor;
 }
 

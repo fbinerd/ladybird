@@ -63,6 +63,19 @@ static i64 mundo_webgl_timing_summary_interval_ms()
     return value > 0 ? value : 1000;
 }
 
+static bool mundo_webgl_video_cpu_bitmap_fallback_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_CPU_BITMAP_FALLBACK");
+    if (raw_value)
+        return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+
+    auto const* require_hardware_decode = getenv("MUNDO_VIDEO_REQUIRE_HARDWARE_DECODE");
+    if (require_hardware_decode && require_hardware_decode[0] != '\0' && strcmp(require_hardware_decode, "0") && strcmp(require_hardware_decode, "false") && strcmp(require_hardware_decode, "no") && strcmp(require_hardware_decode, "off"))
+        return false;
+
+    return true;
+}
+
 static Optional<i64> mundo_webgl_slow_duration(MonotonicTime start)
 {
     if (!mundo_webgl_timing_enabled() || !mundo_webgl_timing_detail_enabled())
@@ -336,8 +349,13 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
 
     if (upload_texture_source_with_video_nv12_shader_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
         return;
-    if (texture_source_is_video_with_nv12_frame(source))
+    if (texture_source_is_video_with_nv12_frame(source)) {
         dbgln("MUNDO_WEBGL_VIDEO_NV12_BITMAP_FALLBACK kind=texImage2D reason=nv12_shader_rejected target={} level={} format={} type={}", target, level, format, type);
+        if (!mundo_webgl_video_cpu_bitmap_fallback_enabled()) {
+            dbgln("MUNDO_WEBGL_VIDEO_CPU_BITMAP_FALLBACK_BLOCKED kind=texImage2D reason=hardware_only_mode target={} level={} format={} type={}", target, level, format, type);
+            return;
+        }
+    }
     if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, internalformat, 0, 0, 0, format, type, OptionalNone {}, OptionalNone {}, false))
         return;
 
@@ -372,8 +390,13 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
 
     if (upload_texture_source_with_video_nv12_shader_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, OptionalNone {}, OptionalNone {}, true))
         return;
-    if (texture_source_is_video_with_nv12_frame(source))
+    if (texture_source_is_video_with_nv12_frame(source)) {
         dbgln("MUNDO_WEBGL_VIDEO_NV12_BITMAP_FALLBACK kind=texSubImage2D reason=nv12_shader_rejected target={} level={} offset={}x{} format={} type={}", target, level, xoffset, yoffset, format, type);
+        if (!mundo_webgl_video_cpu_bitmap_fallback_enabled()) {
+            dbgln("MUNDO_WEBGL_VIDEO_CPU_BITMAP_FALLBACK_BLOCKED kind=texSubImage2D reason=hardware_only_mode target={} level={} offset={}x{} format={} type={}", target, level, xoffset, yoffset, format, type);
+            return;
+        }
+    }
     if (upload_texture_source_with_video_bitmap_fast_path(source, target, level, 0, xoffset, yoffset, 0, format, type, OptionalNone {}, OptionalNone {}, true))
         return;
 
