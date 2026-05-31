@@ -534,6 +534,14 @@ void SourceBufferProcessor::run_coded_frame_eviction()
     //           the removal range start and end timestamp respectively.
 }
 
+void SourceBufferProcessor::remove_coded_frames(AK::Duration start, AK::Duration end)
+{
+    for (auto& [track_id, track_buffer] : m_track_buffers)
+        track_buffer->demuxer().remove_coded_frames_and_dependants_in_range(start, end);
+
+    set_need_random_access_point_flag_on_all_track_buffers(true);
+}
+
 void SourceBufferProcessor::drop_consumed_bytes_from_input_buffer()
 {
     auto consumed = m_cursor->position();

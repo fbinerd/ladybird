@@ -60,7 +60,7 @@ public:
     void run_duration_change_algorithm(double new_duration);
 
     static bool is_type_supported(String const&);
-    static bool is_type_supported(JS::VM&, String const& type) { return is_type_supported(type); }
+    static bool is_type_supported(JS::VM&, String const& type);
 
 protected:
     MediaSource(JS::Realm&);

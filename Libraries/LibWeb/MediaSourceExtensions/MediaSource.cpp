@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/StringBuilder.h>
+#include <LibJS/Runtime/VM.h>
 #include <LibMedia/PlaybackManager.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/MediaSource.h>
@@ -101,6 +103,39 @@ static bool mundo_mse_codecs_are_supported(StringView codecs)
         return IterationDecision::Continue;
     });
     return !unsupported;
+}
+
+static String mundo_media_source_stack_trace(JS::VM& vm)
+{
+    auto stack_trace = vm.stack_trace();
+    if (stack_trace.is_empty())
+        return {};
+
+    StringBuilder builder;
+    size_t emitted_frames = 0;
+    for (size_t i = 0; i < stack_trace.size() && emitted_frames < 8; ++i) {
+        auto const& element = stack_trace[i];
+        auto* context = element.execution_context;
+        auto function_name = (context && context->function) ? context->function->name_for_call_stack() : ""_utf16;
+        auto function_name_string = function_name.is_empty() ? "<anonymous>"_string : function_name.to_utf8();
+
+        if (emitted_frames != 0)
+            builder.append(" <- "sv);
+
+        if (element.source_range.has_value()) {
+            auto const& source_range = *element.source_range;
+            if (!source_range.filename().is_empty()) {
+                builder.appendff("{}@{}:{}:{}", function_name_string, source_range.filename(), source_range.start.line, source_range.start.column);
+                ++emitted_frames;
+                continue;
+            }
+        }
+
+        builder.append(function_name_string);
+        ++emitted_frames;
+    }
+
+    return MUST(builder.to_string());
 }
 
 WebIDL::ExceptionOr<GC::Ref<MediaSource>> MediaSource::construct_impl(JS::Realm& realm)
@@ -465,6 +500,13 @@ bool MediaSource::is_type_supported(String const& type)
     // 6. Return true.
     dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=true", type);
     return true;
+}
+
+bool MediaSource::is_type_supported(JS::VM& vm, String const& type)
+{
+    auto result = is_type_supported(type);
+    dbgln("MUNDO_MEDIA_SOURCE is_type_supported_call type={} result={} stack={}", type, result, mundo_media_source_stack_trace(vm));
+    return result;
 }
 
 }

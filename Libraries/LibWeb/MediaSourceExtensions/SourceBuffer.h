@@ -58,6 +58,9 @@ public:
     // https://w3c.github.io/media-source/#dom-sourcebuffer-changetype
     WebIDL::ExceptionOr<void> change_type(String const& type);
 
+    // https://w3c.github.io/media-source/#dom-sourcebuffer-remove
+    WebIDL::ExceptionOr<void> remove(double start, double end);
+
     void set_reached_end_of_stream(Badge<MediaSource>);
     void clear_reached_end_of_stream(Badge<MediaSource>);
 

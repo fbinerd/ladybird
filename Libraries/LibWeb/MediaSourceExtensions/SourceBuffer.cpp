@@ -26,6 +26,7 @@
 #include <LibWeb/MimeSniff/MimeType.h>
 #include <LibWeb/WebIDL/Buffers.h>
 #include <LibWeb/WebIDL/QuotaExceededError.h>
+#include <math.h>
 
 namespace Web::MediaSourceExtensions {
 
@@ -447,6 +448,59 @@ WebIDL::ExceptionOr<void> SourceBuffer::change_type(String const& type)
 
     // 9. Set the [[pending initialization segment for changeType flag]] on this SourceBuffer object to true.
     m_processor->set_pending_initialization_segment_for_change_type_flag(true);
+
+    return {};
+}
+
+// https://w3c.github.io/media-source/#dom-sourcebuffer-remove
+WebIDL::ExceptionOr<void> SourceBuffer::remove(double start, double end)
+{
+    // 1. If this object has been removed from the sourceBuffers attribute of the parent media source,
+    //    then throw an InvalidStateError exception and abort these steps.
+    if (!m_media_source->source_buffers()->contains(*this))
+        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer has been removed"_utf16);
+
+    // 2. If the updating attribute equals true, then throw an InvalidStateError exception and abort these steps.
+    if (updating())
+        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer is updating"_utf16);
+
+    auto duration = m_media_source->duration();
+
+    // 3. If duration equals NaN, then throw an InvalidStateError exception and abort these steps.
+    if (isnan(duration))
+        return WebIDL::InvalidStateError::create(realm(), "MediaSource duration is NaN"_utf16);
+
+    // 4. If start is negative or greater than duration, then throw a TypeError exception and abort these steps.
+    // 5. If end is less than or equal to start or end equals NaN, then throw a TypeError exception and abort these steps.
+    if (isnan(start) || start < 0 || (isfinite(duration) && start > duration) || isnan(end) || end <= start)
+        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Invalid SourceBuffer remove range"sv };
+
+    auto removal_end = end;
+    if (isfinite(duration) && (!isfinite(removal_end) || removal_end > duration))
+        removal_end = duration;
+
+    dbgln("MUNDO_SOURCE_BUFFER remove requested buffer={} start={} end={} clamped_end={} duration={}", static_cast<void const*>(this), start, end, removal_end, duration);
+
+    // 6. If the readyState attribute of the parent media source is in the "ended" state then run the following steps:
+    if (m_media_source->ready_state() == Bindings::ReadyState::Ended)
+        m_media_source->set_ready_state_to_open_and_fire_sourceopen_event();
+
+    // 7. Run the range removal algorithm.
+    m_processor->set_updating(true);
+
+    m_media_source->queue_a_media_source_task(GC::create_function(heap(), [this, start, removal_end] {
+        dispatch_event(DOM::Event::create(realm(), EventNames::updatestart));
+
+        auto start_time = AK::Duration::from_seconds_f64(start);
+        auto end_time = isfinite(removal_end) ? AK::Duration::from_seconds_f64(removal_end) : AK::Duration::max();
+        m_processor->remove_coded_frames(start_time, end_time);
+
+        m_processor->set_updating(false);
+        dbgln("MUNDO_SOURCE_BUFFER remove completed buffer={} start={} end={}", static_cast<void const*>(this), start, removal_end);
+
+        dispatch_event(DOM::Event::create(realm(), EventNames::update));
+        dispatch_event(DOM::Event::create(realm(), EventNames::updateend));
+    }));
 
     return {};
 }

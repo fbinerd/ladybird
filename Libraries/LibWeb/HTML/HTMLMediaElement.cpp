@@ -561,10 +561,11 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
         // this, even if there are source elements present.)
         if (!value.has_value())
             return;
-        dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} src_attribute_changed old={} new={} current_src={}", static_cast<void const*>(this), document().url_string(), old_value.value_or(String {}), value.value(), m_current_src);
+        auto stack = mundo_media_stack_trace(realm().vm());
+        dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} src_attribute_changed old={} new={} current_src={} stack={}", static_cast<void const*>(this), document().url_string(), old_value.value_or(String {}), value.value(), m_current_src, stack);
         auto trimmed_value = value->bytes_as_string_view().trim_whitespace();
         if (trimmed_value.is_empty() && (m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv))) {
-            dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring empty HLS src attribute while current_src={} pending_hls_src={} is active", static_cast<void const*>(this), document().url_string(), m_current_src, m_mundo_last_hls_src_attribute);
+            dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring empty HLS src attribute while current_src={} pending_hls_src={} is active stack={}", static_cast<void const*>(this), document().url_string(), m_current_src, m_mundo_last_hls_src_attribute, stack);
             return;
         }
         if (!trimmed_value.is_empty()) {
@@ -585,7 +586,7 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
                 m_mundo_last_hls_src_attribute = {};
 
             if (m_current_src.contains(".m3u8"sv) && effective_serialized_src.has_value() && *effective_serialized_src == m_current_src) {
-                dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring unchanged normalized HLS src attribute current_src={} attr_src={}", static_cast<void const*>(this), document().url_string(), m_current_src, *serialized_src);
+                dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring unchanged normalized HLS src attribute current_src={} attr_src={} stack={}", static_cast<void const*>(this), document().url_string(), m_current_src, *serialized_src, stack);
                 return;
             }
         }
@@ -769,7 +770,7 @@ Bindings::CanPlayTypeResult HTMLMediaElement::can_play_type(StringView type) con
     auto mime_type = MimeSniff::MimeType::parse(type);
 
     if (mime_type.has_value() && mundo_is_hls_mime_type(*mime_type)) {
-        dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=probably reason=hls", type);
+        dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=probably reason=hls stack={}", type, mundo_media_stack_trace(realm().vm()));
         return Bindings::CanPlayTypeResult::Probably;
     }
 
@@ -777,18 +778,18 @@ Bindings::CanPlayTypeResult HTMLMediaElement::can_play_type(StringView type) con
         if (supported_video_subtypes.contains_slow(mime_type->subtype())) {
             auto codecs_iter = mime_type->parameters().find("codecs"sv);
             if (codecs_iter == mime_type->parameters().end()) {
-                dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=maybe reason=no_codecs", type);
+                dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=maybe reason=no_codecs stack={}", type, mundo_media_stack_trace(realm().vm()));
                 return Bindings::CanPlayTypeResult::Maybe;
             }
             if (mundo_codec_list_contains_unsupported_codec(codecs_iter->value.bytes_as_string_view(), true)) {
-                dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=empty reason=unsupported_video_codec", type);
+                dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=empty reason=unsupported_video_codec stack={}", type, mundo_media_stack_trace(realm().vm()));
                 return Bindings::CanPlayTypeResult::Empty;
             }
             if (mundo_nvdec_backend_requested() && mundo_codec_list_contains_nvdec_unfriendly_h264(codecs_iter->value.bytes_as_string_view())) {
-                dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=empty reason=nvdec_h264_level_limit", type);
+                dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=empty reason=nvdec_h264_level_limit stack={}", type, mundo_media_stack_trace(realm().vm()));
                 return Bindings::CanPlayTypeResult::Empty;
             }
-            dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=probably reason=supported_video_codec", type);
+            dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result=probably reason=supported_video_codec stack={}", type, mundo_media_stack_trace(realm().vm()));
             return Bindings::CanPlayTypeResult::Probably;
         }
         return Bindings::CanPlayTypeResult::Maybe;
@@ -810,8 +811,9 @@ Bindings::CanPlayTypeResult HTMLMediaElement::can_play_type(StringView type) con
         if (mime_type->subtype() == "mpeg"sv)
             result = Bindings::CanPlayTypeResult::Maybe;
 
-        dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result={}", type, result == Bindings::CanPlayTypeResult::Probably ? "probably"sv : result == Bindings::CanPlayTypeResult::Maybe ? "maybe"sv
-                                                                                                                                                                       : "empty"sv);
+        dbgln("MUNDO_MEDIA_ELEMENT can_play_type type={} result={} stack={}", type, result == Bindings::CanPlayTypeResult::Probably ? "probably"sv : result == Bindings::CanPlayTypeResult::Maybe ? "maybe"sv
+                                                                                                                                                                                                 : "empty"sv,
+            mundo_media_stack_trace(realm().vm()));
         return result;
     }
 

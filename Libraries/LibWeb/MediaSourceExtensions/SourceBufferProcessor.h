@@ -91,6 +91,7 @@ public:
     void run_segment_parser_loop();
     void reset_parser_state();
     void run_coded_frame_eviction();
+    void remove_coded_frames(AK::Duration start, AK::Duration end);
 
     void set_reached_end_of_stream();
     void clear_reached_end_of_stream();
