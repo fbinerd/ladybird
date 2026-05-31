@@ -113,6 +113,15 @@ static bool mundo_webgl_video_direct_bitmap_upload_enabled()
     return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
+static bool mundo_webgl_video_cpu_bitmap_fallback_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_CPU_BITMAP_FALLBACK");
+    if (raw_value)
+        return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+
+    return false;
+}
+
 static bool mundo_webgl_video_nv12_shader_upload_enabled()
 {
     auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD");
@@ -1087,6 +1096,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto previous_attrib0 = save_mundo_video_vertex_attrib_state(0);
     auto previous_attrib1 = save_mundo_video_vertex_attrib_state(1);
 
+    if (previous_texture_2d <= 0)
+        return reject("missing_target_texture"sv);
+
     auto restore_state = [&] {
         glBindFramebuffer(GL_FRAMEBUFFER, previous_framebuffer);
         glUseProgram(previous_program);
@@ -1709,6 +1721,25 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_bitmap_fast_pat
         return reject("unpack_transform"sv);
 
     auto const& video = source.get<GC::Root<HTML::HTMLVideoElement>>();
+    if (auto const* media_frame = video->current_media_frame()) {
+        auto const& hardware_descriptor = media_frame->hardware_descriptor();
+        if (media_frame->hardware_handle() && hardware_descriptor.has_value() && hardware_descriptor->zero_copy_capable && !mundo_webgl_video_cpu_bitmap_fallback_enabled()) {
+            if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                dbgln("MUNDO_WEBGL_VIDEO_CPU_BITMAP_FALLBACK_BLOCKED kind={} reason=bitmap_fast_path_hardware_only frame_id={} backend={} requires_cpu_transfer={} zero_copy_capable={} target={} level={} format={} type={} flip_y={}",
+                    is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
+                    hardware_descriptor->frame_id,
+                    Media::hardware_video_frame_backend_name(hardware_descriptor->backend),
+                    hardware_descriptor->requires_cpu_transfer,
+                    hardware_descriptor->zero_copy_capable,
+                    target,
+                    level,
+                    format,
+                    type,
+                    m_unpack_flip_y);
+            }
+            return reject("hardware_cpu_fallback_disabled"sv);
+        }
+    }
     if (auto const* media_frame = video->current_media_frame(); media_frame && media_frame->nv12_data()) {
         auto const* nv12_data = media_frame->nv12_data();
         if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
