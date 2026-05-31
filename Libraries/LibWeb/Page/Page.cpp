@@ -639,7 +639,6 @@ void Page::retrieved_clipboard_entries(u64 request_id, Vector<Clipboard::SystemC
 void Page::register_media_element(Badge<HTML::HTMLMediaElement>, UniqueNodeID media_id)
 {
     m_media_elements.append(media_id);
-    ensure_media_video_service_timer();
 }
 
 void Page::unregister_media_element(Badge<HTML::HTMLMediaElement>, UniqueNodeID media_id)
@@ -702,6 +701,7 @@ void Page::ensure_media_video_service_timer()
 
             if (!has_potentially_playing_video_media()) {
                 m_last_media_video_service_timer_fire_time = {};
+                stop_media_video_service_timer();
                 return;
             }
 
@@ -781,6 +781,7 @@ void Page::update_all_media_element_video_sinks(bool force, char const* reason)
     if (!has_potentially_playing_video_media()) {
         m_last_media_video_sink_update_time = {};
         m_skipped_media_video_sink_update_count = 0;
+        stop_media_video_service_timer();
         return;
     }
 
