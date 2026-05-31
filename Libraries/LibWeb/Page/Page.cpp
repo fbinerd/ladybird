@@ -860,7 +860,8 @@ void Page::update_all_media_element_video_sinks(bool force, char const* reason)
         media_element.update_video_frame_and_timeline();
     });
 
-    client().request_frame();
+    if (!reason || strcmp(reason, "video_service_timer") != 0)
+        client().request_frame();
 }
 
 void Page::register_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id)
