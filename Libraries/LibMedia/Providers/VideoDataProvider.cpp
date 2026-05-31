@@ -199,9 +199,16 @@ DecoderErrorOr<NonnullRefPtr<VideoDataProvider>> VideoDataProvider::try_create(N
     auto thread = DECODER_TRY_ALLOC(Threading::Thread::try_create("Video Decoder"sv, [thread_data]() -> int {
         thread_data->wait_for_start();
         while (!thread_data->should_thread_exit()) {
+            if (!thread_data->main_thread_event_loop_alive()) {
+                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER thread_exit reason=main_thread_event_loop_dead");
+                thread_data->exit();
+                break;
+            }
             if (thread_data->handle_suspension())
                 continue;
             thread_data->handle_seek();
+            if (thread_data->should_thread_exit())
+                break;
             thread_data->push_data_and_decode_some_frames();
         }
         return 0;
@@ -418,6 +425,12 @@ bool VideoDataProvider::ThreadData::should_thread_exit() const
 {
     auto locker = take_lock();
     return should_thread_exit_while_locked();
+}
+
+bool VideoDataProvider::ThreadData::main_thread_event_loop_alive() const
+{
+    auto event_loop = m_main_thread_event_loop->take();
+    return event_loop.is_alive();
 }
 
 template<typename Invokee>

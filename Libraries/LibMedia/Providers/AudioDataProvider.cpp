@@ -75,9 +75,16 @@ DecoderErrorOr<NonnullRefPtr<AudioDataProvider>> AudioDataProvider::try_create(N
     auto thread = DECODER_TRY_ALLOC(Threading::Thread::try_create("Audio Decoder"sv, [thread_data]() -> int {
         thread_data->wait_for_start();
         while (!thread_data->should_thread_exit()) {
+            if (!thread_data->main_thread_event_loop_alive()) {
+                dbgln("MUNDO_MEDIA_AUDIO_PROVIDER thread_exit reason=main_thread_event_loop_dead");
+                thread_data->exit();
+                break;
+            }
             if (thread_data->handle_suspension())
                 continue;
             thread_data->handle_seek();
+            if (thread_data->should_thread_exit())
+                break;
             thread_data->push_data_and_decode_a_block();
         }
         return 0;
@@ -280,6 +287,12 @@ bool AudioDataProvider::ThreadData::should_thread_exit() const
 {
     auto locker = take_lock();
     return should_thread_exit_while_locked();
+}
+
+bool AudioDataProvider::ThreadData::main_thread_event_loop_alive() const
+{
+    auto event_loop = m_main_thread_event_loop->take();
+    return event_loop.is_alive();
 }
 
 bool AudioDataProvider::ThreadData::handle_suspension()

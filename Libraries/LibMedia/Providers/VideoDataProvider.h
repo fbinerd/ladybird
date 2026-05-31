@@ -90,6 +90,7 @@ private:
         void wait_for_start();
         bool should_thread_exit_while_locked() const;
         bool should_thread_exit() const;
+        bool main_thread_event_loop_alive() const;
         bool handle_suspension();
         template<typename Invokee>
         void invoke_on_main_thread_while_locked(Invokee);

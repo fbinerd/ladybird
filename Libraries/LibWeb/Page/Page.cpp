@@ -91,12 +91,12 @@ static AK::Duration media_forced_video_sink_update_min_interval()
 
 static bool pause_auxiliary_hls_when_vr_active()
 {
-    return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_PAUSE_AUX_HLS_WHEN_VR_ACTIVE", false);
+    return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_PAUSE_AUX_HLS_WHEN_VR_ACTIVE", true);
 }
 
 static bool suppress_auxiliary_hls_play_when_vr_active()
 {
-    return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_SUPPRESS_AUX_HLS_PLAY_WHEN_VR_ACTIVE", false);
+    return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_SUPPRESS_AUX_HLS_PLAY_WHEN_VR_ACTIVE", true);
 }
 
 static bool is_mundo_hls_url(String const& url)
@@ -743,16 +743,16 @@ void Page::update_all_media_element_video_sinks(bool force, char const* reason)
         if (has_active_vr_hls
             && media_element.potentially_playing()
             && is_mundo_hls_url(media_element.current_src())
-            && !is_mundo_vr_hls_url(media_element.current_src())
-            && media_element.effective_media_volume() <= 0.0) {
+            && !is_mundo_vr_hls_url(media_element.current_src())) {
             static size_t s_mundo_auxiliary_hls_pause_count { 0 };
             ++s_mundo_auxiliary_hls_pause_count;
             if (s_mundo_auxiliary_hls_pause_count <= 24 || s_mundo_auxiliary_hls_pause_count % 120 == 0) {
-                dbgln("MUNDO_MEDIA_PAGE auxiliary_hls_paused count={} reason=vr_hls_active element={} current_time={} ready_state={} src={}",
+                dbgln("MUNDO_MEDIA_PAGE auxiliary_hls_paused count={} reason=vr_hls_active element={} current_time={} ready_state={} volume={} src={}",
                     s_mundo_auxiliary_hls_pause_count,
                     static_cast<void const*>(&media_element),
                     media_element.current_playback_position(),
                     to_underlying(media_element.ready_state()),
+                    media_element.effective_media_volume(),
                     media_element.current_src());
             }
             media_element.pause();

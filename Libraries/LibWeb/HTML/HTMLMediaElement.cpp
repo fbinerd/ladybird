@@ -969,7 +969,6 @@ GC::Ref<WebIDL::Promise> HTMLMediaElement::play()
 
     if (mundo_is_hls_url(m_current_src)
         && !mundo_is_vr_hls_url(m_current_src)
-        && effective_media_volume() <= 0.0
         && document().page().has_active_vr_hls_playback_excluding(*this)) {
         static size_t s_mundo_auxiliary_hls_suppressed_play_count { 0 };
         ++s_mundo_auxiliary_hls_suppressed_play_count;
