@@ -7,6 +7,7 @@
  */
 
 #include <AK/SourceLocation.h>
+#include <LibCore/Timer.h>
 #include <LibIPC/Decoder.h>
 #include <LibIPC/Encoder.h>
 #include <LibMedia/RuntimeConfiguration.h>
@@ -89,6 +90,30 @@ static AK::Duration media_forced_video_sink_update_min_interval()
     return interval;
 }
 
+static bool media_video_service_timer_enabled()
+{
+    return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_MEDIA_VIDEO_SERVICE_TIMER", true);
+}
+
+static int media_video_service_timer_interval_ms()
+{
+    static auto interval = [] {
+        auto const* raw_value = getenv("MUNDO_MEDIA_VIDEO_SERVICE_FPS");
+        if (!raw_value)
+            return 16;
+
+        auto value = atoi(raw_value);
+        if (value <= 0)
+            return 0;
+
+        if (value > 240)
+            value = 240;
+
+        return max(1, 1000 / value);
+    }();
+    return interval;
+}
+
 static bool pause_auxiliary_hls_when_vr_active()
 {
     return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_PAUSE_AUX_HLS_WHEN_VR_ACTIVE", true);
@@ -119,7 +144,10 @@ Page::Page(GC::Ref<PageClient> client)
 {
 }
 
-Page::~Page() = default;
+Page::~Page()
+{
+    stop_media_video_service_timer();
+}
 
 void Page::visit_edges(JS::Cell::Visitor& visitor)
 {
@@ -611,6 +639,7 @@ void Page::retrieved_clipboard_entries(u64 request_id, Vector<Clipboard::SystemC
 void Page::register_media_element(Badge<HTML::HTMLMediaElement>, UniqueNodeID media_id)
 {
     m_media_elements.append(media_id);
+    ensure_media_video_service_timer();
 }
 
 void Page::unregister_media_element(Badge<HTML::HTMLMediaElement>, UniqueNodeID media_id)
@@ -618,6 +647,9 @@ void Page::unregister_media_element(Badge<HTML::HTMLMediaElement>, UniqueNodeID 
     m_media_elements.remove_all_matching([&](auto candidate_id) {
         return candidate_id == media_id;
     });
+
+    if (m_media_elements.is_empty())
+        stop_media_video_service_timer();
 }
 
 template<typename Callback>
@@ -638,6 +670,58 @@ bool Page::has_potentially_playing_video_media() const
     });
 
     return has_potentially_playing_video;
+}
+
+void Page::ensure_media_video_service_timer()
+{
+    if (!media_video_service_timer_enabled())
+        return;
+
+    auto interval_ms = media_video_service_timer_interval_ms();
+    if (interval_ms <= 0)
+        return;
+
+    if (!m_media_video_service_timer) {
+        m_media_video_service_timer = Core::Timer::create_repeating(interval_ms, [this] {
+            auto const now = MonotonicTime::now_coarse();
+            if (m_last_media_video_service_timer_fire_time.has_value()) {
+                auto const delta = now - *m_last_media_video_service_timer_fire_time;
+                auto const threshold = media_video_sink_update_gap_log_threshold();
+                if (delta > threshold) {
+                    ++m_media_video_service_timer_gap_count;
+                    if (m_media_video_service_timer_gap_count <= 32 || m_media_video_service_timer_gap_count % 120 == 0) {
+                        dbgln("MUNDO_MEDIA_PAGE video_service_timer_gap count={} delta={}ms threshold={}ms elements={}",
+                            m_media_video_service_timer_gap_count,
+                            delta.to_milliseconds(),
+                            threshold.to_milliseconds(),
+                            m_media_elements.size());
+                    }
+                }
+            }
+            m_last_media_video_service_timer_fire_time = now;
+
+            if (!has_potentially_playing_video_media()) {
+                m_last_media_video_service_timer_fire_time = {};
+                return;
+            }
+
+            update_all_media_element_video_sinks(true, "video_service_timer");
+        });
+
+        dbgln("MUNDO_MEDIA_PAGE video_service_timer_created interval={}ms", interval_ms);
+    }
+
+    if (!m_media_video_service_timer->is_active())
+        m_media_video_service_timer->start(interval_ms);
+}
+
+void Page::stop_media_video_service_timer()
+{
+    if (!m_media_video_service_timer)
+        return;
+
+    m_media_video_service_timer->stop();
+    m_last_media_video_service_timer_fire_time = {};
 }
 
 bool Page::has_active_vr_hls_playback_excluding(HTML::HTMLMediaElement const& excluded_media_element) const
@@ -699,6 +783,8 @@ void Page::update_all_media_element_video_sinks(bool force, char const* reason)
         m_skipped_media_video_sink_update_count = 0;
         return;
     }
+
+    ensure_media_video_service_timer();
 
     auto const interval = media_video_sink_update_interval();
     auto const now = MonotonicTime::now_coarse();

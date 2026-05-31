@@ -55,6 +55,10 @@
 #include <LibWeb/UIEvents/KeyCode.h>
 #include <LibWebView/StorageSetResult.h>
 
+namespace Core {
+class Timer;
+}
+
 namespace Web {
 
 class PageClient;
@@ -203,6 +207,8 @@ public:
     bool has_active_vr_hls_playback_excluding(HTML::HTMLMediaElement const&) const;
     void pause_auxiliary_hls_media_elements_if_vr_hls_present(char const* reason = nullptr);
     void update_all_media_element_video_sinks(bool force = false, char const* reason = nullptr);
+    void ensure_media_video_service_timer();
+    void stop_media_video_service_timer();
 
     void register_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id);
     void unregister_canvas_element(Badge<HTML::HTMLCanvasElement>, UniqueNodeID canvas_id);
@@ -324,6 +330,9 @@ private:
 
     Vector<UniqueNodeID> m_media_elements;
     Vector<UniqueNodeID> m_canvas_elements;
+    RefPtr<Core::Timer> m_media_video_service_timer;
+    Optional<MonotonicTime> m_last_media_video_service_timer_fire_time;
+    size_t m_media_video_service_timer_gap_count { 0 };
     Optional<MonotonicTime> m_last_media_video_sink_update_time;
     Optional<MonotonicTime> m_last_media_video_sink_actual_update_time;
     size_t m_skipped_media_video_sink_update_count { 0 };
