@@ -311,6 +311,18 @@ static bool mundo_should_require_hardware_decode()
     return ::Media::RuntimeConfiguration::flag_enabled("MUNDO_VIDEO_REQUIRE_HARDWARE_DECODE", false);
 }
 
+static bool mundo_hls_quality_prefers_hevc_source(char const* target_quality)
+{
+    if (!target_quality)
+        return false;
+    return !strcmp(target_quality, "hevc")
+        || !strcmp(target_quality, "hvc1")
+        || !strcmp(target_quality, "source-hevc")
+        || !strcmp(target_quality, "hardware")
+        || !strcmp(target_quality, "gpu")
+        || !strcmp(target_quality, "auto-hardware");
+}
+
 static Optional<String> mundo_normalized_hls_source(StringView source)
 {
     if (!::Media::RuntimeConfiguration::flag_enabled("MUNDO_HLS_VARIANT_REWRITE", false) && !mundo_should_require_hardware_decode())
@@ -332,17 +344,25 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
         if ((!target_quality || target_quality[0] == '\0') && mundo_should_require_hardware_decode()) {
             target_quality = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_GPU_ONLY_VR_QUALITY", target_quality_buffer, sizeof(target_quality_buffer));
             if (!target_quality || target_quality[0] == '\0')
-                target_quality = "1440p60";
+                target_quality = "hevc";
         }
-        if ((!target_quality || target_quality[0] == '\0') && mundo_should_prefer_hevc_hls_source()) {
+        if (mundo_hls_quality_prefers_hevc_source(target_quality) || ((!target_quality || target_quality[0] == '\0') && mundo_should_prefer_hevc_hls_source())) {
             if (path.ends_with("_vr.m3u8"sv))
                 return {};
-            if (path.ends_with("_vr_2160p60.m3u8"sv)) {
-                auto generic_vr_path = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
-                auto normalized = MUST(String::formatted("{}.m3u8{}", generic_vr_path, query));
-                dbgln("MUNDO_MEDIA_ELEMENT preferred_hevc_hls_source original={} normalized={} reason=nvdec_hevc_candidate", source, normalized);
-                return normalized;
-            }
+            auto generic_vr_path = path;
+            if (path.ends_with("_vr_auto.m3u8"sv))
+                generic_vr_path = path.substring_view(0, path.length() - "_auto.m3u8"sv.length());
+            else if (path.ends_with("_vr_720p60.m3u8"sv))
+                generic_vr_path = path.substring_view(0, path.length() - "_720p60.m3u8"sv.length());
+            else if (path.ends_with("_vr_1440p60.m3u8"sv))
+                generic_vr_path = path.substring_view(0, path.length() - "_1440p60.m3u8"sv.length());
+            else if (path.ends_with("_vr_2160p60.m3u8"sv))
+                generic_vr_path = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
+            else
+                return {};
+            auto normalized = MUST(String::formatted("{}.m3u8{}", generic_vr_path, query));
+            dbgln("MUNDO_MEDIA_ELEMENT preferred_hevc_hls_source original={} normalized={} reason=hardware_decode_candidate", source, normalized);
+            return normalized;
         }
         if (path.ends_with("_vr.m3u8"sv)) {
             if (!target_quality || target_quality[0] == '\0')
