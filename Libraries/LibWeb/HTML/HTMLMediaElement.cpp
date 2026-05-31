@@ -365,6 +365,8 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
         target_quality = ::Media::RuntimeConfiguration::value_or_environment("MUNDO_HLS_AUX_QUALITY", target_quality_buffer, sizeof(target_quality_buffer));
         if (target_quality && (!strcmp(target_quality, "0") || !strcmp(target_quality, "false") || !strcmp(target_quality, "no") || !strcmp(target_quality, "off") || !strcmp(target_quality, "source") || !strcmp(target_quality, "original")))
             return {};
+        if ((!target_quality || target_quality[0] == '\0') && mundo_should_require_hardware_decode())
+            target_quality = "160p";
         if (!target_quality || target_quality[0] == '\0')
             return {};
         if (path.ends_with("_auto.m3u8"sv))
