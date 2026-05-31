@@ -645,15 +645,15 @@ bool Page::has_active_vr_hls_playback_excluding(HTML::HTMLMediaElement const& ex
     if (!suppress_auxiliary_hls_play_when_vr_active())
         return false;
 
-    bool has_active_vr_hls = false;
+    bool has_vr_hls = false;
     const_cast<Page&>(*this).for_each_media_element([&](auto& media_element) {
         if (&media_element == &excluded_media_element)
             return;
-        if (!has_active_vr_hls && media_element.potentially_playing() && is_mundo_vr_hls_url(media_element.current_src()))
-            has_active_vr_hls = true;
+        if (!has_vr_hls && is_mundo_vr_hls_url(media_element.current_src()))
+            has_vr_hls = true;
     });
 
-    return has_active_vr_hls;
+    return has_vr_hls;
 }
 
 void Page::update_all_media_element_video_sinks(bool force, char const* reason)
@@ -731,23 +731,23 @@ void Page::update_all_media_element_video_sinks(bool force, char const* reason)
     m_last_media_video_sink_actual_update_time = now;
     m_skipped_media_video_sink_update_count = 0;
 
-    bool has_active_vr_hls = false;
+    bool has_vr_hls = false;
     if (pause_auxiliary_hls_when_vr_active()) {
         for_each_media_element([&](auto& media_element) {
-            if (!has_active_vr_hls && media_element.potentially_playing() && is_mundo_vr_hls_url(media_element.current_src()))
-                has_active_vr_hls = true;
+            if (!has_vr_hls && is_mundo_vr_hls_url(media_element.current_src()))
+                has_vr_hls = true;
         });
     }
 
     for_each_media_element([&](auto& media_element) {
-        if (has_active_vr_hls
+        if (has_vr_hls
             && media_element.potentially_playing()
             && is_mundo_hls_url(media_element.current_src())
             && !is_mundo_vr_hls_url(media_element.current_src())) {
             static size_t s_mundo_auxiliary_hls_pause_count { 0 };
             ++s_mundo_auxiliary_hls_pause_count;
             if (s_mundo_auxiliary_hls_pause_count <= 24 || s_mundo_auxiliary_hls_pause_count % 120 == 0) {
-                dbgln("MUNDO_MEDIA_PAGE auxiliary_hls_paused count={} reason=vr_hls_active element={} current_time={} ready_state={} volume={} src={}",
+                dbgln("MUNDO_MEDIA_PAGE auxiliary_hls_paused count={} reason=vr_hls_present element={} current_time={} ready_state={} volume={} src={}",
                     s_mundo_auxiliary_hls_pause_count,
                     static_cast<void const*>(&media_element),
                     media_element.current_playback_position(),

@@ -993,7 +993,7 @@ GC::Ref<WebIDL::Promise> HTMLMediaElement::play()
         static size_t s_mundo_auxiliary_hls_suppressed_play_count { 0 };
         ++s_mundo_auxiliary_hls_suppressed_play_count;
         if (s_mundo_auxiliary_hls_suppressed_play_count <= 24 || s_mundo_auxiliary_hls_suppressed_play_count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_ELEMENT element={} play() suppressed count={} reason=vr_hls_active_auxiliary current_time={} ready_state={} volume={} src={}",
+            dbgln("MUNDO_MEDIA_ELEMENT element={} play() suppressed count={} reason=vr_hls_present_auxiliary current_time={} ready_state={} volume={} src={}",
                 static_cast<void const*>(this),
                 s_mundo_auxiliary_hls_suppressed_play_count,
                 m_current_playback_position,
