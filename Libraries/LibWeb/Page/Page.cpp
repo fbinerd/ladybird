@@ -656,6 +656,42 @@ bool Page::has_active_vr_hls_playback_excluding(HTML::HTMLMediaElement const& ex
     return has_vr_hls;
 }
 
+void Page::pause_auxiliary_hls_media_elements_if_vr_hls_present(char const* reason)
+{
+    if (!pause_auxiliary_hls_when_vr_active())
+        return;
+
+    bool has_vr_hls = false;
+    for_each_media_element([&](auto& media_element) {
+        if (!has_vr_hls && is_mundo_vr_hls_url(media_element.current_src()))
+            has_vr_hls = true;
+    });
+
+    if (!has_vr_hls)
+        return;
+
+    for_each_media_element([&](auto& media_element) {
+        if (!media_element.potentially_playing()
+            || !is_mundo_hls_url(media_element.current_src())
+            || is_mundo_vr_hls_url(media_element.current_src()))
+            return;
+
+        static size_t s_mundo_auxiliary_hls_pause_count { 0 };
+        ++s_mundo_auxiliary_hls_pause_count;
+        if (s_mundo_auxiliary_hls_pause_count <= 24 || s_mundo_auxiliary_hls_pause_count % 120 == 0) {
+            dbgln("MUNDO_MEDIA_PAGE auxiliary_hls_paused count={} reason={} element={} current_time={} ready_state={} volume={} src={}",
+                s_mundo_auxiliary_hls_pause_count,
+                reason ? reason : "vr_hls_present",
+                static_cast<void const*>(&media_element),
+                media_element.current_playback_position(),
+                to_underlying(media_element.ready_state()),
+                media_element.effective_media_volume(),
+                media_element.current_src());
+        }
+        media_element.pause();
+    });
+}
+
 void Page::update_all_media_element_video_sinks(bool force, char const* reason)
 {
     if (!has_potentially_playing_video_media()) {
@@ -731,34 +767,9 @@ void Page::update_all_media_element_video_sinks(bool force, char const* reason)
     m_last_media_video_sink_actual_update_time = now;
     m_skipped_media_video_sink_update_count = 0;
 
-    bool has_vr_hls = false;
-    if (pause_auxiliary_hls_when_vr_active()) {
-        for_each_media_element([&](auto& media_element) {
-            if (!has_vr_hls && is_mundo_vr_hls_url(media_element.current_src()))
-                has_vr_hls = true;
-        });
-    }
+    pause_auxiliary_hls_media_elements_if_vr_hls_present("video_sink_update");
 
     for_each_media_element([&](auto& media_element) {
-        if (has_vr_hls
-            && media_element.potentially_playing()
-            && is_mundo_hls_url(media_element.current_src())
-            && !is_mundo_vr_hls_url(media_element.current_src())) {
-            static size_t s_mundo_auxiliary_hls_pause_count { 0 };
-            ++s_mundo_auxiliary_hls_pause_count;
-            if (s_mundo_auxiliary_hls_pause_count <= 24 || s_mundo_auxiliary_hls_pause_count % 120 == 0) {
-                dbgln("MUNDO_MEDIA_PAGE auxiliary_hls_paused count={} reason=vr_hls_present element={} current_time={} ready_state={} volume={} src={}",
-                    s_mundo_auxiliary_hls_pause_count,
-                    static_cast<void const*>(&media_element),
-                    media_element.current_playback_position(),
-                    to_underlying(media_element.ready_state()),
-                    media_element.effective_media_volume(),
-                    media_element.current_src());
-            }
-            media_element.pause();
-            return;
-        }
-
         media_element.update_video_frame_and_timeline();
     });
 

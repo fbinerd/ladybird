@@ -586,6 +586,8 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
         auto trimmed_value = value->bytes_as_string_view().trim_whitespace();
         if (trimmed_value.is_empty() && (m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv))) {
             dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring empty HLS src attribute while current_src={} pending_hls_src={} is active stack={}", static_cast<void const*>(this), document().url_string(), m_current_src, m_mundo_last_hls_src_attribute, stack);
+            if (mundo_is_vr_hls_url(m_current_src))
+                document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("empty_vr_hls_src_ignored");
             return;
         }
         if (!trimmed_value.is_empty()) {
@@ -607,6 +609,8 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
 
             if (m_current_src.contains(".m3u8"sv) && effective_serialized_src.has_value() && *effective_serialized_src == m_current_src) {
                 dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring unchanged normalized HLS src attribute current_src={} attr_src={} stack={}", static_cast<void const*>(this), document().url_string(), m_current_src, *serialized_src, stack);
+                if (mundo_is_vr_hls_url(m_current_src))
+                    document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("unchanged_vr_hls_src_ignored");
                 return;
             }
         }
@@ -1215,6 +1219,8 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
         auto trimmed_source = source.bytes_as_string_view().trim_whitespace();
         if (trimmed_source.is_empty()) {
             dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring load() with empty src while current_src={} is active", static_cast<void const*>(this), m_current_src);
+            if (mundo_is_vr_hls_url(m_current_src))
+                document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("empty_vr_hls_load_ignored");
             return {};
         }
         if (auto url_record = document().encoding_parse_url(source); url_record.has_value() && url_record->serialize() == m_current_src) {
@@ -1624,6 +1630,8 @@ void HTMLMediaElement::select_resource()
                 }
                 if (m_current_src.contains(".m3u8"sv)) {
                     dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring empty src attribute while current_src={} is active", static_cast<void const*>(this), m_current_src);
+                    if (mundo_is_vr_hls_url(m_current_src))
+                        document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("empty_vr_hls_select_ignored");
                     return;
                 }
                 failed_with_attribute("The 'src' attribute is empty"_string);
@@ -1638,6 +1646,8 @@ void HTMLMediaElement::select_resource()
             // 3. ⌛ If urlRecord is not failure, then set the currentSrc attribute to the result of applying the URL serializer to urlRecord.
             if (url_record.has_value())
                 m_current_src = url_record->serialize();
+            if (mundo_is_vr_hls_url(m_current_src))
+                document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("selected_vr_hls_source");
 
             // 4. End the synchronous section, continuing the remaining steps in parallel.
 
