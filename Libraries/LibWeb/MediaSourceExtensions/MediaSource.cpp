@@ -472,14 +472,12 @@ bool MediaSource::is_type_supported(String const& type)
             return true;
         if (mime_type->type() == "audio" && mime_type->subtype() == "webm")
             return true;
-        if (mime_type->type() == "video" && mime_type->subtype() == "mp4")
-            return true;
-        if (mime_type->type() == "audio" && mime_type->subtype() == "mp4")
-            return true;
         return false;
     }();
-    if (!type_and_subtype_are_supported)
+    if (!type_and_subtype_are_supported) {
+        dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=false reason=unsupported_mse_container", type);
         return false;
+    }
 
     // 4. If type contains a codec that the MediaSource does not support, then return false.
     // 5. If the MediaSource does not support the specified combination of media type, media
