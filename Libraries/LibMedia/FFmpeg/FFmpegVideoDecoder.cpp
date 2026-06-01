@@ -23,6 +23,7 @@
 #include <string.h>
 #if defined(__linux__)
 #    include <dlfcn.h>
+#    include <fcntl.h>
 #    include <unistd.h>
 #endif
 
@@ -473,6 +474,16 @@ static void log_cuda_shareable_surface_probe_once(AVFrame const* frame, Hardware
     log_drm_prime_map_attempt("fallback", AV_HWFRAME_MAP_READ);
 
     auto log_derived_drm_prime_map_attempt = [&](char const* mode, int flags) {
+        auto drm_device_type_available = false;
+        for (auto device_type = av_hwdevice_iterate_types(AV_HWDEVICE_TYPE_NONE);
+            device_type != AV_HWDEVICE_TYPE_NONE;
+            device_type = av_hwdevice_iterate_types(device_type)) {
+            if (device_type == AV_HWDEVICE_TYPE_DRM) {
+                drm_device_type_available = true;
+                break;
+            }
+        }
+
         AVBufferRef* drm_device_context { nullptr };
         int device_result { AVERROR(ENOENT) };
         char const* selected_drm_device { nullptr };
@@ -488,6 +499,25 @@ static void log_cuda_shareable_surface_probe_once(AVFrame const* frame, Hardware
         for (auto const* candidate : drm_device_candidates) {
             if (!candidate || candidate[0] == '\0')
                 continue;
+
+            errno = 0;
+            auto access_result = access(candidate, R_OK | W_OK);
+            auto access_errno = errno;
+            errno = 0;
+            auto fd = open(candidate, O_RDWR | O_CLOEXEC);
+            auto open_errno = errno;
+            if (fd >= 0)
+                close(fd);
+
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} step=preflight_drm_device candidate={} drm_device_type_available={} access_ok={} access_errno={} open_ok={} open_errno={}",
+                descriptor.frame_id,
+                mode,
+                candidate,
+                drm_device_type_available,
+                access_result == 0,
+                access_result == 0 ? 0 : access_errno,
+                fd >= 0,
+                fd >= 0 ? 0 : open_errno);
 
             device_result = av_hwdevice_ctx_create(&drm_device_context, AV_HWDEVICE_TYPE_DRM, candidate, nullptr, 0);
             dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} step=create_drm_device candidate={} status={} error={} code={}",
