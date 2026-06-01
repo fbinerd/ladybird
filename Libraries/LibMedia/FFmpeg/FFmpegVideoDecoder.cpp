@@ -47,6 +47,7 @@ enum class VideoDecoderBackend {
     Software,
     Vaapi,
     Nvdec,
+    Vulkan,
 };
 
 static VideoDecoderBackend requested_video_decoder_backend()
@@ -61,6 +62,8 @@ static VideoDecoderBackend requested_video_decoder_backend()
         return VideoDecoderBackend::Vaapi;
     if (!strcmp(raw_value, "nvdec") || !strcmp(raw_value, "cuda"))
         return VideoDecoderBackend::Nvdec;
+    if (!strcmp(raw_value, "vulkan") || !strcmp(raw_value, "vk"))
+        return VideoDecoderBackend::Vulkan;
 
     return VideoDecoderBackend::Auto;
 }
@@ -76,6 +79,8 @@ static StringView video_decoder_backend_name(VideoDecoderBackend backend)
         return "vaapi"sv;
     case VideoDecoderBackend::Nvdec:
         return "nvdec"sv;
+    case VideoDecoderBackend::Vulkan:
+        return "vulkan"sv;
     }
     VERIFY_NOT_REACHED();
 }
@@ -87,6 +92,8 @@ static AVHWDeviceType hw_device_type_for_backend(VideoDecoderBackend backend)
         return AV_HWDEVICE_TYPE_VAAPI;
     case VideoDecoderBackend::Nvdec:
         return AV_HWDEVICE_TYPE_CUDA;
+    case VideoDecoderBackend::Vulkan:
+        return AV_HWDEVICE_TYPE_VULKAN;
     case VideoDecoderBackend::Auto:
     case VideoDecoderBackend::Software:
         return AV_HWDEVICE_TYPE_NONE;
@@ -101,6 +108,8 @@ static AVPixelFormat hw_pixel_format_for_backend(VideoDecoderBackend backend)
         return AV_PIX_FMT_VAAPI;
     case VideoDecoderBackend::Nvdec:
         return AV_PIX_FMT_CUDA;
+    case VideoDecoderBackend::Vulkan:
+        return AV_PIX_FMT_VULKAN;
     case VideoDecoderBackend::Auto:
     case VideoDecoderBackend::Software:
         return AV_PIX_FMT_NONE;
@@ -227,6 +236,10 @@ static void log_video_decoder_backend_probe(AVCodec const* codec, CodecID codec_
     auto active_backend = VideoDecoderBackend::Software;
     if (requested_backend == VideoDecoderBackend::Nvdec && codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec))
         active_backend = VideoDecoderBackend::Nvdec;
+    else if (requested_backend == VideoDecoderBackend::Vulkan && codec_has_hw_config(codec, VideoDecoderBackend::Vulkan) && can_create_hw_device(VideoDecoderBackend::Vulkan))
+        active_backend = VideoDecoderBackend::Vulkan;
+    else if (requested_backend == VideoDecoderBackend::Vaapi && codec_has_hw_config(codec, VideoDecoderBackend::Vaapi) && can_create_hw_device(VideoDecoderBackend::Vaapi))
+        active_backend = VideoDecoderBackend::Vaapi;
     else if (requested_backend == VideoDecoderBackend::Auto && codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec))
         active_backend = VideoDecoderBackend::Nvdec;
 
@@ -239,6 +252,7 @@ static void log_video_decoder_backend_probe(AVCodec const* codec, CodecID codec_
     if (requested_backend == VideoDecoderBackend::Auto) {
         log_hwaccel_probe(codec, codec_id, VideoDecoderBackend::Nvdec);
         log_hwaccel_probe(codec, codec_id, VideoDecoderBackend::Vaapi);
+        log_hwaccel_probe(codec, codec_id, VideoDecoderBackend::Vulkan);
         return;
     }
 
@@ -288,6 +302,23 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
                 codec_context->height,
                 pixel_format_name(codec_context->sw_pix_fmt));
         } else {
+            auto requested_backend = requested_video_decoder_backend();
+            auto preferred_format = hw_pixel_format_for_backend(requested_backend);
+            if (preferred_format != AV_PIX_FMT_NONE) {
+                for (auto const* format = formats; *format >= 0; ++format) {
+                    if (*format == preferred_format) {
+                        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected={} reason=requested_backend codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                            pixel_format_name(preferred_format),
+                            avcodec_get_name(codec_context->codec_id),
+                            codec_profile_name(codec_context),
+                            codec_context->level,
+                            codec_context->width,
+                            codec_context->height,
+                            pixel_format_name(codec_context->sw_pix_fmt));
+                        return *format;
+                    }
+                }
+            }
             for (auto const* format = formats; *format >= 0; ++format) {
                 if (*format == AV_PIX_FMT_CUDA) {
                     dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=cuda codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
@@ -338,13 +369,22 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
     return AV_PIX_FMT_NONE;
 }
 
-static bool should_try_nvdec(AVCodec const* codec)
+static VideoDecoderBackend selected_hardware_decoder_backend(AVCodec const* codec)
 {
     auto requested_backend = requested_video_decoder_backend();
-    if (requested_backend != VideoDecoderBackend::Auto && requested_backend != VideoDecoderBackend::Nvdec)
-        return false;
+    if (requested_backend == VideoDecoderBackend::Software)
+        return VideoDecoderBackend::Software;
 
-    return codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec);
+    if (requested_backend == VideoDecoderBackend::Nvdec || requested_backend == VideoDecoderBackend::Vaapi || requested_backend == VideoDecoderBackend::Vulkan) {
+        if (codec_has_hw_config(codec, requested_backend) && can_create_hw_device(requested_backend))
+            return requested_backend;
+        return VideoDecoderBackend::Software;
+    }
+
+    if (codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec))
+        return VideoDecoderBackend::Nvdec;
+
+    return VideoDecoderBackend::Software;
 }
 
 static void quiet_ffmpeg_logs_for_nvdec()
@@ -362,6 +402,13 @@ static void quiet_ffmpeg_logs_for_nvdec()
 }
 
 static bool is_hardware_frame(AVFrame const* frame)
+{
+    return frame->format == AV_PIX_FMT_CUDA
+        || frame->format == AV_PIX_FMT_VAAPI
+        || frame->format == AV_PIX_FMT_VULKAN;
+}
+
+static bool is_cuda_hardware_frame(AVFrame const* frame)
 {
     return frame->format == AV_PIX_FMT_CUDA;
 }
@@ -672,7 +719,8 @@ static DecoderErrorOr<AVFrame*> software_frame_for_decoded_frame(AVFrame* frame,
     static size_t s_hw_transfer_frame_count { 0 };
     auto count = ++s_hw_transfer_frame_count;
     if (count <= 8 || count % 120 == 0) {
-        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_transfer backend=nvdec count={} hw_format={} sw_format={} size={}x{} transfer_us={}",
+        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_transfer backend={} count={} hw_format={} sw_format={} size={}x{} transfer_us={}",
+            pixel_format_name(static_cast<AVPixelFormat>(frame->format)),
             count,
             av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)),
             av_get_pix_fmt_name(static_cast<AVPixelFormat>(transfer_frame->format)),
@@ -1927,24 +1975,26 @@ DecoderErrorOr<NonnullOwnPtr<FFmpegVideoDecoder>> FFmpegVideoDecoder::try_create
 
     codec_context->get_format = negotiate_output_format;
     codec_context->time_base = { 1, 1'000'000 };
-    auto use_nvdec = should_try_nvdec(codec);
-    codec_context->thread_count = use_nvdec ? 1 : static_cast<int>(min(Core::System::hardware_concurrency(), 16));
+    auto hardware_backend = selected_hardware_decoder_backend(codec);
+    auto use_hardware_decode = hardware_backend != VideoDecoderBackend::Software;
+    codec_context->thread_count = use_hardware_decode ? 1 : static_cast<int>(min(Core::System::hardware_concurrency(), 16));
     dbgln("MUNDO_MEDIA_FFMPEG video_decoder_threads codec={} threads={} reason={}",
         codec_id,
         codec_context->thread_count,
-        use_nvdec ? "nvdec"sv : "software"sv);
+        use_hardware_decode ? video_decoder_backend_name(hardware_backend) : "software"sv);
 
-    if (use_nvdec) {
-        quiet_ffmpeg_logs_for_nvdec();
-        auto result = av_hwdevice_ctx_create(&hw_device_context, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+    if (use_hardware_decode) {
+        if (hardware_backend == VideoDecoderBackend::Nvdec)
+            quiet_ffmpeg_logs_for_nvdec();
+        auto result = av_hwdevice_ctx_create(&hw_device_context, hw_device_type_for_backend(hardware_backend), nullptr, nullptr, 0);
         if (result >= 0) {
             codec_context->hw_device_ctx = av_buffer_ref(hw_device_context);
             if (codec_context->hw_device_ctx)
-                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend=nvdec codec={} status=enabled transfer=cpu", codec_id);
+                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend={} codec={} status=enabled transfer=cpu", video_decoder_backend_name(hardware_backend), codec_id);
             else
-                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend=nvdec codec={} status=failed reason=av_buffer_ref", codec_id);
+                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend={} codec={} status=failed reason=av_buffer_ref", video_decoder_backend_name(hardware_backend), codec_id);
         } else {
-            dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend=nvdec codec={} status=failed error={} fallback=software", codec_id, av_error_code_to_string(result));
+            dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend={} codec={} status=failed error={} fallback=software", video_decoder_backend_name(hardware_backend), codec_id, av_error_code_to_string(result));
         }
     }
 
@@ -2041,7 +2091,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
 
     switch (result) {
     case 0: {
-        if (is_hardware_frame(m_frame)
+        if (is_cuda_hardware_frame(m_frame)
             && lazy_hardware_frame_transfer_enabled()
             && direct_nv12_rgba_bitmap_enabled()
             && lazy_nv12_rgba_bitmap_enabled()
