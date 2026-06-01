@@ -474,9 +474,36 @@ static void log_cuda_shareable_surface_probe_once(AVFrame const* frame, Hardware
 
     auto log_derived_drm_prime_map_attempt = [&](char const* mode, int flags) {
         AVBufferRef* drm_device_context { nullptr };
-        auto device_result = av_hwdevice_ctx_create(&drm_device_context, AV_HWDEVICE_TYPE_DRM, nullptr, nullptr, 0);
-        if (device_result < 0 || !drm_device_context) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=create_drm_device error={} code={}",
+        int device_result { AVERROR(ENOENT) };
+        char const* selected_drm_device { nullptr };
+        char const* explicit_drm_device = getenv("MUNDO_VIDEO_DRM_DEVICE");
+        char const* drm_device_candidates[] = {
+            explicit_drm_device,
+            "/dev/dri/renderD129",
+            "/dev/dri/renderD128",
+            "/dev/dri/renderD130",
+            "/dev/dri/renderD131",
+            nullptr,
+        };
+        for (auto const* candidate : drm_device_candidates) {
+            if (!candidate || candidate[0] == '\0')
+                continue;
+
+            device_result = av_hwdevice_ctx_create(&drm_device_context, AV_HWDEVICE_TYPE_DRM, candidate, nullptr, 0);
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} step=create_drm_device candidate={} status={} error={} code={}",
+                descriptor.frame_id,
+                mode,
+                candidate,
+                device_result >= 0 && drm_device_context ? "ok" : "failed",
+                device_result < 0 ? av_error_code_to_string(device_result) : "none"sv,
+                device_result);
+            if (device_result >= 0 && drm_device_context) {
+                selected_drm_device = candidate;
+                break;
+            }
+        }
+        if (!drm_device_context) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=create_drm_device_any error={} code={} hint=set_MUNDO_VIDEO_DRM_DEVICE",
                 descriptor.frame_id,
                 mode,
                 av_error_code_to_string(device_result),
@@ -490,9 +517,10 @@ static void log_cuda_shareable_surface_probe_once(AVFrame const* frame, Hardware
         AVBufferRef* derived_frame_context { nullptr };
         auto derived_result = av_hwframe_ctx_create_derived(&derived_frame_context, AV_PIX_FMT_DRM_PRIME, drm_device_context, frame->hw_frames_ctx, flags);
         if (derived_result < 0 || !derived_frame_context) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=create_derived_context error={} code={}",
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=create_derived_context drm_device={} error={} code={}",
                 descriptor.frame_id,
                 mode,
+                selected_drm_device,
                 av_error_code_to_string(derived_result),
                 derived_result);
             return;
@@ -519,9 +547,10 @@ static void log_cuda_shareable_surface_probe_once(AVFrame const* frame, Hardware
 
         auto map_result = av_hwframe_map(mapped_frame, frame, flags);
         if (map_result < 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=map_frame error={} code={}",
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=map_frame drm_device={} error={} code={}",
                 descriptor.frame_id,
                 mode,
+                selected_drm_device,
                 av_error_code_to_string(map_result),
                 map_result);
             return;
