@@ -471,6 +471,83 @@ static void log_cuda_shareable_surface_probe_once(AVFrame const* frame, Hardware
 
     log_drm_prime_map_attempt("direct", AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
     log_drm_prime_map_attempt("fallback", AV_HWFRAME_MAP_READ);
+
+    auto log_derived_drm_prime_map_attempt = [&](char const* mode, int flags) {
+        AVBufferRef* drm_device_context { nullptr };
+        auto device_result = av_hwdevice_ctx_create(&drm_device_context, AV_HWDEVICE_TYPE_DRM, nullptr, nullptr, 0);
+        if (device_result < 0 || !drm_device_context) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=create_drm_device error={} code={}",
+                descriptor.frame_id,
+                mode,
+                av_error_code_to_string(device_result),
+                device_result);
+            return;
+        }
+        auto cleanup_drm_device_context = ScopeGuard([&] {
+            av_buffer_unref(&drm_device_context);
+        });
+
+        AVBufferRef* derived_frame_context { nullptr };
+        auto derived_result = av_hwframe_ctx_create_derived(&derived_frame_context, AV_PIX_FMT_DRM_PRIME, drm_device_context, frame->hw_frames_ctx, flags);
+        if (derived_result < 0 || !derived_frame_context) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=create_derived_context error={} code={}",
+                descriptor.frame_id,
+                mode,
+                av_error_code_to_string(derived_result),
+                derived_result);
+            return;
+        }
+        auto cleanup_derived_frame_context = ScopeGuard([&] {
+            av_buffer_unref(&derived_frame_context);
+        });
+
+        auto* mapped_frame = av_frame_alloc();
+        if (!mapped_frame) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=allocate_frame error=allocation_failed", descriptor.frame_id, mode);
+            return;
+        }
+        auto cleanup_mapped_frame = ScopeGuard([&] {
+            av_frame_free(&mapped_frame);
+        });
+
+        mapped_frame->format = AV_PIX_FMT_DRM_PRIME;
+        mapped_frame->hw_frames_ctx = av_buffer_ref(derived_frame_context);
+        if (!mapped_frame->hw_frames_ctx) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=ref_derived_context error=allocation_failed", descriptor.frame_id, mode);
+            return;
+        }
+
+        auto map_result = av_hwframe_map(mapped_frame, frame, flags);
+        if (map_result < 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=failed step=map_frame error={} code={}",
+                descriptor.frame_id,
+                mode,
+                av_error_code_to_string(map_result),
+                map_result);
+            return;
+        }
+
+        auto mapped_format = static_cast<AVPixelFormat>(mapped_frame->format);
+        if (mapped_format != AV_PIX_FMT_DRM_PRIME || !mapped_frame->data[0]) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=mapped_non_drm_prime format={}",
+                descriptor.frame_id,
+                mode,
+                pixel_format_name(mapped_format));
+            return;
+        }
+
+        auto const* drm_descriptor = reinterpret_cast<AVDRMFrameDescriptor const*>(mapped_frame->data[0]);
+        dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_derived_probe frame_id={} mode={} status=success objects={} layers={} width={} height={}",
+            descriptor.frame_id,
+            mode,
+            drm_descriptor->nb_objects,
+            drm_descriptor->nb_layers,
+            mapped_frame->width,
+            mapped_frame->height);
+    };
+
+    log_derived_drm_prime_map_attempt("direct", AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+    log_derived_drm_prime_map_attempt("fallback", AV_HWFRAME_MAP_READ);
 }
 #endif
 
