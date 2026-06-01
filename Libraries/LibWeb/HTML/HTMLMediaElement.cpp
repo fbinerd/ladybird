@@ -181,12 +181,57 @@ static Optional<StringView> mundo_hls_stream_codecs(StringView stream_inf_line)
     return codecs.substring_view(0, *end_offset);
 }
 
+struct MundoHLSResolution {
+    unsigned width { 0 };
+    unsigned height { 0 };
+};
+
+static Optional<MundoHLSResolution> mundo_hls_stream_resolution(StringView stream_inf_line)
+{
+    auto resolution_offset = stream_inf_line.find("RESOLUTION="sv);
+    if (!resolution_offset.has_value())
+        return {};
+
+    auto resolution = stream_inf_line.substring_view(*resolution_offset + "RESOLUTION="sv.length());
+    auto end_offset = resolution.find(',');
+    if (end_offset.has_value())
+        resolution = resolution.substring_view(0, *end_offset);
+
+    auto separator_offset = resolution.find('x');
+    if (!separator_offset.has_value())
+        return {};
+
+    auto width = resolution.substring_view(0, *separator_offset).to_number<unsigned>();
+    auto height = resolution.substring_view(*separator_offset + 1).to_number<unsigned>();
+    if (!width.has_value() || !height.has_value())
+        return {};
+
+    return MundoHLSResolution { *width, *height };
+}
+
 static bool mundo_hls_stream_is_nvdec_unfriendly(StringView stream_inf_line)
 {
     auto codecs = mundo_hls_stream_codecs(stream_inf_line);
     if (!codecs.has_value())
         return false;
-    return mundo_codec_list_contains_nvdec_unfriendly_h264(*codecs);
+    if (!mundo_codec_list_contains_nvdec_unfriendly_h264(*codecs)) {
+        auto resolution = mundo_hls_stream_resolution(stream_inf_line);
+        if (!resolution.has_value())
+            return false;
+        bool has_h264 = false;
+        codecs->for_each_split_view(',', SplitBehavior::Nothing, [&](auto codec) {
+            codec = codec.trim_whitespace();
+            if (codec.starts_with("avc1"sv) || codec.starts_with("avc3"sv)) {
+                has_h264 = true;
+                return IterationDecision::Break;
+            }
+            return IterationDecision::Continue;
+        });
+        if (!has_h264)
+            return false;
+        return resolution->width > 4096 || resolution->height > 4096;
+    }
+    return true;
 }
 
 static Optional<ByteString> mundo_filter_hls_manifest_for_nvdec(StringView manifest)
