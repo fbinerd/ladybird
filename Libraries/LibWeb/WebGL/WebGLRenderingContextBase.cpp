@@ -1186,14 +1186,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     char const* hardware_gl_upload_mode = "none";
     StringView hardware_gl_upload_failure_reason = "not_attempted"sv;
 #ifdef USE_VULKAN_DMABUF_IMAGES
-    Optional<OpenGLContext::ImportedVideoOpaqueFDTexture> imported_y_texture;
-    Optional<OpenGLContext::ImportedVideoOpaqueFDTexture> imported_uv_texture;
-    auto cleanup_imported_video_textures = ScopeGuard([&] {
-        if (imported_y_texture.has_value())
-            context().delete_imported_video_opaque_fd_texture(imported_y_texture.value());
-        if (imported_uv_texture.has_value())
-            context().delete_imported_video_opaque_fd_texture(imported_uv_texture.value());
-    });
+    OpenGLContext::ImportedVideoOpaqueFDTexture* imported_y_texture { nullptr };
+    OpenGLContext::ImportedVideoOpaqueFDTexture* imported_uv_texture { nullptr };
 #endif
 
     if (can_attempt_hardware_gl_upload) {
@@ -1216,22 +1210,24 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     zero_copy_capable,
                     s_cuda_gl_direct_texture_upload_disabled);
             }
-            auto y_texture_or_error = context().create_imported_video_opaque_fd_texture(static_cast<u32>(video_width), static_cast<u32>(video_height), VK_FORMAT_R8_UNORM, GL_R8_EXT, "video_y_r8_frame", attempt_count);
-            auto uv_texture_or_error = context().create_imported_video_opaque_fd_texture(static_cast<u32>(visible_uv_width), static_cast<u32>(uv_texture_height), VK_FORMAT_R8G8_UNORM, GL_RG8_EXT, "video_uv_rg8_frame", attempt_count);
-            if (!y_texture_or_error.is_error() && !uv_texture_or_error.is_error()) {
-                imported_y_texture = y_texture_or_error.release_value();
-                imported_uv_texture = uv_texture_or_error.release_value();
+            auto imported_texture_pair_or_error = context().get_or_create_imported_video_opaque_fd_textures(static_cast<u32>(video_width), static_cast<u32>(video_height), static_cast<u32>(visible_uv_width), static_cast<u32>(uv_texture_height), attempt_count);
+            if (!imported_texture_pair_or_error.is_error()) {
+                auto imported_texture_pair = imported_texture_pair_or_error.release_value();
+                imported_y_texture = imported_texture_pair.y;
+                imported_uv_texture = imported_texture_pair.uv;
                 auto y_cuda_fd = imported_y_texture->image->get_opaque_fd();
                 auto uv_cuda_fd = imported_uv_texture->image->get_opaque_fd();
                 if (should_log_external_memory_success) {
-                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_FD_EXPORT attempt={} frame_id={} backend={} y_fd={} uv_fd={} y_allocation_size={} uv_allocation_size={}",
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_FD_EXPORT attempt={} frame_id={} backend={} y_fd={} uv_fd={} y_allocation_size={} uv_allocation_size={} reused_y={} reused_uv={}",
                         attempt_count,
                         hardware_frame_id,
                         hardware_backend,
                         y_cuda_fd,
                         uv_cuda_fd,
                         imported_y_texture->allocation_size,
-                        imported_uv_texture->allocation_size);
+                        imported_uv_texture->allocation_size,
+                        imported_texture_pair.reused_y,
+                        imported_texture_pair.reused_uv);
                 }
                 if (y_cuda_fd >= 0 && uv_cuda_fd >= 0) {
                     auto upload_result = media_frame->hardware_handle()->upload_to_gl_textures(Media::HardwareVideoFrameGLTextureUploadRequest {
@@ -1293,7 +1289,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                         uv_cuda_fd);
                 }
             } else {
-                hardware_gl_upload_failure_reason = y_texture_or_error.is_error() ? y_texture_or_error.error().string_literal() : uv_texture_or_error.error().string_literal();
+                hardware_gl_upload_failure_reason = imported_texture_pair_or_error.error().string_literal();
                 hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
                 dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=external_memory_import",
                     attempt_count,
@@ -1605,7 +1601,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto y_texture_for_draw = m_mundo_video_nv12_y_texture;
     auto uv_texture_for_draw = m_mundo_video_nv12_uv_texture;
 #ifdef USE_VULKAN_DMABUF_IMAGES
-    if (used_hardware_gl_upload && imported_y_texture.has_value() && imported_uv_texture.has_value()) {
+    if (used_hardware_gl_upload && imported_y_texture && imported_uv_texture) {
         y_texture_for_draw = imported_y_texture->texture;
         uv_texture_for_draw = imported_uv_texture->texture;
     }

@@ -70,9 +70,16 @@ public:
         u32 height { 0 };
         u64 allocation_size { 0 };
     };
+    struct ImportedVideoOpaqueFDTexturePair {
+        ImportedVideoOpaqueFDTexture* y { nullptr };
+        ImportedVideoOpaqueFDTexture* uv { nullptr };
+        bool reused_y { false };
+        bool reused_uv { false };
+    };
 
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture> create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count);
+    ErrorOr<ImportedVideoOpaqueFDTexturePair> get_or_create_imported_video_opaque_fd_textures(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
     void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif
 

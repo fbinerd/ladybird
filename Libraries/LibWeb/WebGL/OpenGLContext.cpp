@@ -62,6 +62,8 @@ struct OpenGLContext::Impl {
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
     EGLImage egl_image { EGL_NO_IMAGE };
+    Optional<ImportedVideoOpaqueFDTexture> cached_video_y_texture;
+    Optional<ImportedVideoOpaqueFDTexture> cached_video_uv_texture;
     struct {
         PFNEGLQUERYDMABUFFORMATSEXTPROC query_dma_buf_formats { nullptr };
         PFNEGLQUERYDMABUFMODIFIERSEXTPROC query_dma_buf_modifiers { nullptr };
@@ -107,6 +109,13 @@ void OpenGLContext::free_surface_resources()
     }
 
 #    ifdef USE_VULKAN_DMABUF_IMAGES
+    if (m_impl->cached_video_y_texture.has_value())
+        delete_imported_video_opaque_fd_texture(m_impl->cached_video_y_texture.value());
+    m_impl->cached_video_y_texture.clear();
+    if (m_impl->cached_video_uv_texture.has_value())
+        delete_imported_video_opaque_fd_texture(m_impl->cached_video_uv_texture.value());
+    m_impl->cached_video_uv_texture.clear();
+
     if (m_impl->egl_image != EGL_NO_IMAGE) {
         eglDestroyImage(m_impl->display, m_impl->egl_image);
         m_impl->egl_image = EGL_NO_IMAGE;
@@ -232,6 +241,8 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
                                                          .context = context,
                                                          .texture_target = texture_target,
 #    ifdef USE_VULKAN_DMABUF_IMAGES
+                                                         .cached_video_y_texture = {},
+                                                         .cached_video_uv_texture = {},
                                                          .ext_procs = {
                                                              .query_dma_buf_formats = pfn_egl_query_dma_buf_formats_ext,
                                                              .query_dma_buf_modifiers = pfn_egl_query_dma_buf_modifiers_ext,
@@ -831,6 +842,47 @@ ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_impor
         .width = width,
         .height = height,
         .allocation_size = image->info.allocation_size,
+    };
+}
+
+ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexturePair> OpenGLContext::get_or_create_imported_video_opaque_fd_textures(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count)
+{
+    auto texture_matches = [](ImportedVideoOpaqueFDTexture const& texture, u32 expected_width, u32 expected_height) {
+        return texture.width == expected_width && texture.height == expected_height && texture.texture && texture.memory_object && texture.allocation_size;
+    };
+
+    auto reused_y = m_impl->cached_video_y_texture.has_value() && texture_matches(m_impl->cached_video_y_texture.value(), width, height);
+    if (!reused_y) {
+        if (m_impl->cached_video_y_texture.has_value())
+            delete_imported_video_opaque_fd_texture(m_impl->cached_video_y_texture.value());
+        m_impl->cached_video_y_texture = TRY(create_imported_video_opaque_fd_texture(width, height, VK_FORMAT_R8_UNORM, GL_R8_EXT, "video_y_r8_cached", log_count));
+    }
+
+    auto reused_uv = m_impl->cached_video_uv_texture.has_value() && texture_matches(m_impl->cached_video_uv_texture.value(), uv_width, uv_height);
+    if (!reused_uv) {
+        if (m_impl->cached_video_uv_texture.has_value())
+            delete_imported_video_opaque_fd_texture(m_impl->cached_video_uv_texture.value());
+        m_impl->cached_video_uv_texture = TRY(create_imported_video_opaque_fd_texture(uv_width, uv_height, VK_FORMAT_R8G8_UNORM, GL_RG8_EXT, "video_uv_rg8_cached", log_count));
+    }
+
+    if (log_count <= 8 || log_count % 120 == 0) {
+        dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_CACHE count={} y_texture={} uv_texture={} y_size={}x{} uv_size={}x{} reused_y={} reused_uv={}",
+            log_count,
+            m_impl->cached_video_y_texture->texture,
+            m_impl->cached_video_uv_texture->texture,
+            width,
+            height,
+            uv_width,
+            uv_height,
+            reused_y,
+            reused_uv);
+    }
+
+    return ImportedVideoOpaqueFDTexturePair {
+        .y = &m_impl->cached_video_y_texture.value(),
+        .uv = &m_impl->cached_video_uv_texture.value(),
+        .reused_y = reused_y,
+        .reused_uv = reused_uv,
     };
 }
 
