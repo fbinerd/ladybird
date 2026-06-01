@@ -28,6 +28,8 @@
 
 extern "C" {
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_drm.h>
+#include <libavutil/mem.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/log.h>
 }
@@ -364,6 +366,113 @@ static HardwareVideoFrameDescriptor hardware_descriptor_for_cuda_frame(AVCodecCo
     descriptor.requires_cpu_transfer = false;
     return descriptor;
 }
+
+#if defined(__linux__)
+static void log_cuda_shareable_surface_probe_once(AVFrame const* frame, HardwareVideoFrameDescriptor const& descriptor)
+{
+    static Atomic<bool> did_probe { false };
+    if (did_probe.exchange(true))
+        return;
+
+    if (!frame->hw_frames_ctx) {
+        dbgln("MUNDO_MEDIA_FFMPEG cuda_shareable_surface_probe frame_id={} status=no_hw_frames_ctx hw_format={} size={}x{}",
+            descriptor.frame_id,
+            pixel_format_name(static_cast<AVPixelFormat>(frame->format)),
+            frame->width,
+            frame->height);
+        return;
+    }
+
+    AVPixelFormat* transfer_formats { nullptr };
+    auto formats_result = av_hwframe_transfer_get_formats(frame->hw_frames_ctx, AV_HWFRAME_TRANSFER_DIRECTION_FROM, &transfer_formats, 0);
+    if (formats_result < 0) {
+        dbgln("MUNDO_MEDIA_FFMPEG cuda_shareable_surface_probe frame_id={} transfer_formats_status=failed error={} code={}",
+            descriptor.frame_id,
+            av_error_code_to_string(formats_result),
+            formats_result);
+    } else {
+        for (size_t index = 0; transfer_formats[index] != AV_PIX_FMT_NONE; ++index) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_shareable_surface_probe frame_id={} transfer_format index={} format={}",
+                descriptor.frame_id,
+                index,
+                pixel_format_name(transfer_formats[index]));
+        }
+        av_free(transfer_formats);
+    }
+
+    auto log_drm_prime_map_attempt = [&](char const* mode, int flags) {
+        auto* mapped_frame = av_frame_alloc();
+        if (!mapped_frame) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_map_probe frame_id={} mode={} status=failed error=allocation_failed", descriptor.frame_id, mode);
+            return;
+        }
+        auto cleanup_mapped_frame = ScopeGuard([&] {
+            av_frame_free(&mapped_frame);
+        });
+
+        mapped_frame->format = AV_PIX_FMT_DRM_PRIME;
+        auto map_result = av_hwframe_map(mapped_frame, frame, flags);
+        if (map_result < 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_map_probe frame_id={} mode={} status=failed error={} code={}",
+                descriptor.frame_id,
+                mode,
+                av_error_code_to_string(map_result),
+                map_result);
+            return;
+        }
+
+        auto mapped_format = static_cast<AVPixelFormat>(mapped_frame->format);
+        if (mapped_format != AV_PIX_FMT_DRM_PRIME || !mapped_frame->data[0]) {
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_map_probe frame_id={} mode={} status=mapped_non_drm_prime format={}",
+                descriptor.frame_id,
+                mode,
+                pixel_format_name(mapped_format));
+            return;
+        }
+
+        auto const* drm_descriptor = reinterpret_cast<AVDRMFrameDescriptor const*>(mapped_frame->data[0]);
+        dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_map_probe frame_id={} mode={} status=success objects={} layers={} width={} height={}",
+            descriptor.frame_id,
+            mode,
+            drm_descriptor->nb_objects,
+            drm_descriptor->nb_layers,
+            mapped_frame->width,
+            mapped_frame->height);
+
+        for (int object_index = 0; object_index < drm_descriptor->nb_objects; ++object_index) {
+            auto const& object = drm_descriptor->objects[object_index];
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_map_object frame_id={} object={} fd={} size={} modifier={}",
+                descriptor.frame_id,
+                object_index,
+                object.fd,
+                object.size,
+                object.format_modifier);
+        }
+
+        for (int layer_index = 0; layer_index < drm_descriptor->nb_layers; ++layer_index) {
+            auto const& layer = drm_descriptor->layers[layer_index];
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_map_layer frame_id={} layer={} drm_format={} planes={}",
+                descriptor.frame_id,
+                layer_index,
+                layer.format,
+                layer.nb_planes);
+            for (int plane_index = 0; plane_index < layer.nb_planes; ++plane_index) {
+                auto const& plane = layer.planes[plane_index];
+                dbgln("MUNDO_MEDIA_FFMPEG cuda_drm_prime_map_plane frame_id={} layer={} plane={} object={} offset={} pitch={}",
+                    descriptor.frame_id,
+                    layer_index,
+                    plane_index,
+                    plane.object_index,
+                    plane.offset,
+                    plane.pitch);
+            }
+        }
+    };
+
+    log_drm_prime_map_attempt("direct", AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+    log_drm_prime_map_attempt("fallback", AV_HWFRAME_MAP_READ);
+}
+#endif
 
 static void log_software_frame_while_hwaccel_requested(AVCodecContext const* codec_context, AVFrame const* frame)
 {
@@ -1088,8 +1197,10 @@ public:
         , m_cicp(cicp)
     {
 #if defined(__linux__)
-        if (descriptor.backend == HardwareVideoFrameBackend::Cuda)
+        if (descriptor.backend == HardwareVideoFrameBackend::Cuda) {
             log_cuda_external_memory_symbols_once();
+            log_cuda_shareable_surface_probe_once(m_frame, descriptor);
+        }
 #endif
     }
 
