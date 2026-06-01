@@ -359,6 +359,8 @@ static HardwareVideoFrameDescriptor hardware_descriptor_for_cuda_frame(AVCodecCo
     descriptor.software_format = codec_context->sw_pix_fmt;
     descriptor.bit_depth = bit_depth;
     descriptor.zero_copy_capable = true;
+    descriptor.cpu_zero_copy_capable = true;
+    descriptor.direct_zero_copy_capable = false;
     descriptor.requires_cpu_transfer = false;
     return descriptor;
 }
@@ -1813,7 +1815,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
             static size_t s_deferred_hw_frame_count { 0 };
             auto count = ++s_deferred_hw_frame_count;
             if (count <= 8 || count % 120 == 0) {
-                dbgln("MUNDO_MEDIA_FFMPEG defer_hw_transfer count={} frame_id={} hw_format={} sw_pix_fmt={} size={}x{} timestamp={}ms zero_copy_capable={} requires_cpu_transfer={}",
+                dbgln("MUNDO_MEDIA_FFMPEG defer_hw_transfer count={} frame_id={} hw_format={} sw_pix_fmt={} size={}x{} timestamp={}ms zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} requires_cpu_transfer={}",
                     count,
                     hardware_descriptor.frame_id,
                     pixel_format_name(static_cast<AVPixelFormat>(m_frame->format)),
@@ -1822,6 +1824,8 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                     m_frame->height,
                     timestamp.to_milliseconds(),
                     hardware_descriptor.zero_copy_capable,
+                    hardware_descriptor.cpu_zero_copy_capable,
+                    hardware_descriptor.direct_zero_copy_capable,
                     hardware_descriptor.requires_cpu_transfer);
             }
 
@@ -1909,7 +1913,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                         static size_t s_video_frame_pipeline_count { 0 };
                         auto count = ++s_video_frame_pipeline_count;
                         if (count <= 8 || count % 120 == 0) {
-                            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} frame_id={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{} zero_copy_capable={} requires_cpu_transfer={}",
+                            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} frame_id={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} requires_cpu_transfer={}",
                                 count,
                                 hardware_descriptor.has_value() ? hardware_descriptor->frame_id : 0,
                                 transfer_timing.transferred_from_hardware,
@@ -1925,6 +1929,8 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                                 source_width,
                                 source_height,
                                 hardware_descriptor.has_value() ? hardware_descriptor->zero_copy_capable : false,
+                                hardware_descriptor.has_value() ? hardware_descriptor->cpu_zero_copy_capable : false,
+                                hardware_descriptor.has_value() ? hardware_descriptor->direct_zero_copy_capable : false,
                                 hardware_descriptor.has_value() ? hardware_descriptor->requires_cpu_transfer : false);
                         }
 
@@ -1977,7 +1983,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         static size_t s_video_frame_pipeline_count { 0 };
         auto count = ++s_video_frame_pipeline_count;
         if (count <= 8 || count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} frame_id={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{} zero_copy_capable={} requires_cpu_transfer={}",
+            dbgln("MUNDO_MEDIA_FFMPEG decoded_frame_pipeline count={} frame_id={} hw_transfer={} direct_nv12={} lazy_nv12={} transfer_us={} copy_us={} bitmap_us={} total_us={} frame_format={} bitmap_size={}x{} source_size={}x{} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} requires_cpu_transfer={}",
                 count,
                 hardware_descriptor.has_value() ? hardware_descriptor->frame_id : 0,
                 transfer_timing.transferred_from_hardware,
@@ -1993,6 +1999,8 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
                 frame->width,
                 frame->height,
                 hardware_descriptor.has_value() ? hardware_descriptor->zero_copy_capable : false,
+                hardware_descriptor.has_value() ? hardware_descriptor->cpu_zero_copy_capable : false,
+                hardware_descriptor.has_value() ? hardware_descriptor->direct_zero_copy_capable : false,
                 hardware_descriptor.has_value() ? hardware_descriptor->requires_cpu_transfer : false);
         }
 

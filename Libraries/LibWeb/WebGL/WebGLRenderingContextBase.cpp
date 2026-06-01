@@ -815,6 +815,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         auto const* hardware_backend = "none";
         auto hardware_frame_id = 0ull;
         auto zero_copy_capable = false;
+        auto cpu_zero_copy_capable = false;
+        auto direct_zero_copy_capable = false;
         auto requires_cpu_transfer = false;
         auto has_hardware_handle = false;
         if (source_is_video) {
@@ -825,6 +827,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     hardware_backend = Media::hardware_video_frame_backend_name(hardware_descriptor->backend);
                     hardware_frame_id = hardware_descriptor->frame_id;
                     zero_copy_capable = hardware_descriptor->zero_copy_capable;
+                    cpu_zero_copy_capable = hardware_descriptor->cpu_zero_copy_capable;
+                    direct_zero_copy_capable = hardware_descriptor->direct_zero_copy_capable;
                     requires_cpu_transfer = hardware_descriptor->requires_cpu_transfer;
                 }
                 if (auto const* nv12_data = media_frame->cached_nv12_data()) {
@@ -839,7 +843,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             }
         }
         if (has_nv12_frame || has_hardware_handle || zero_copy_capable || should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-            dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} has_nv12={} frame_id={} hardware_backend={} zero_copy_capable={} requires_cpu_transfer={} has_hardware_handle={} nv12_size={}x{} nv12_stride={}x{} nv12_bytes={}+{} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
+            dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD_REJECT attempt={} reason={} source_is_video={} has_nv12={} frame_id={} hardware_backend={} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} requires_cpu_transfer={} has_hardware_handle={} nv12_size={}x{} nv12_stride={}x{} nv12_bytes={}+{} target={} level={} format={} type={} dest={}x{} flip_y={} premultiply={} sub_image={}",
                 attempt_count,
                 reason,
                 source_is_video,
@@ -847,6 +851,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 hardware_frame_id,
                 hardware_backend,
                 zero_copy_capable,
+                cpu_zero_copy_capable,
+                direct_zero_copy_capable,
                 requires_cpu_transfer,
                 has_hardware_handle,
                 nv12_width,
@@ -886,12 +892,16 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto const* hardware_backend = "none";
     auto hardware_frame_id = 0ull;
     auto zero_copy_capable = false;
+    auto cpu_zero_copy_capable = false;
+    auto direct_zero_copy_capable = false;
     auto requires_cpu_transfer = false;
     auto has_hardware_handle = media_frame->hardware_handle() != nullptr;
     if (auto const& hardware_descriptor = media_frame->hardware_descriptor(); hardware_descriptor.has_value()) {
         hardware_backend = Media::hardware_video_frame_backend_name(hardware_descriptor->backend);
         hardware_frame_id = hardware_descriptor->frame_id;
         zero_copy_capable = hardware_descriptor->zero_copy_capable;
+        cpu_zero_copy_capable = hardware_descriptor->cpu_zero_copy_capable;
+        direct_zero_copy_capable = hardware_descriptor->direct_zero_copy_capable;
         requires_cpu_transfer = hardware_descriptor->requires_cpu_transfer;
     }
     auto video_width = static_cast<int>(media_frame->width());
@@ -910,7 +920,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     if (has_hardware_handle && zero_copy_capable && video_width > 0 && video_height > 0 && (s_video_opaque_fd_plane_probe_width != video_width || s_video_opaque_fd_plane_probe_height != video_height)) {
         s_video_opaque_fd_plane_probe_width = video_width;
         s_video_opaque_fd_plane_probe_height = video_height;
-        dbgln("MUNDO_WEBGL_VIDEO_OPAQUE_FD_PLANE_PROBE_REQUEST attempt={} frame_id={} backend={} size={}x{} uv_size={}x{} has_hardware_handle={} zero_copy_capable={} requires_cpu_transfer={}",
+        dbgln("MUNDO_WEBGL_VIDEO_OPAQUE_FD_PLANE_PROBE_REQUEST attempt={} frame_id={} backend={} size={}x{} uv_size={}x{} has_hardware_handle={} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} requires_cpu_transfer={}",
             attempt_count,
             hardware_frame_id,
             hardware_backend,
@@ -920,8 +930,20 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             uv_texture_height,
             has_hardware_handle,
             zero_copy_capable,
+            cpu_zero_copy_capable,
+            direct_zero_copy_capable,
             requires_cpu_transfer);
         context().probe_video_opaque_fd_texture_import(video_width, video_height, visible_uv_width, uv_texture_height, attempt_count);
+    }
+    static u64 s_last_direct_zero_copy_blocked_frame_id { 0 };
+    if (has_hardware_handle && zero_copy_capable && !direct_zero_copy_capable && hardware_frame_id != s_last_direct_zero_copy_blocked_frame_id && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+        s_last_direct_zero_copy_blocked_frame_id = hardware_frame_id;
+        dbgln("MUNDO_WEBGL_VIDEO_DIRECT_ZERO_COPY_BLOCKED attempt={} frame_id={} backend={} reason=hardware_frame_has_no_shareable_decoder_surface cpu_zero_copy_capable={} requires_cpu_transfer={}",
+            attempt_count,
+            hardware_frame_id,
+            hardware_backend,
+            cpu_zero_copy_capable,
+            requires_cpu_transfer);
     }
     static bool s_cuda_gl_buffer_upload_disabled { false };
     static bool s_cuda_gl_direct_texture_upload_disabled { false };
@@ -1197,7 +1219,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 #ifdef USE_VULKAN_DMABUF_IMAGES
             auto should_log_external_memory_success = should_log_mundo_webgl_texture_diagnostic(attempt_count);
             if (should_log_external_memory_success) {
-                dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DECISION attempt={} frame_id={} backend={} status=attempting size={}x{} uv_size={}x{} target_texture={} has_hardware_handle={} zero_copy_capable={} direct_texture_fallback_disabled={}",
+                dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DECISION attempt={} frame_id={} backend={} status=attempting size={}x{} uv_size={}x{} target_texture={} has_hardware_handle={} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} direct_texture_fallback_disabled={}",
                     attempt_count,
                     hardware_frame_id,
                     hardware_backend,
@@ -1208,6 +1230,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     previous_texture_2d,
                     has_hardware_handle,
                     zero_copy_capable,
+                    cpu_zero_copy_capable,
+                    direct_zero_copy_capable,
                     s_cuda_gl_direct_texture_upload_disabled);
             }
             auto imported_texture_pair_or_error = context().get_or_create_imported_video_opaque_fd_textures(static_cast<u32>(video_width), static_cast<u32>(video_height), static_cast<u32>(visible_uv_width), static_cast<u32>(uv_texture_height), attempt_count);
@@ -1501,13 +1525,16 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         probe_mundo_cuda_gl_interop(attempt_count);
-        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status={} reason={} has_hardware_handle={} gl_api=gles_angle_or_egl y_bytes={} uv_bytes={} y_upload={} uv_upload={} gpu_upload_us={} direct_zero_copy={} copied_on_gpu={} copy_stage={} upload_mode={}",
+        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status={} reason={} has_hardware_handle={} gl_api=gles_angle_or_egl zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} y_bytes={} uv_bytes={} y_upload={} uv_upload={} gpu_upload_us={} direct_zero_copy={} copied_on_gpu={} copy_stage={} upload_mode={}",
             attempt_count,
             hardware_frame_id,
             hardware_backend,
             used_hardware_gl_upload ? "gpu_texture_upload"sv : "cpu_upload_required"sv,
             used_hardware_gl_upload ? "cuda_gl_texture_copy"sv : hardware_gl_upload_failure_reason,
             has_hardware_handle,
+            zero_copy_capable,
+            cpu_zero_copy_capable,
+            direct_zero_copy_capable,
             nv12_data ? nv12_data->y_plane_size() : 0,
             nv12_data ? nv12_data->uv_plane_size() : 0,
             used_hardware_gl_upload ? "gpu"sv : used_y_plane_pbo ? "pbo"sv
@@ -1647,12 +1674,14 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} frame_id={} hardware_backend={} zero_copy_capable={} requires_cpu_transfer={} has_hardware_handle={} upload_us={} size={}x{} offset={}x{} target_storage={} plane_storage={}/{} plane_upload={}/{} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} frame_id={} hardware_backend={} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} requires_cpu_transfer={} has_hardware_handle={} upload_us={} size={}x{} offset={}x{} target_storage={} plane_storage={}/{} plane_upload={}/{} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
             attempt_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             hardware_frame_id,
             hardware_backend,
             zero_copy_capable,
+            cpu_zero_copy_capable,
+            direct_zero_copy_capable,
             requires_cpu_transfer,
             has_hardware_handle,
             upload_microseconds,

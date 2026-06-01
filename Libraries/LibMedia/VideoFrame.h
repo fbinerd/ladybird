@@ -38,6 +38,8 @@ struct MEDIA_API HardwareVideoFrameDescriptor {
     int software_format { 0 };
     u8 bit_depth { 0 };
     bool zero_copy_capable { false };
+    bool cpu_zero_copy_capable { false };
+    bool direct_zero_copy_capable { false };
     bool requires_cpu_transfer { true };
 };
 
