@@ -255,14 +255,34 @@ static char const* vulkan_export_handle_types_name(VkExternalMemoryHandleTypeFla
     return "unknown";
 }
 
-struct VulkanExportableFramesUserData {
-    VkExportMemoryAllocateInfo export_memory_allocate_info[AV_NUM_DATA_POINTERS];
-};
-
-static void free_vulkan_exportable_frames_user_data(AVHWFramesContext* frames_context)
+static VkExportMemoryAllocateInfo const* vulkan_export_memory_allocate_infos(VkExternalMemoryHandleTypeFlags handle_types)
 {
-    delete static_cast<VulkanExportableFramesUserData*>(frames_context->user_opaque);
-    frames_context->user_opaque = nullptr;
+    static VkExportMemoryAllocateInfo s_opaque_fd_infos[AV_NUM_DATA_POINTERS];
+    static VkExportMemoryAllocateInfo s_dma_buf_infos[AV_NUM_DATA_POINTERS];
+    static VkExportMemoryAllocateInfo s_both_infos[AV_NUM_DATA_POINTERS];
+    static bool s_initialized { false };
+
+    if (!s_initialized) {
+        auto initialize_infos = [](VkExportMemoryAllocateInfo* infos, VkExternalMemoryHandleTypeFlags info_handle_types) {
+            for (size_t plane = 0; plane < AV_NUM_DATA_POINTERS; ++plane) {
+                infos[plane] = VkExportMemoryAllocateInfo {
+                    .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                    .pNext = nullptr,
+                    .handleTypes = info_handle_types,
+                };
+            }
+        };
+        initialize_infos(s_opaque_fd_infos, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
+        initialize_infos(s_dma_buf_infos, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+        initialize_infos(s_both_infos, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+        s_initialized = true;
+    }
+
+    if (handle_types == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+        return s_dma_buf_infos;
+    if (handle_types == (VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT))
+        return s_both_infos;
+    return s_opaque_fd_infos;
 }
 
 static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_context)
@@ -307,31 +327,17 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
     }
 
     if (frames_context->free || frames_context->user_opaque) {
-        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=existing_user_callback free={} user_opaque={}",
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=existing_user_callback_continuing free={} user_opaque={}",
             frames_context->free != nullptr, frames_context->user_opaque != nullptr);
-        av_buffer_unref(&frames_ref);
-        return false;
     }
 
     auto handle_types = requested_vulkan_export_handle_types();
-    auto* user_data = new (nothrow) VulkanExportableFramesUserData {};
-    if (!user_data) {
-        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_memory");
-        av_buffer_unref(&frames_ref);
-        return false;
-    }
-
+    auto const* export_memory_allocate_infos = vulkan_export_memory_allocate_infos(handle_types);
     for (size_t plane = 0; plane < AV_NUM_DATA_POINTERS; ++plane) {
-        user_data->export_memory_allocate_info[plane] = VkExportMemoryAllocateInfo {
-            .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-            .pNext = nullptr,
-            .handleTypes = handle_types,
-        };
-        vulkan_frames_context->alloc_pnext[plane] = &user_data->export_memory_allocate_info[plane];
+        vulkan_frames_context->alloc_pnext[plane] = const_cast<VkExportMemoryAllocateInfo*>(&export_memory_allocate_infos[plane]);
     }
 
-    frames_context->user_opaque = user_data;
-    frames_context->free = free_vulkan_exportable_frames_user_data;
+    vulkan_frames_context->flags = static_cast<AVVkFrameFlags>(vulkan_frames_context->flags | AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE);
 
     result = av_hwframe_ctx_init(frames_ref);
     if (result < 0) {
