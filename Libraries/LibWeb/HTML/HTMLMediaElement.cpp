@@ -349,15 +349,13 @@ static Optional<String> mundo_normalized_hls_source(StringView source)
         if (mundo_hls_quality_prefers_hevc_source(target_quality) || ((!target_quality || target_quality[0] == '\0') && mundo_should_prefer_hevc_hls_source())) {
             if (path.ends_with("_vr.m3u8"sv))
                 return {};
+            if (path.ends_with("_vr_720p60.m3u8"sv) || path.ends_with("_vr_1440p60.m3u8"sv) || path.ends_with("_vr_2160p60.m3u8"sv)) {
+                dbgln("MUNDO_MEDIA_ELEMENT keeping_explicit_hls_variant original={} reason=avoid_unverified_generic_hevc_manifest", source);
+                return {};
+            }
             auto generic_vr_path = path;
             if (path.ends_with("_vr_auto.m3u8"sv))
                 generic_vr_path = path.substring_view(0, path.length() - "_auto.m3u8"sv.length());
-            else if (path.ends_with("_vr_720p60.m3u8"sv))
-                generic_vr_path = path.substring_view(0, path.length() - "_720p60.m3u8"sv.length());
-            else if (path.ends_with("_vr_1440p60.m3u8"sv))
-                generic_vr_path = path.substring_view(0, path.length() - "_1440p60.m3u8"sv.length());
-            else if (path.ends_with("_vr_2160p60.m3u8"sv))
-                generic_vr_path = path.substring_view(0, path.length() - "_2160p60.m3u8"sv.length());
             else
                 return {};
             auto normalized = MUST(String::formatted("{}.m3u8{}", generic_vr_path, query));
