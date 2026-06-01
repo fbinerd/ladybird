@@ -728,6 +728,70 @@ static void log_vulkan_frame_probe_once(AVFrame const* frame, HardwareVideoFrame
         vk_frame->queue_family[0],
         vk_frame->queue_family[1],
         vk_frame->queue_family[2]);
+
+    if (!frame->hw_frames_ctx || !frame->hw_frames_ctx->data) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_memory_export_probe frame_id={} status=no_hw_frames_ctx", descriptor.frame_id);
+        return;
+    }
+
+    auto const* frames_context = reinterpret_cast<AVHWFramesContext const*>(frame->hw_frames_ctx->data);
+    if (!frames_context->device_ctx || !frames_context->device_ctx->hwctx) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_memory_export_probe frame_id={} status=no_device_ctx", descriptor.frame_id);
+        return;
+    }
+
+    auto const* vulkan_device_context = reinterpret_cast<AVVulkanDeviceContext const*>(frames_context->device_ctx->hwctx);
+    if (!vulkan_device_context->get_proc_addr || vulkan_device_context->inst == VK_NULL_HANDLE || vulkan_device_context->act_dev == VK_NULL_HANDLE) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_memory_export_probe frame_id={} status=no_proc_or_device get_proc_addr={} instance={} device={}",
+            descriptor.frame_id,
+            vulkan_device_context->get_proc_addr != nullptr,
+            reinterpret_cast<uintptr_t>(vulkan_device_context->inst),
+            reinterpret_cast<uintptr_t>(vulkan_device_context->act_dev));
+        return;
+    }
+
+    auto* get_device_proc_addr = reinterpret_cast<PFN_vkGetDeviceProcAddr>(vulkan_device_context->get_proc_addr(vulkan_device_context->inst, "vkGetDeviceProcAddr"));
+    if (!get_device_proc_addr) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_memory_export_probe frame_id={} status=no_vkGetDeviceProcAddr", descriptor.frame_id);
+        return;
+    }
+
+    auto* get_memory_fd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(get_device_proc_addr(vulkan_device_context->act_dev, "vkGetMemoryFdKHR"));
+    if (!get_memory_fd) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_memory_export_probe frame_id={} status=no_vkGetMemoryFdKHR", descriptor.frame_id);
+        return;
+    }
+
+    auto log_export_attempt = [&](char const* handle_name, VkExternalMemoryHandleTypeFlagBits handle_type) {
+        for (size_t plane = 0; plane < AV_NUM_DATA_POINTERS; ++plane) {
+            if (vk_frame->mem[plane] == VK_NULL_HANDLE || vk_frame->size[plane] == 0)
+                continue;
+
+            int exported_fd = -1;
+            VkMemoryGetFdInfoKHR fd_info {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                .pNext = nullptr,
+                .memory = vk_frame->mem[plane],
+                .handleType = handle_type,
+            };
+            auto export_result = get_memory_fd(vulkan_device_context->act_dev, &fd_info, &exported_fd);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_memory_export_probe frame_id={} handle={} plane={} result={} fd_valid={} size={} offset={} tiling={} flags={}",
+                descriptor.frame_id,
+                handle_name,
+                plane,
+                static_cast<int>(export_result),
+                exported_fd >= 0,
+                vk_frame->size[plane],
+                vk_frame->offset[plane],
+                static_cast<unsigned>(vk_frame->tiling),
+                static_cast<unsigned>(vk_frame->flags));
+            if (exported_fd >= 0)
+                close(exported_fd);
+        }
+    };
+
+    log_export_attempt("opaque_fd", VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
+    log_export_attempt("dma_buf", VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
 }
 
 static void log_software_frame_while_hwaccel_requested(AVCodecContext const* codec_context, AVFrame const* frame)
