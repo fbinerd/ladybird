@@ -218,6 +218,151 @@ static bool should_require_hardware_decode()
         && strcmp(raw_value, "off");
 }
 
+static bool vulkan_exportable_frames_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_VULKAN_EXPORTABLE_FRAMES");
+    if (!raw_value)
+        return true;
+
+    return raw_value[0] != '\0'
+        && strcmp(raw_value, "0")
+        && strcmp(raw_value, "false")
+        && strcmp(raw_value, "no")
+        && strcmp(raw_value, "off");
+}
+
+static VkExternalMemoryHandleTypeFlags requested_vulkan_export_handle_types()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_VULKAN_EXPORT_HANDLE");
+    if (!raw_value || !strcmp(raw_value, "opaque_fd"))
+        return VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    if (!strcmp(raw_value, "dma_buf") || !strcmp(raw_value, "dmabuf"))
+        return VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    if (!strcmp(raw_value, "both"))
+        return VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+    return VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+}
+
+static char const* vulkan_export_handle_types_name(VkExternalMemoryHandleTypeFlags handle_types)
+{
+    if (handle_types == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
+        return "opaque_fd";
+    if (handle_types == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+        return "dma_buf";
+    if (handle_types == (VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT))
+        return "both";
+    return "unknown";
+}
+
+struct VulkanExportableFramesUserData {
+    VkExportMemoryAllocateInfo export_memory_allocate_info[AV_NUM_DATA_POINTERS];
+};
+
+static void free_vulkan_exportable_frames_user_data(AVHWFramesContext* frames_context)
+{
+    delete static_cast<VulkanExportableFramesUserData*>(frames_context->user_opaque);
+    frames_context->user_opaque = nullptr;
+}
+
+static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_context)
+{
+    if (!vulkan_exportable_frames_enabled()) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=disabled");
+        return false;
+    }
+
+    if (!codec_context->hw_device_ctx) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_hw_device_ctx");
+        return false;
+    }
+
+    if (codec_context->hw_frames_ctx) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=already_configured");
+        return true;
+    }
+
+    AVBufferRef* frames_ref = nullptr;
+    auto result = avcodec_get_hw_frames_parameters(codec_context, codec_context->hw_device_ctx, AV_PIX_FMT_VULKAN, &frames_ref);
+    if (result < 0 || !frames_ref) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=parameters_failed error={} code={}",
+            av_error_code_to_string(result), result);
+        if (frames_ref)
+            av_buffer_unref(&frames_ref);
+        return false;
+    }
+
+    auto* frames_context = reinterpret_cast<AVHWFramesContext*>(frames_ref->data);
+    if (!frames_context) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_frames_hwctx");
+        av_buffer_unref(&frames_ref);
+        return false;
+    }
+
+    auto* vulkan_frames_context = reinterpret_cast<AVVulkanFramesContext*>(frames_context->hwctx);
+    if (!vulkan_frames_context) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_vulkan_frames_hwctx");
+        av_buffer_unref(&frames_ref);
+        return false;
+    }
+
+    if (frames_context->free || frames_context->user_opaque) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=existing_user_callback free={} user_opaque={}",
+            frames_context->free != nullptr, frames_context->user_opaque != nullptr);
+        av_buffer_unref(&frames_ref);
+        return false;
+    }
+
+    auto handle_types = requested_vulkan_export_handle_types();
+    auto* user_data = new (nothrow) VulkanExportableFramesUserData {};
+    if (!user_data) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_memory");
+        av_buffer_unref(&frames_ref);
+        return false;
+    }
+
+    for (size_t plane = 0; plane < AV_NUM_DATA_POINTERS; ++plane) {
+        user_data->export_memory_allocate_info[plane] = VkExportMemoryAllocateInfo {
+            .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .handleTypes = handle_types,
+        };
+        vulkan_frames_context->alloc_pnext[plane] = &user_data->export_memory_allocate_info[plane];
+    }
+
+    frames_context->user_opaque = user_data;
+    frames_context->free = free_vulkan_exportable_frames_user_data;
+
+    result = av_hwframe_ctx_init(frames_ref);
+    if (result < 0) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=init_failed error={} code={} handle={}",
+            av_error_code_to_string(result), result, vulkan_export_handle_types_name(handle_types));
+        av_buffer_unref(&frames_ref);
+        return false;
+    }
+
+    codec_context->hw_frames_ctx = av_buffer_ref(frames_ref);
+    if (!codec_context->hw_frames_ctx) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=ref_failed handle={}",
+            vulkan_export_handle_types_name(handle_types));
+        av_buffer_unref(&frames_ref);
+        return false;
+    }
+
+    dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=enabled handle={} format={} sw_format={} size={}x{} initial_pool_size={} tiling={} flags={}",
+        vulkan_export_handle_types_name(handle_types),
+        pixel_format_name(frames_context->format),
+        pixel_format_name(frames_context->sw_format),
+        frames_context->width,
+        frames_context->height,
+        frames_context->initial_pool_size,
+        static_cast<unsigned>(vulkan_frames_context->tiling),
+        static_cast<unsigned>(vulkan_frames_context->flags));
+
+    av_buffer_unref(&frames_ref);
+    return true;
+}
+
 static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecoderBackend backend)
 {
     if (backend == VideoDecoderBackend::Auto || backend == VideoDecoderBackend::Software)
@@ -308,6 +453,8 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
             if (preferred_format != AV_PIX_FMT_NONE) {
                 for (auto const* format = formats; *format >= 0; ++format) {
                     if (*format == preferred_format) {
+                        if (requested_backend == VideoDecoderBackend::Vulkan)
+                            configure_vulkan_exportable_frames_context(codec_context);
                         dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected={} reason=requested_backend codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
                             pixel_format_name(preferred_format),
                             avcodec_get_name(codec_context->codec_id),
