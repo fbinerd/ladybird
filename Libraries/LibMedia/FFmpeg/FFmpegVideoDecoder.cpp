@@ -138,6 +138,25 @@ static bool can_create_hw_device(VideoDecoderBackend backend)
     return result >= 0;
 }
 
+static void log_available_ffmpeg_hwdevices_once()
+{
+    static Atomic<bool> did_log { false };
+    if (did_log.exchange(true))
+        return;
+
+    auto logged_any = false;
+    for (auto device_type = av_hwdevice_iterate_types(AV_HWDEVICE_TYPE_NONE);
+        device_type != AV_HWDEVICE_TYPE_NONE;
+        device_type = av_hwdevice_iterate_types(device_type)) {
+        logged_any = true;
+        auto const* name = av_hwdevice_get_type_name(device_type);
+        dbgln("MUNDO_MEDIA_FFMPEG hwdevice_available name={} type={}", name ? name : "unknown", static_cast<int>(device_type));
+    }
+
+    if (!logged_any)
+        dbgln("MUNDO_MEDIA_FFMPEG hwdevice_available none=true");
+}
+
 static char const* pixel_format_name(AVPixelFormat format)
 {
     auto const* name = av_get_pix_fmt_name(format);
@@ -202,6 +221,8 @@ static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecod
 
 static void log_video_decoder_backend_probe(AVCodec const* codec, CodecID codec_id)
 {
+    log_available_ffmpeg_hwdevices_once();
+
     auto requested_backend = requested_video_decoder_backend();
     auto active_backend = VideoDecoderBackend::Software;
     if (requested_backend == VideoDecoderBackend::Nvdec && codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec))

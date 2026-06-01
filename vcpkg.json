@@ -50,6 +50,8 @@
         "openssl",
         "opus",
         "nvcodec",
+        "vaapi",
+        "vulkan",
         "webp",
         "theora",
         "vorbis",
