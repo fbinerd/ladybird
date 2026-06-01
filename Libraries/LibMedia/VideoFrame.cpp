@@ -20,6 +20,8 @@ char const* hardware_video_frame_backend_name(HardwareVideoFrameBackend backend)
         return "cuda";
     case HardwareVideoFrameBackend::Vaapi:
         return "vaapi";
+    case HardwareVideoFrameBackend::Vulkan:
+        return "vulkan";
     case HardwareVideoFrameBackend::DmaBuf:
         return "dmabuf";
     }

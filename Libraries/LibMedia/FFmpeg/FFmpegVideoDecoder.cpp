@@ -30,6 +30,7 @@
 extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_drm.h>
+#include <libavutil/hwcontext_vulkan.h>
 #include <libavutil/mem.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/log.h>
@@ -408,22 +409,31 @@ static bool is_hardware_frame(AVFrame const* frame)
         || frame->format == AV_PIX_FMT_VULKAN;
 }
 
-static bool is_cuda_hardware_frame(AVFrame const* frame)
-{
-    return frame->format == AV_PIX_FMT_CUDA;
-}
-
 struct HardwareTransferTiming {
     bool transferred_from_hardware { false };
     i64 transfer_microseconds { 0 };
 };
 
-static HardwareVideoFrameDescriptor hardware_descriptor_for_cuda_frame(AVCodecContext const* codec_context, AVFrame const* frame, u8 bit_depth)
+static HardwareVideoFrameBackend hardware_video_frame_backend_for_pixel_format(AVPixelFormat format)
+{
+    switch (format) {
+    case AV_PIX_FMT_CUDA:
+        return HardwareVideoFrameBackend::Cuda;
+    case AV_PIX_FMT_VAAPI:
+        return HardwareVideoFrameBackend::Vaapi;
+    case AV_PIX_FMT_VULKAN:
+        return HardwareVideoFrameBackend::Vulkan;
+    default:
+        return HardwareVideoFrameBackend::None;
+    }
+}
+
+static HardwareVideoFrameDescriptor hardware_descriptor_for_frame(AVCodecContext const* codec_context, AVFrame const* frame, u8 bit_depth)
 {
     static u64 s_hardware_video_frame_id { 0 };
 
     HardwareVideoFrameDescriptor descriptor;
-    descriptor.backend = HardwareVideoFrameBackend::Cuda;
+    descriptor.backend = hardware_video_frame_backend_for_pixel_format(static_cast<AVPixelFormat>(frame->format));
     descriptor.frame_id = ++s_hardware_video_frame_id;
     descriptor.size = Gfx::Size<u32> { frame->width, frame->height };
     descriptor.hardware_format = frame->format;
@@ -677,6 +687,48 @@ static void log_cuda_shareable_surface_probe_once(AVFrame const* frame, Hardware
     log_derived_drm_prime_map_attempt("fallback", AV_HWFRAME_MAP_READ);
 }
 #endif
+
+static void log_vulkan_frame_probe_once(AVFrame const* frame, HardwareVideoFrameDescriptor const& descriptor)
+{
+    static Atomic<bool> did_probe { false };
+    if (did_probe.exchange(true))
+        return;
+
+    if (frame->format != AV_PIX_FMT_VULKAN) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_frame_probe frame_id={} status=wrong_format hw_format={}",
+            descriptor.frame_id,
+            pixel_format_name(static_cast<AVPixelFormat>(frame->format)));
+        return;
+    }
+
+    if (!frame->data[0]) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_frame_probe frame_id={} status=no_frame_data size={}x{}",
+            descriptor.frame_id,
+            frame->width,
+            frame->height);
+        return;
+    }
+
+    auto const* vk_frame = reinterpret_cast<AVVkFrame const*>(frame->data[0]);
+    dbgln("MUNDO_MEDIA_FFMPEG vulkan_frame_probe frame_id={} status=ok size={}x{} tiling={} flags={} img0={} img1={} img2={} mem0_size={} mem1_size={} mem2_size={} layout0={} layout1={} layout2={} queue0={} queue1={} queue2={}",
+        descriptor.frame_id,
+        frame->width,
+        frame->height,
+        static_cast<unsigned>(vk_frame->tiling),
+        static_cast<unsigned>(vk_frame->flags),
+        reinterpret_cast<uintptr_t>(vk_frame->img[0]),
+        reinterpret_cast<uintptr_t>(vk_frame->img[1]),
+        reinterpret_cast<uintptr_t>(vk_frame->img[2]),
+        vk_frame->size[0],
+        vk_frame->size[1],
+        vk_frame->size[2],
+        static_cast<unsigned>(vk_frame->layout[0]),
+        static_cast<unsigned>(vk_frame->layout[1]),
+        static_cast<unsigned>(vk_frame->layout[2]),
+        vk_frame->queue_family[0],
+        vk_frame->queue_family[1],
+        vk_frame->queue_family[2]);
+}
 
 static void log_software_frame_while_hwaccel_requested(AVCodecContext const* codec_context, AVFrame const* frame)
 {
@@ -1407,6 +1459,8 @@ public:
             log_cuda_shareable_surface_probe_once(m_frame, descriptor);
         }
 #endif
+        if (descriptor.backend == HardwareVideoFrameBackend::Vulkan)
+            log_vulkan_frame_probe_once(m_frame, descriptor);
     }
 
     ~RetainedHardwareFrameSource()
@@ -2091,7 +2145,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
 
     switch (result) {
     case 0: {
-        if (is_cuda_hardware_frame(m_frame)
+        if (is_hardware_frame(m_frame)
             && lazy_hardware_frame_transfer_enabled()
             && direct_nv12_rgba_bitmap_enabled()
             && lazy_nv12_rgba_bitmap_enabled()
@@ -2117,7 +2171,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
             auto size = Gfx::Size<u32> { m_frame->width, m_frame->height };
             auto timestamp = AK::Duration::from_microseconds(m_frame->pts);
             auto duration = AK::Duration::from_microseconds(m_frame->duration);
-            auto hardware_descriptor = hardware_descriptor_for_cuda_frame(m_codec_context, m_frame, bit_depth);
+            auto hardware_descriptor = hardware_descriptor_for_frame(m_codec_context, m_frame, bit_depth);
 
             auto source = DECODER_TRY_ALLOC(RetainedHardwareFrameSource::create(m_frame, cicp, hardware_descriptor));
             auto source_for_bitmap = source;
@@ -2189,7 +2243,7 @@ DecoderErrorOr<NonnullOwnPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(
         RefPtr<Gfx::ImmutableBitmap> bitmap;
         Optional<HardwareVideoFrameDescriptor> hardware_descriptor;
         if (transfer_timing.transferred_from_hardware)
-            hardware_descriptor = hardware_descriptor_for_cuda_frame(m_codec_context, m_frame, bit_depth);
+            hardware_descriptor = hardware_descriptor_for_frame(m_codec_context, m_frame, bit_depth);
         auto used_direct_nv12_bitmap = false;
         auto used_lazy_nv12_bitmap = false;
         auto should_use_gpu_yuv_for_nv12 = transfer_timing.transferred_from_hardware && pixel_format == AV_PIX_FMT_NV12 && should_use_gpu_yuv_for_nv12_frame(frame->width, frame->height);

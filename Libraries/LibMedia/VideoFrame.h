@@ -25,6 +25,7 @@ enum class HardwareVideoFrameBackend : u8 {
     None,
     Cuda,
     Vaapi,
+    Vulkan,
     DmaBuf,
 };
 
