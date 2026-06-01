@@ -1213,11 +1213,12 @@ public:
         m_was_gpu_uploaded = true;
         static size_t s_cuda_gl_texture_upload_count { 0 };
         auto count = ++s_cuda_gl_texture_upload_count;
+        auto const* upload_mode = use_external_memory_upload ? "external_memory" : request.y_upload_buffer && request.uv_upload_buffer ? "pbo" : "texture";
         if (count <= 8 || count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload count={} frame_id={} mode={} size={}x{} uv={}x{} y_pitch={} uv_pitch={} upload_us={}",
+            dbgln("MUNDO_MEDIA_FFMPEG cuda_gl_texture_upload count={} frame_id={} mode={} copy_stage=gpu_to_gpu direct_zero_copy=false size={}x{} uv={}x{} y_pitch={} uv_pitch={} upload_us={}",
                 count,
                 descriptor().frame_id,
-                use_external_memory_upload ? "external_memory" : request.y_upload_buffer && request.uv_upload_buffer ? "pbo" : "texture",
+                upload_mode,
                 request.width,
                 request.height,
                 request.uv_width,
@@ -1227,7 +1228,13 @@ public:
                 upload_microseconds);
         }
 
-        return HardwareVideoFrameGLTextureUploadResult { .upload_microseconds = static_cast<u64>(upload_microseconds) };
+        return HardwareVideoFrameGLTextureUploadResult {
+            .upload_microseconds = static_cast<u64>(upload_microseconds),
+            .direct_zero_copy = false,
+            .copied_on_gpu = true,
+            .copy_stage = "gpu_to_gpu",
+            .upload_mode = upload_mode,
+        };
 #else
         (void)request;
         return Error::from_string_literal("CUDA GL texture upload is only implemented on Linux");

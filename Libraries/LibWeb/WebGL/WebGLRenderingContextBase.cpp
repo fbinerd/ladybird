@@ -1180,6 +1180,10 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     bool used_hardware_gl_upload = false;
     bool hardware_gl_upload_skipped_due_to_opaque_fd_failure = false;
     u64 hardware_gl_upload_microseconds = 0;
+    bool hardware_gl_upload_direct_zero_copy = false;
+    bool hardware_gl_upload_copied_on_gpu = false;
+    char const* hardware_gl_upload_copy_stage = "none";
+    char const* hardware_gl_upload_mode = "none";
     StringView hardware_gl_upload_failure_reason = "not_attempted"sv;
 #ifdef USE_VULKAN_DMABUF_IMAGES
     Optional<OpenGLContext::ImportedVideoOpaqueFDTexture> imported_y_texture;
@@ -1246,15 +1250,22 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     if (!upload_result.is_error()) {
                         used_hardware_gl_upload = true;
                         hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
+                        hardware_gl_upload_direct_zero_copy = upload_result.value().direct_zero_copy;
+                        hardware_gl_upload_copied_on_gpu = upload_result.value().copied_on_gpu;
+                        hardware_gl_upload_copy_stage = upload_result.value().copy_stage;
+                        hardware_gl_upload_mode = upload_result.value().upload_mode;
                         uv_texture_width = visible_uv_width;
                         if (should_log_external_memory_success || hardware_gl_upload_microseconds > 5000) {
-                            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_UPLOAD_OK attempt={} frame_id={} backend={} upload_us={} y_texture={} uv_texture={}",
+                            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_UPLOAD_OK attempt={} frame_id={} backend={} upload_us={} y_texture={} uv_texture={} direct_zero_copy={} copy_stage={} upload_mode={}",
                                 attempt_count,
                                 hardware_frame_id,
                                 hardware_backend,
                                 hardware_gl_upload_microseconds,
                                 imported_y_texture->texture,
-                                imported_uv_texture->texture);
+                                imported_uv_texture->texture,
+                                hardware_gl_upload_direct_zero_copy,
+                                hardware_gl_upload_copy_stage,
+                                hardware_gl_upload_mode);
                         }
                     } else {
                         hardware_gl_upload_failure_reason = upload_result.error().string_literal();
@@ -1306,6 +1317,10 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             if (!upload_result.is_error()) {
                 used_hardware_gl_upload = true;
                 hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
+                hardware_gl_upload_direct_zero_copy = upload_result.value().direct_zero_copy;
+                hardware_gl_upload_copied_on_gpu = upload_result.value().copied_on_gpu;
+                hardware_gl_upload_copy_stage = upload_result.value().copy_stage;
+                hardware_gl_upload_mode = upload_result.value().upload_mode;
             } else {
                 hardware_gl_upload_failure_reason = upload_result.error().string_literal();
                 s_cuda_gl_direct_texture_upload_disabled = true;
@@ -1435,11 +1450,19 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     } else {
                         used_hardware_gl_upload = true;
                         hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
+                        hardware_gl_upload_direct_zero_copy = upload_result.value().direct_zero_copy;
+                        hardware_gl_upload_copied_on_gpu = upload_result.value().copied_on_gpu;
+                        hardware_gl_upload_copy_stage = upload_result.value().copy_stage;
+                        hardware_gl_upload_mode = upload_result.value().upload_mode;
                     }
                 }
                 if (!upload_result.is_error() && used_hardware_gl_upload) {
                     used_hardware_gl_upload = true;
                     hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
+                    hardware_gl_upload_direct_zero_copy = upload_result.value().direct_zero_copy;
+                    hardware_gl_upload_copied_on_gpu = upload_result.value().copied_on_gpu;
+                    hardware_gl_upload_copy_stage = upload_result.value().copy_stage;
+                    hardware_gl_upload_mode = upload_result.value().upload_mode;
                 } else {
                     if (upload_result.is_error()) {
                         hardware_gl_upload_failure_reason = upload_result.error().string_literal();
@@ -1482,12 +1505,12 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         probe_mundo_cuda_gl_interop(attempt_count);
-        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status={} reason={} has_hardware_handle={} gl_api=gles_angle_or_egl y_bytes={} uv_bytes={} y_upload={} uv_upload={} gpu_upload_us={}",
+        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status={} reason={} has_hardware_handle={} gl_api=gles_angle_or_egl y_bytes={} uv_bytes={} y_upload={} uv_upload={} gpu_upload_us={} direct_zero_copy={} copied_on_gpu={} copy_stage={} upload_mode={}",
             attempt_count,
             hardware_frame_id,
             hardware_backend,
             used_hardware_gl_upload ? "gpu_texture_upload"sv : "cpu_upload_required"sv,
-            used_hardware_gl_upload ? (cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture ? "cuda_gl_direct_texture_copy"sv : "cuda_gl_pbo_texture_copy"sv) : hardware_gl_upload_failure_reason,
+            used_hardware_gl_upload ? "cuda_gl_texture_copy"sv : hardware_gl_upload_failure_reason,
             has_hardware_handle,
             nv12_data ? nv12_data->y_plane_size() : 0,
             nv12_data ? nv12_data->uv_plane_size() : 0,
@@ -1495,7 +1518,11 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                                                                   : "client"sv,
             used_hardware_gl_upload ? "gpu"sv : used_uv_plane_pbo ? "pbo"sv
                                                                    : "client"sv,
-            hardware_gl_upload_microseconds);
+            hardware_gl_upload_microseconds,
+            hardware_gl_upload_direct_zero_copy,
+            hardware_gl_upload_copied_on_gpu,
+            hardware_gl_upload_copy_stage,
+            hardware_gl_upload_mode);
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, m_mundo_video_nv12_framebuffer);

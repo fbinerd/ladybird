@@ -57,6 +57,10 @@ struct MEDIA_API HardwareVideoFrameGLTextureUploadRequest {
 
 struct MEDIA_API HardwareVideoFrameGLTextureUploadResult {
     u64 upload_microseconds { 0 };
+    bool direct_zero_copy { false };
+    bool copied_on_gpu { false };
+    char const* copy_stage { "unknown" };
+    char const* upload_mode { "unknown" };
 };
 
 class MEDIA_API HardwareVideoFrameHandle : public RefCounted<HardwareVideoFrameHandle> {
