@@ -944,7 +944,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         auto external_memory_or_error = media_frame->hardware_handle()->export_external_memory();
         if (!external_memory_or_error.is_error()) {
             auto external_memory = external_memory_or_error.release_value();
-            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DESCRIPTOR attempt={} frame_id={} backend={} status=ok planes={} single_image={} single_memory={} size={}x{} hw_format={} sw_format={} tiling={} frame_flags={} mem_flags={} p0_fd={} p0_size={} p0_offset={} p0_size_px={}x{} p0_vk_format={} p0_layout={} p0_access={} p0_queue={} p0_sem_value={} p1_fd={} p1_size={} p1_offset={} p1_size_px={}x{} p1_vk_format={} p1_layout={} p1_access={} p1_queue={} p1_sem_value={} p2_fd={} p2_size={} p2_offset={} p2_size_px={}x{} p2_vk_format={} p2_layout={} p2_access={} p2_queue={} p2_sem_value={}",
+            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DESCRIPTOR attempt={} frame_id={} backend={} status=ok planes={} single_image={} single_memory={} size={}x{} hw_format={} sw_format={} tiling={} frame_flags={} mem_flags={} p0_fd={} p0_dma_buf_fd={} p0_size={} p0_offset={} p0_size_px={}x{} p0_vk_format={} p0_layout={} p0_access={} p0_queue={} p0_sem_value={} p1_fd={} p1_dma_buf_fd={} p1_size={} p1_offset={} p1_size_px={}x{} p1_vk_format={} p1_layout={} p1_access={} p1_queue={} p1_sem_value={} p2_fd={} p2_dma_buf_fd={} p2_size={} p2_offset={} p2_size_px={}x{} p2_vk_format={} p2_layout={} p2_access={} p2_queue={} p2_sem_value={}",
                 attempt_count,
                 hardware_frame_id,
                 hardware_backend,
@@ -959,6 +959,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 external_memory.vulkan_frame_flags,
                 external_memory.vulkan_memory_flags,
                 external_memory.planes[0].fd,
+                external_memory.planes[0].dma_buf_fd,
                 external_memory.planes[0].allocation_size,
                 external_memory.planes[0].offset,
                 external_memory.planes[0].width,
@@ -969,6 +970,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 external_memory.planes[0].queue_family,
                 external_memory.planes[0].semaphore_value,
                 external_memory.planes[1].fd,
+                external_memory.planes[1].dma_buf_fd,
                 external_memory.planes[1].allocation_size,
                 external_memory.planes[1].offset,
                 external_memory.planes[1].width,
@@ -979,6 +981,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 external_memory.planes[1].queue_family,
                 external_memory.planes[1].semaphore_value,
                 external_memory.planes[2].fd,
+                external_memory.planes[2].dma_buf_fd,
                 external_memory.planes[2].allocation_size,
                 external_memory.planes[2].offset,
                 external_memory.planes[2].width,
@@ -1445,21 +1448,45 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 auto import_real_dma_buf_texture = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, u32 drm_format, u32 pitch, GLuint& texture, EGLImageKHR& egl_image) -> ErrorOr<void> {
                     auto* egl_create_image_khr = reinterpret_cast<PFNEGLCREATEIMAGEKHRPROC>(eglGetProcAddress("eglCreateImageKHR"));
                     auto* gl_egl_image_target_texture_2d_oes = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+                    auto log_failure = [&](char const* reason, EGLint egl_error = EGL_SUCCESS, GLenum gl_error = GL_NO_ERROR) -> Error {
+                        if (should_log_external_memory_success) {
+                            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_EGL_DMABUF_USE attempt={} frame_id={} backend={} label={} status=failed reason={} texture={} image={} fd={} drm_format={} pitch={} offset={} allocation_size={} size={}x{} egl_error={} gl_error={} has_egl_create={} has_gl_target={}",
+                                attempt_count,
+                                hardware_frame_id,
+                                hardware_backend,
+                                label,
+                                reason,
+                                texture,
+                                reinterpret_cast<uintptr_t>(egl_image),
+                                plane.dma_buf_fd,
+                                drm_format,
+                                pitch,
+                                plane.offset,
+                                plane.allocation_size,
+                                plane.width,
+                                plane.height,
+                                egl_error,
+                                gl_error,
+                                egl_create_image_khr != nullptr,
+                                gl_egl_image_target_texture_2d_oes != nullptr);
+                        }
+                        return Error::from_string_view(StringView { reason, strlen(reason) });
+                    };
                     if (!egl_create_image_khr || !gl_egl_image_target_texture_2d_oes)
-                        return Error::from_string_literal("missing_egl_dmabuf_import_functions");
+                        return log_failure("missing_egl_dmabuf_import_functions");
                     auto egl_display = eglGetCurrentDisplay();
                     if (egl_display == EGL_NO_DISPLAY)
-                        return Error::from_string_literal("missing_current_egl_display");
+                        return log_failure("missing_current_egl_display");
                     if (plane.dma_buf_fd < 0 || !plane.width || !plane.height || pitch == 0)
-                        return Error::from_string_literal("empty_dma_buf_plane");
+                        return log_failure("empty_dma_buf_plane");
                     if (plane.offset < 0 || plane.offset > NumericLimits<EGLint>::max())
-                        return Error::from_string_literal("dma_buf_plane_offset_out_of_range");
+                        return log_failure("dma_buf_plane_offset_out_of_range");
                     if (pitch > static_cast<u32>(NumericLimits<EGLint>::max()))
-                        return Error::from_string_literal("dma_buf_plane_pitch_out_of_range");
+                        return log_failure("dma_buf_plane_pitch_out_of_range");
 
                     auto import_fd = dup(plane.dma_buf_fd);
                     if (import_fd < 0)
-                        return Error::from_string_literal("dma_buf_fd_dup_failed");
+                        return log_failure("dma_buf_fd_dup_failed");
                     auto cleanup_import_fd = ArmedScopeGuard([&] {
                         if (import_fd >= 0)
                             close(import_fd);
@@ -1477,15 +1504,13 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
                     egl_image = egl_create_image_khr(egl_display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attributes);
                     auto egl_error = eglGetError();
-                    import_fd = -1;
-                    cleanup_import_fd.disarm();
                     if (egl_image == EGL_NO_IMAGE_KHR)
-                        return Error::from_string_literal("egl_dma_buf_create_image_failed");
+                        return log_failure("egl_dma_buf_create_image_failed", egl_error);
 
                     glGenTextures(1, &texture);
                     auto gl_error = glGetError();
                     if (gl_error != GL_NO_ERROR || !texture)
-                        return Error::from_string_literal("egl_dma_buf_texture_create_failed");
+                        return log_failure("egl_dma_buf_texture_create_failed", egl_error, gl_error);
 
                     glBindTexture(GL_TEXTURE_2D, texture);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1495,7 +1520,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     gl_egl_image_target_texture_2d_oes(GL_TEXTURE_2D, egl_image);
                     gl_error = glGetError();
                     if (gl_error != GL_NO_ERROR)
-                        return Error::from_string_literal("egl_dma_buf_bind_texture_failed");
+                        return log_failure("egl_dma_buf_bind_texture_failed", egl_error, gl_error);
 
                     if (should_log_external_memory_success) {
                         dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_EGL_DMABUF_USE attempt={} frame_id={} backend={} label={} status=ok texture={} image={} fd={} drm_format={} pitch={} offset={} size={}x{} egl_error={}",
@@ -1718,95 +1743,95 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     direct_zero_copy_capable,
                     s_cuda_gl_direct_texture_upload_disabled);
             }
-            auto imported_texture_pair_or_error = used_hardware_gl_upload || hardware_gl_upload_skipped_due_to_opaque_fd_failure
-                ? ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexturePair>(Error::from_string_literal("real_vulkan_external_memory_import_used"))
-                : context().get_or_create_imported_video_opaque_fd_textures(static_cast<u32>(video_width), static_cast<u32>(video_height), static_cast<u32>(visible_uv_width), static_cast<u32>(uv_texture_height), attempt_count);
-            if (!used_hardware_gl_upload && !imported_texture_pair_or_error.is_error()) {
-                auto imported_texture_pair = imported_texture_pair_or_error.release_value();
-                imported_y_texture = imported_texture_pair.y;
-                imported_uv_texture = imported_texture_pair.uv;
-                auto y_cuda_fd = imported_y_texture->image->get_opaque_fd();
-                auto uv_cuda_fd = imported_uv_texture->image->get_opaque_fd();
-                if (should_log_external_memory_success) {
-                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_FD_EXPORT attempt={} frame_id={} backend={} y_fd={} uv_fd={} y_allocation_size={} uv_allocation_size={} reused_y={} reused_uv={}",
-                        attempt_count,
-                        hardware_frame_id,
-                        hardware_backend,
-                        y_cuda_fd,
-                        uv_cuda_fd,
-                        imported_y_texture->allocation_size,
-                        imported_uv_texture->allocation_size,
-                        imported_texture_pair.reused_y,
-                        imported_texture_pair.reused_uv);
-                }
-                if (y_cuda_fd >= 0 && uv_cuda_fd >= 0) {
-                    auto upload_result = media_frame->hardware_handle()->upload_to_gl_textures(Media::HardwareVideoFrameGLTextureUploadRequest {
-                        .texture_target = 0,
-                        .y_texture = imported_y_texture->texture,
-                        .uv_texture = imported_uv_texture->texture,
-                        .width = static_cast<u32>(video_width),
-                        .height = static_cast<u32>(video_height),
-                        .uv_width = static_cast<u32>(visible_uv_width),
-                        .uv_height = static_cast<u32>(uv_texture_height),
-                        .y_upload_buffer = static_cast<u32>(y_cuda_fd),
-                        .uv_upload_buffer = static_cast<u32>(uv_cuda_fd),
-                        .y_upload_buffer_size = imported_y_texture->allocation_size,
-                        .uv_upload_buffer_size = imported_uv_texture->allocation_size,
-                    });
-                    if (!upload_result.is_error()) {
-                        used_hardware_gl_upload = true;
-                        hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
-                        hardware_gl_upload_direct_zero_copy = upload_result.value().direct_zero_copy;
-                        hardware_gl_upload_copied_on_gpu = upload_result.value().copied_on_gpu;
-                        hardware_gl_upload_copy_stage = upload_result.value().copy_stage;
-                        hardware_gl_upload_mode = upload_result.value().upload_mode;
-                        uv_texture_width = visible_uv_width;
-                        if (should_log_external_memory_success || hardware_gl_upload_microseconds > 5000) {
-                            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_UPLOAD_OK attempt={} frame_id={} backend={} upload_us={} y_texture={} uv_texture={} direct_zero_copy={} copy_stage={} upload_mode={}",
-                                attempt_count,
-                                hardware_frame_id,
-                                hardware_backend,
-                                hardware_gl_upload_microseconds,
-                                imported_y_texture->texture,
-                                imported_uv_texture->texture,
-                                hardware_gl_upload_direct_zero_copy,
-                                hardware_gl_upload_copy_stage,
-                                hardware_gl_upload_mode);
-                        }
-                    } else {
-                        hardware_gl_upload_failure_reason = upload_result.error().string_literal();
-                        hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
-                        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=external_memory",
+            if (!used_hardware_gl_upload && !hardware_gl_upload_skipped_due_to_opaque_fd_failure) {
+                auto imported_texture_pair_or_error = context().get_or_create_imported_video_opaque_fd_textures(static_cast<u32>(video_width), static_cast<u32>(video_height), static_cast<u32>(visible_uv_width), static_cast<u32>(uv_texture_height), attempt_count);
+                if (!imported_texture_pair_or_error.is_error()) {
+                    auto imported_texture_pair = imported_texture_pair_or_error.release_value();
+                    imported_y_texture = imported_texture_pair.y;
+                    imported_uv_texture = imported_texture_pair.uv;
+                    auto y_cuda_fd = imported_y_texture->image->get_opaque_fd();
+                    auto uv_cuda_fd = imported_uv_texture->image->get_opaque_fd();
+                    if (should_log_external_memory_success) {
+                        dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_FD_EXPORT attempt={} frame_id={} backend={} y_fd={} uv_fd={} y_allocation_size={} uv_allocation_size={} reused_y={} reused_uv={}",
                             attempt_count,
                             hardware_frame_id,
                             hardware_backend,
-                            hardware_gl_upload_failure_reason,
-                            has_hardware_handle);
+                            y_cuda_fd,
+                            uv_cuda_fd,
+                            imported_y_texture->allocation_size,
+                            imported_uv_texture->allocation_size,
+                            imported_texture_pair.reused_y,
+                            imported_texture_pair.reused_uv);
+                    }
+                    if (y_cuda_fd >= 0 && uv_cuda_fd >= 0) {
+                        auto upload_result = media_frame->hardware_handle()->upload_to_gl_textures(Media::HardwareVideoFrameGLTextureUploadRequest {
+                            .texture_target = 0,
+                            .y_texture = imported_y_texture->texture,
+                            .uv_texture = imported_uv_texture->texture,
+                            .width = static_cast<u32>(video_width),
+                            .height = static_cast<u32>(video_height),
+                            .uv_width = static_cast<u32>(visible_uv_width),
+                            .uv_height = static_cast<u32>(uv_texture_height),
+                            .y_upload_buffer = static_cast<u32>(y_cuda_fd),
+                            .uv_upload_buffer = static_cast<u32>(uv_cuda_fd),
+                            .y_upload_buffer_size = imported_y_texture->allocation_size,
+                            .uv_upload_buffer_size = imported_uv_texture->allocation_size,
+                        });
+                        if (!upload_result.is_error()) {
+                            used_hardware_gl_upload = true;
+                            hardware_gl_upload_microseconds = upload_result.value().upload_microseconds;
+                            hardware_gl_upload_direct_zero_copy = upload_result.value().direct_zero_copy;
+                            hardware_gl_upload_copied_on_gpu = upload_result.value().copied_on_gpu;
+                            hardware_gl_upload_copy_stage = upload_result.value().copy_stage;
+                            hardware_gl_upload_mode = upload_result.value().upload_mode;
+                            uv_texture_width = visible_uv_width;
+                            if (should_log_external_memory_success || hardware_gl_upload_microseconds > 5000) {
+                                dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_UPLOAD_OK attempt={} frame_id={} backend={} upload_us={} y_texture={} uv_texture={} direct_zero_copy={} copy_stage={} upload_mode={}",
+                                    attempt_count,
+                                    hardware_frame_id,
+                                    hardware_backend,
+                                    hardware_gl_upload_microseconds,
+                                    imported_y_texture->texture,
+                                    imported_uv_texture->texture,
+                                    hardware_gl_upload_direct_zero_copy,
+                                    hardware_gl_upload_copy_stage,
+                                    hardware_gl_upload_mode);
+                            }
+                        } else {
+                            hardware_gl_upload_failure_reason = upload_result.error().string_literal();
+                            hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
+                            dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=external_memory",
+                                attempt_count,
+                                hardware_frame_id,
+                                hardware_backend,
+                                hardware_gl_upload_failure_reason,
+                                has_hardware_handle);
+                        }
+                    } else {
+                        if (y_cuda_fd >= 0)
+                            close(y_cuda_fd);
+                        if (uv_cuda_fd >= 0)
+                            close(uv_cuda_fd);
+                        hardware_gl_upload_failure_reason = "external_memory_fd_export_failed"sv;
+                        hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
+                        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason=external_memory_fd_export_failed has_hardware_handle={} y_fd={} uv_fd={}",
+                            attempt_count,
+                            hardware_frame_id,
+                            hardware_backend,
+                            has_hardware_handle,
+                            y_cuda_fd,
+                            uv_cuda_fd);
                     }
                 } else {
-                    if (y_cuda_fd >= 0)
-                        close(y_cuda_fd);
-                    if (uv_cuda_fd >= 0)
-                        close(uv_cuda_fd);
-                    hardware_gl_upload_failure_reason = "external_memory_fd_export_failed"sv;
+                    hardware_gl_upload_failure_reason = imported_texture_pair_or_error.error().string_literal();
                     hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
-                    dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason=external_memory_fd_export_failed has_hardware_handle={} y_fd={} uv_fd={}",
+                    dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=external_memory_import",
                         attempt_count,
                         hardware_frame_id,
                         hardware_backend,
-                        has_hardware_handle,
-                        y_cuda_fd,
-                        uv_cuda_fd);
+                        hardware_gl_upload_failure_reason,
+                        has_hardware_handle);
                 }
-            } else if (!used_hardware_gl_upload) {
-                hardware_gl_upload_failure_reason = imported_texture_pair_or_error.error().string_literal();
-                hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
-                dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=gpu_texture_upload_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=external_memory_import",
-                    attempt_count,
-                    hardware_frame_id,
-                    hardware_backend,
-                    hardware_gl_upload_failure_reason,
-                    has_hardware_handle);
             }
 #endif
         }
