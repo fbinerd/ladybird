@@ -594,7 +594,7 @@ static HardwareVideoFrameDescriptor hardware_descriptor_for_frame(AVCodecContext
     descriptor.bit_depth = bit_depth;
     descriptor.zero_copy_capable = true;
     descriptor.cpu_zero_copy_capable = true;
-    descriptor.direct_zero_copy_capable = false;
+    descriptor.direct_zero_copy_capable = descriptor.backend == HardwareVideoFrameBackend::Vulkan;
     descriptor.requires_cpu_transfer = false;
     return descriptor;
 }

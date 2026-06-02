@@ -2119,7 +2119,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             hardware_frame_id,
             hardware_backend,
             used_hardware_gl_upload ? "gpu_texture_upload"sv : "cpu_upload_required"sv,
-            used_hardware_gl_upload ? "cuda_gl_texture_copy"sv : hardware_gl_upload_failure_reason,
+            used_hardware_gl_upload ? StringView { hardware_gl_upload_mode, strlen(hardware_gl_upload_mode) } : hardware_gl_upload_failure_reason,
             has_hardware_handle,
             zero_copy_capable,
             cpu_zero_copy_capable,
