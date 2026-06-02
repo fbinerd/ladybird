@@ -143,6 +143,15 @@ static bool mundo_webgl_video_nv12_shader_black_probe_enabled()
     return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
 }
 
+static bool mundo_webgl_video_require_gpu_for_hardware_frame_enabled()
+{
+    auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_REQUIRE_GPU_FOR_HARDWARE_FRAME");
+    if (!raw_value)
+        return false;
+
+    return raw_value[0] != '\0' && strcmp(raw_value, "0") && strcmp(raw_value, "false") && strcmp(raw_value, "no") && strcmp(raw_value, "off");
+}
+
 enum class MundoWebGLVideoCudaUploadMode {
     Texture,
     PBO,
@@ -1151,6 +1160,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     static bool s_cuda_gl_buffer_upload_disabled { false };
     static bool s_cuda_gl_direct_texture_upload_disabled { false };
     auto cuda_upload_mode = mundo_webgl_video_cuda_upload_mode();
+    auto require_gpu_for_hardware_frame = mundo_webgl_video_require_gpu_for_hardware_frame_enabled();
     auto can_attempt_hardware_gl_upload = has_hardware_handle
         && zero_copy_capable
         && !is_sub_image
@@ -1185,6 +1195,18 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         return true;
     };
     if (!can_attempt_hardware_gl_upload) {
+        if (require_gpu_for_hardware_frame && has_hardware_handle) {
+            if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason=gpu_required_but_no_gpu_upload_path has_hardware_handle={} gl_api=gles_angle_or_egl require_gpu_for_hardware_frame=true is_sub_image={} cuda_upload_mode={}",
+                    attempt_count,
+                    hardware_frame_id,
+                    hardware_backend,
+                    has_hardware_handle,
+                    is_sub_image,
+                    cuda_upload_mode == MundoWebGLVideoCudaUploadMode::PBO ? "pbo"sv : "texture"sv);
+            }
+            return reject("gpu_required_but_no_gpu_upload_path"sv);
+        }
         nv12_data = media_frame->nv12_data();
         if (!validate_nv12_data()) {
             if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
@@ -2012,6 +2034,18 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             }
         }
         if (!used_hardware_gl_upload) {
+            if (require_gpu_for_hardware_frame && has_hardware_handle) {
+                if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                    dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason=gpu_required_but_import_failed import_reason={} has_hardware_handle={} gl_api=gles_angle_or_egl require_gpu_for_hardware_frame=true",
+                        attempt_count,
+                        hardware_frame_id,
+                        hardware_backend,
+                        hardware_gl_upload_failure_reason,
+                        has_hardware_handle);
+                }
+                restore_state();
+                return reject("gpu_required_but_import_failed"sv);
+            }
             nv12_data = media_frame->nv12_data();
             if (!validate_nv12_data()) {
                 restore_state();
