@@ -147,6 +147,7 @@ public:
 
 protected:
     virtual void visit_edges(JS::Cell::Visitor&) override;
+    virtual Optional<GLuint> current_bound_texture_handle_for_target(WebIDL::UnsignedLong target) const override;
 
     GC::Ptr<WebGLBuffer> m_array_buffer_binding;
     GC::Ptr<WebGLBuffer> m_element_array_buffer_binding;

@@ -811,6 +811,11 @@ static void restore_mundo_video_vertex_attrib_state(GLuint index, MundoVideoVert
         glDisableVertexAttribArray(index);
 }
 
+Optional<GLuint> WebGLRenderingContextBase::current_bound_texture_handle_for_target(WebIDL::UnsignedLong) const
+{
+    return {};
+}
+
 bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fast_path(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width, Optional<int> destination_height, bool is_sub_image)
 {
     static size_t s_video_nv12_shader_attempt_count { 0 };
@@ -1342,6 +1347,25 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     previous_dither = glIsEnabled(GL_DITHER);
     auto previous_attrib0 = save_mundo_video_vertex_attrib_state(0);
     auto previous_attrib1 = save_mundo_video_vertex_attrib_state(1);
+
+    if (previous_texture_2d <= 0) {
+        if (auto logical_texture_handle = current_bound_texture_handle_for_target(target); logical_texture_handle.has_value() && logical_texture_handle.value() > 0) {
+            previous_texture_2d = static_cast<GLint>(logical_texture_handle.value());
+            glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previous_texture_2d));
+            if (zero_copy_capable || should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                dbgln("MUNDO_WEBGL_VIDEO_TARGET_TEXTURE_RECOVERED attempt={} target={} texture={} active_texture={} texture0={} texture1={} frame_id={} hardware_backend={} zero_copy_capable={}",
+                    attempt_count,
+                    target,
+                    previous_texture_2d,
+                    previous_active_texture,
+                    previous_texture0_2d,
+                    previous_texture1_2d,
+                    hardware_frame_id,
+                    hardware_backend,
+                    zero_copy_capable);
+            }
+        }
+    }
 
     if (previous_texture_2d <= 0)
         return reject("missing_target_texture"sv);

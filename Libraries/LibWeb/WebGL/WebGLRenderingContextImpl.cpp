@@ -448,6 +448,34 @@ void WebGLRenderingContextImpl::bind_texture(WebIDL::UnsignedLong target, GC::Ro
     glBindTexture(target, texture_handle);
 }
 
+Optional<GLuint> WebGLRenderingContextImpl::current_bound_texture_handle_for_target(WebIDL::UnsignedLong target) const
+{
+    GC::Ptr<WebGLTexture> texture;
+    switch (target) {
+    case GL_TEXTURE_2D:
+        texture = m_texture_binding_2d;
+        break;
+    case GL_TEXTURE_CUBE_MAP:
+        texture = m_texture_binding_cube_map;
+        break;
+    case GL_TEXTURE_2D_ARRAY:
+        texture = m_texture_binding_2d_array;
+        break;
+    case GL_TEXTURE_3D:
+        texture = m_texture_binding_3d;
+        break;
+    default:
+        return {};
+    }
+
+    if (!texture)
+        return {};
+    auto handle_or_error = texture->handle(this);
+    if (handle_or_error.is_error())
+        return {};
+    return handle_or_error.release_value();
+}
+
 void WebGLRenderingContextImpl::blend_color(float red, float green, float blue, float alpha)
 {
     m_context->make_current();
