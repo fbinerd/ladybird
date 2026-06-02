@@ -366,15 +366,14 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
         return true;
     }
 
-    auto handle_types = requested_vulkan_export_handle_types();
     auto requested_tiling = requested_vulkan_frame_tiling();
-    auto const* export_memory_allocate_infos = vulkan_export_memory_allocate_infos(handle_types);
-    auto try_tiling = [&](VkImageTiling tiling, char const* reason) -> bool {
+    auto try_configuration = [&](VkExternalMemoryHandleTypeFlags handle_types, VkImageTiling tiling, char const* reason) -> bool {
+        auto const* export_memory_allocate_infos = vulkan_export_memory_allocate_infos(handle_types);
         AVBufferRef* frames_ref = nullptr;
         auto result = avcodec_get_hw_frames_parameters(codec_context, codec_context->hw_device_ctx, AV_PIX_FMT_VULKAN, &frames_ref);
         if (result < 0 || !frames_ref) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=parameters_failed error={} code={} requested_tiling={} reason={}",
-                av_error_code_to_string(result), result, vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=parameters_failed error={} code={} handle={} requested_tiling={} reason={}",
+                av_error_code_to_string(result), result, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
             if (frames_ref)
                 av_buffer_unref(&frames_ref);
             return false;
@@ -382,23 +381,23 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
 
         auto* frames_context = reinterpret_cast<AVHWFramesContext*>(frames_ref->data);
         if (!frames_context) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_frames_hwctx requested_tiling={} reason={}",
-                vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_frames_hwctx handle={} requested_tiling={} reason={}",
+                vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
             av_buffer_unref(&frames_ref);
             return false;
         }
 
         auto* vulkan_frames_context = reinterpret_cast<AVVulkanFramesContext*>(frames_context->hwctx);
         if (!vulkan_frames_context) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_vulkan_frames_hwctx requested_tiling={} reason={}",
-                vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_vulkan_frames_hwctx handle={} requested_tiling={} reason={}",
+                vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
             av_buffer_unref(&frames_ref);
             return false;
         }
 
         if (frames_context->free || frames_context->user_opaque) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=existing_user_callback_continuing free={} user_opaque={} requested_tiling={} reason={}",
-                frames_context->free != nullptr, frames_context->user_opaque != nullptr, vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=existing_user_callback_continuing free={} user_opaque={} handle={} requested_tiling={} reason={}",
+                frames_context->free != nullptr, frames_context->user_opaque != nullptr, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
         }
 
         for (size_t plane = 0; plane < AV_NUM_DATA_POINTERS; ++plane) {
@@ -440,13 +439,52 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
         return true;
     };
 
-    if (try_tiling(requested_tiling, "requested"))
-        return true;
-    if (requested_tiling != VK_IMAGE_TILING_LINEAR && try_tiling(VK_IMAGE_TILING_LINEAR, "requested_failed"))
-        return true;
+    VkExternalMemoryHandleTypeFlags requested_handle_types = requested_vulkan_export_handle_types();
+    VkExternalMemoryHandleTypeFlags handle_type_candidates[] {
+        requested_handle_types,
+        VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+        VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+        VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+    };
+    VkImageTiling tiling_candidates[] {
+        requested_tiling,
+        VK_IMAGE_TILING_LINEAR,
+    };
 
-    dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=all_tilings_failed requested_tiling={}",
-        vulkan_frame_tiling_name(requested_tiling));
+    for (size_t handle_index = 0; handle_index < AK::array_size(handle_type_candidates); ++handle_index) {
+        auto handle_types = handle_type_candidates[handle_index];
+        bool already_tried_handle = false;
+        for (size_t previous_handle_index = 0; previous_handle_index < handle_index; ++previous_handle_index) {
+            if (handle_type_candidates[previous_handle_index] == handle_types) {
+                already_tried_handle = true;
+                break;
+            }
+        }
+        if (already_tried_handle)
+            continue;
+
+        for (size_t tiling_index = 0; tiling_index < AK::array_size(tiling_candidates); ++tiling_index) {
+            auto tiling = tiling_candidates[tiling_index];
+            bool already_tried_tiling = false;
+            for (size_t previous_tiling_index = 0; previous_tiling_index < tiling_index; ++previous_tiling_index) {
+                if (tiling_candidates[previous_tiling_index] == tiling) {
+                    already_tried_tiling = true;
+                    break;
+                }
+            }
+            if (already_tried_tiling)
+                continue;
+
+            auto const* reason = handle_types == requested_handle_types && tiling == requested_tiling
+                ? "requested"
+                : "fallback";
+            if (try_configuration(handle_types, tiling, reason))
+                return true;
+        }
+    }
+
+    dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=all_configurations_failed requested_handle={} requested_tiling={}",
+        vulkan_export_handle_types_name(requested_handle_types), vulkan_frame_tiling_name(requested_tiling));
     return false;
 }
 
