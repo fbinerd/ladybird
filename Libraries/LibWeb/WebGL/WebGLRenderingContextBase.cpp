@@ -6,6 +6,7 @@
  */
 
 #define GL_GLEXT_PROTOTYPES 1
+#include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 extern "C" {
@@ -986,6 +987,114 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 external_memory.planes[2].queue_family,
                 external_memory.planes[2].semaphore_value);
 #if defined(__linux__)
+            auto probe_real_external_memory_import = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, GLenum gl_internal_format) {
+                auto* gl_create_memory_objects_ext = reinterpret_cast<PFNGLCREATEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glCreateMemoryObjectsEXT"));
+                auto* gl_delete_memory_objects_ext = reinterpret_cast<PFNGLDELETEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glDeleteMemoryObjectsEXT"));
+                auto* gl_memory_object_parameteriv_ext = reinterpret_cast<PFNGLMEMORYOBJECTPARAMETERIVEXTPROC>(eglGetProcAddress("glMemoryObjectParameterivEXT"));
+                auto* gl_import_memory_fd_ext = reinterpret_cast<PFNGLIMPORTMEMORYFDEXTPROC>(eglGetProcAddress("glImportMemoryFdEXT"));
+                auto* gl_tex_storage_mem_2d_ext = reinterpret_cast<PFNGLTEXSTORAGEMEM2DEXTPROC>(eglGetProcAddress("glTexStorageMem2DEXT"));
+                if (!gl_create_memory_objects_ext || !gl_delete_memory_objects_ext || !gl_memory_object_parameteriv_ext || !gl_import_memory_fd_ext || !gl_tex_storage_mem_2d_ext) {
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label={} status=failed reason=missing_gl_memory_object_fd_extension",
+                        attempt_count, hardware_frame_id, hardware_backend, label);
+                    return;
+                }
+                if (plane.fd < 0 || !plane.allocation_size || !plane.width || !plane.height) {
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label={} status=skipped reason=empty_plane fd={} allocation_size={} size={}x{}",
+                        attempt_count, hardware_frame_id, hardware_backend, label, plane.fd, plane.allocation_size, plane.width, plane.height);
+                    return;
+                }
+
+                auto import_fd = dup(plane.fd);
+                if (import_fd < 0) {
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label={} status=failed reason=dup_failed source_fd={}",
+                        attempt_count, hardware_frame_id, hardware_backend, label, plane.fd);
+                    return;
+                }
+
+                GLuint memory_object { 0 };
+                GLuint texture { 0 };
+                auto cleanup = ArmedScopeGuard([&] {
+                    if (texture)
+                        glDeleteTextures(1, &texture);
+                    if (memory_object)
+                        gl_delete_memory_objects_ext(1, &memory_object);
+                    if (import_fd >= 0)
+                        close(import_fd);
+                });
+
+                while (glGetError() != GL_NO_ERROR) {
+                }
+
+                gl_create_memory_objects_ext(1, &memory_object);
+                auto create_error = glGetError();
+                if (create_error != GL_NO_ERROR || !memory_object) {
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label={} status=failed reason=create_memory_object gl_error={} allocation_size={} offset={} size={}x{} vk_format={} gl_internal_format={}",
+                        attempt_count, hardware_frame_id, hardware_backend, label, create_error, plane.allocation_size, plane.offset, plane.width, plane.height, plane.vulkan_format, gl_internal_format);
+                    return;
+                }
+
+                GLint dedicated = GL_TRUE;
+                gl_memory_object_parameteriv_ext(memory_object, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
+                auto parameter_error = glGetError();
+                if (parameter_error != GL_NO_ERROR) {
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label={} status=failed reason=set_dedicated gl_error={} allocation_size={} offset={} size={}x{} vk_format={} gl_internal_format={}",
+                        attempt_count, hardware_frame_id, hardware_backend, label, parameter_error, plane.allocation_size, plane.offset, plane.width, plane.height, plane.vulkan_format, gl_internal_format);
+                    return;
+                }
+
+                gl_import_memory_fd_ext(memory_object, plane.allocation_size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, import_fd);
+                import_fd = -1; // glImportMemoryFdEXT takes ownership.
+                auto import_error = glGetError();
+                if (import_error != GL_NO_ERROR) {
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label={} status=failed reason=import_fd gl_error={} allocation_size={} offset={} size={}x{} vk_format={} gl_internal_format={}",
+                        attempt_count, hardware_frame_id, hardware_backend, label, import_error, plane.allocation_size, plane.offset, plane.width, plane.height, plane.vulkan_format, gl_internal_format);
+                    return;
+                }
+
+                glGenTextures(1, &texture);
+                auto texture_error = glGetError();
+                if (texture_error != GL_NO_ERROR || !texture) {
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label={} status=failed reason=create_texture gl_error={} allocation_size={} offset={} size={}x{} vk_format={} gl_internal_format={}",
+                        attempt_count, hardware_frame_id, hardware_backend, label, texture_error, plane.allocation_size, plane.offset, plane.width, plane.height, plane.vulkan_format, gl_internal_format);
+                    return;
+                }
+
+                glBindTexture(GL_TEXTURE_2D, texture);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                gl_tex_storage_mem_2d_ext(GL_TEXTURE_2D, 1, gl_internal_format, plane.width, plane.height, memory_object, plane.offset);
+                auto storage_error = glGetError();
+                if (storage_error != GL_NO_ERROR) {
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label={} status=failed reason=texture_storage gl_error={} allocation_size={} offset={} size={}x{} vk_format={} gl_internal_format={}",
+                        attempt_count, hardware_frame_id, hardware_backend, label, storage_error, plane.allocation_size, plane.offset, plane.width, plane.height, plane.vulkan_format, gl_internal_format);
+                    return;
+                }
+
+                dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label={} status=ok texture={} memory_object={} allocation_size={} offset={} size={}x{} vk_format={} gl_internal_format={} layout={} access={} queue={} sem_value={}",
+                    attempt_count,
+                    hardware_frame_id,
+                    hardware_backend,
+                    label,
+                    texture,
+                    memory_object,
+                    plane.allocation_size,
+                    plane.offset,
+                    plane.width,
+                    plane.height,
+                    plane.vulkan_format,
+                    gl_internal_format,
+                    plane.vulkan_image_layout,
+                    plane.vulkan_access,
+                    plane.queue_family,
+                    plane.semaphore_value);
+            };
+
+            probe_real_external_memory_import("plane0_r8", external_memory.planes[0], GL_R8_EXT);
+            if (external_memory.plane_count > 1)
+                probe_real_external_memory_import("plane1_rg8", external_memory.planes[1], GL_RG8_EXT);
+
             for (auto& plane : external_memory.planes) {
                 if (plane.fd >= 0) {
                     close(plane.fd);
