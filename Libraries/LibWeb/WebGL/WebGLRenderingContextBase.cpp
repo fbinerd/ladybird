@@ -1718,7 +1718,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                         auto y_import_result = import_real_dma_buf_texture("egl_y_r8", external_memory.planes[0], DRM_FORMAT_R8, y_pitch, real_imported_y_texture, real_imported_y_egl_image);
                         auto uv_import_result = y_import_result.is_error()
                             ? ErrorOr<void>(y_import_result.release_error())
-                            : import_real_dma_buf_texture("egl_uv_gr88", uv_plane.value(), DRM_FORMAT_GR88, uv_pitch, real_imported_uv_texture, real_imported_uv_egl_image);
+                            : import_real_dma_buf_texture("egl_uv_rg88", uv_plane.value(), DRM_FORMAT_RG88, uv_pitch, real_imported_uv_texture, real_imported_uv_egl_image);
                         if (uv_import_result.is_error()) {
                             if (real_imported_y_texture) {
                                 glDeleteTextures(1, &real_imported_y_texture);
