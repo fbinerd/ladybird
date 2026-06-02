@@ -68,6 +68,7 @@ struct MEDIA_API HardwareVideoFrameGLTextureUploadResult {
 
 struct MEDIA_API HardwareVideoFrameExternalMemoryPlane {
     int fd { -1 };
+    int dma_buf_fd { -1 };
     u64 allocation_size { 0 };
     i64 offset { 0 };
     u64 semaphore_value { 0 };

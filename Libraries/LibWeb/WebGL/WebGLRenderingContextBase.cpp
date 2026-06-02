@@ -7,6 +7,7 @@
 
 #define GL_GLEXT_PROTOTYPES 1
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 extern "C" {
@@ -55,6 +56,7 @@ extern "C" {
 #include <string.h>
 #if defined(__linux__)
 #    include <dlfcn.h>
+#    include <drm/drm_fourcc.h>
 #    include <unistd.h>
 #endif
 
@@ -1119,6 +1121,10 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     close(plane.fd);
                     plane.fd = -1;
                 }
+                if (plane.dma_buf_fd >= 0) {
+                    close(plane.dma_buf_fd);
+                    plane.dma_buf_fd = -1;
+                }
             }
 #endif
         } else {
@@ -1408,8 +1414,12 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     GLuint real_imported_uv_texture { 0 };
     GLuint real_imported_y_memory_object { 0 };
     GLuint real_imported_uv_memory_object { 0 };
+    EGLImageKHR real_imported_y_egl_image { EGL_NO_IMAGE_KHR };
+    EGLImageKHR real_imported_uv_egl_image { EGL_NO_IMAGE_KHR };
     auto cleanup_real_imported_video_textures = ArmedScopeGuard([&] {
         auto* gl_delete_memory_objects_ext = reinterpret_cast<PFNGLDELETEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glDeleteMemoryObjectsEXT"));
+        auto* egl_destroy_image_khr = reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(eglGetProcAddress("eglDestroyImageKHR"));
+        auto egl_display = eglGetCurrentDisplay();
         if (real_imported_y_texture)
             glDeleteTextures(1, &real_imported_y_texture);
         if (real_imported_uv_texture)
@@ -1418,6 +1428,10 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             gl_delete_memory_objects_ext(1, &real_imported_y_memory_object);
         if (gl_delete_memory_objects_ext && real_imported_uv_memory_object)
             gl_delete_memory_objects_ext(1, &real_imported_uv_memory_object);
+        if (egl_destroy_image_khr && egl_display != EGL_NO_DISPLAY && real_imported_y_egl_image != EGL_NO_IMAGE_KHR)
+            egl_destroy_image_khr(egl_display, real_imported_y_egl_image);
+        if (egl_destroy_image_khr && egl_display != EGL_NO_DISPLAY && real_imported_uv_egl_image != EGL_NO_IMAGE_KHR)
+            egl_destroy_image_khr(egl_display, real_imported_uv_egl_image);
     });
 #endif
 
@@ -1428,6 +1442,80 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 #ifdef USE_VULKAN_DMABUF_IMAGES
             auto should_log_external_memory_success = should_log_mundo_webgl_texture_diagnostic(attempt_count);
             if (!strcmp(hardware_backend, "vulkan")) {
+                auto import_real_dma_buf_texture = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, u32 drm_format, u32 pitch, GLuint& texture, EGLImageKHR& egl_image) -> ErrorOr<void> {
+                    auto* egl_create_image_khr = reinterpret_cast<PFNEGLCREATEIMAGEKHRPROC>(eglGetProcAddress("eglCreateImageKHR"));
+                    auto* gl_egl_image_target_texture_2d_oes = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+                    if (!egl_create_image_khr || !gl_egl_image_target_texture_2d_oes)
+                        return Error::from_string_literal("missing_egl_dmabuf_import_functions");
+                    auto egl_display = eglGetCurrentDisplay();
+                    if (egl_display == EGL_NO_DISPLAY)
+                        return Error::from_string_literal("missing_current_egl_display");
+                    if (plane.dma_buf_fd < 0 || !plane.width || !plane.height || pitch == 0)
+                        return Error::from_string_literal("empty_dma_buf_plane");
+                    if (plane.offset < 0 || plane.offset > NumericLimits<EGLint>::max())
+                        return Error::from_string_literal("dma_buf_plane_offset_out_of_range");
+                    if (pitch > static_cast<u32>(NumericLimits<EGLint>::max()))
+                        return Error::from_string_literal("dma_buf_plane_pitch_out_of_range");
+
+                    auto import_fd = dup(plane.dma_buf_fd);
+                    if (import_fd < 0)
+                        return Error::from_string_literal("dma_buf_fd_dup_failed");
+                    auto cleanup_import_fd = ArmedScopeGuard([&] {
+                        if (import_fd >= 0)
+                            close(import_fd);
+                    });
+
+                    EGLint attributes[] {
+                        EGL_WIDTH, static_cast<EGLint>(plane.width),
+                        EGL_HEIGHT, static_cast<EGLint>(plane.height),
+                        EGL_LINUX_DRM_FOURCC_EXT, static_cast<EGLint>(drm_format),
+                        EGL_DMA_BUF_PLANE0_FD_EXT, import_fd,
+                        EGL_DMA_BUF_PLANE0_OFFSET_EXT, static_cast<EGLint>(plane.offset),
+                        EGL_DMA_BUF_PLANE0_PITCH_EXT, static_cast<EGLint>(pitch),
+                        EGL_NONE,
+                    };
+
+                    egl_image = egl_create_image_khr(egl_display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attributes);
+                    auto egl_error = eglGetError();
+                    import_fd = -1;
+                    cleanup_import_fd.disarm();
+                    if (egl_image == EGL_NO_IMAGE_KHR)
+                        return Error::from_string_literal("egl_dma_buf_create_image_failed");
+
+                    glGenTextures(1, &texture);
+                    auto gl_error = glGetError();
+                    if (gl_error != GL_NO_ERROR || !texture)
+                        return Error::from_string_literal("egl_dma_buf_texture_create_failed");
+
+                    glBindTexture(GL_TEXTURE_2D, texture);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                    gl_egl_image_target_texture_2d_oes(GL_TEXTURE_2D, egl_image);
+                    gl_error = glGetError();
+                    if (gl_error != GL_NO_ERROR)
+                        return Error::from_string_literal("egl_dma_buf_bind_texture_failed");
+
+                    if (should_log_external_memory_success) {
+                        dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_EGL_DMABUF_USE attempt={} frame_id={} backend={} label={} status=ok texture={} image={} fd={} drm_format={} pitch={} offset={} size={}x{} egl_error={}",
+                            attempt_count,
+                            hardware_frame_id,
+                            hardware_backend,
+                            label,
+                            texture,
+                            reinterpret_cast<uintptr_t>(egl_image),
+                            plane.dma_buf_fd,
+                            drm_format,
+                            pitch,
+                            plane.offset,
+                            plane.width,
+                            plane.height,
+                            egl_error);
+                    }
+                    return {};
+                };
+
                 auto import_real_external_memory_texture = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, GLenum gl_internal_format, GLuint& texture, GLuint& memory_object) -> ErrorOr<void> {
                     auto* gl_create_memory_objects_ext = reinterpret_cast<PFNGLCREATEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glCreateMemoryObjectsEXT"));
                     auto* gl_delete_memory_objects_ext = reinterpret_cast<PFNGLDELETEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glDeleteMemoryObjectsEXT"));
@@ -1513,6 +1601,10 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                                 close(plane.fd);
                                 plane.fd = -1;
                             }
+                            if (plane.dma_buf_fd >= 0) {
+                                close(plane.dma_buf_fd);
+                                plane.dma_buf_fd = -1;
+                            }
                         }
                     });
 
@@ -1530,16 +1622,35 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     }
 
                     if (uv_plane.has_value()) {
-                        auto y_import_result = import_real_external_memory_texture("y_r8", external_memory.planes[0], GL_R8_EXT, real_imported_y_texture, real_imported_y_memory_object);
+                        auto y_pitch = external_memory.planes[0].width;
+                        auto uv_pitch = uv_plane.value().width * 2;
+                        auto y_import_result = import_real_dma_buf_texture("egl_y_r8", external_memory.planes[0], DRM_FORMAT_R8, y_pitch, real_imported_y_texture, real_imported_y_egl_image);
                         auto uv_import_result = y_import_result.is_error()
                             ? ErrorOr<void>(y_import_result.release_error())
-                            : import_real_external_memory_texture("uv_rg8", uv_plane.value(), GL_RG8_EXT, real_imported_uv_texture, real_imported_uv_memory_object);
+                            : import_real_dma_buf_texture("egl_uv_gr88", uv_plane.value(), DRM_FORMAT_GR88, uv_pitch, real_imported_uv_texture, real_imported_uv_egl_image);
+                        if (uv_import_result.is_error()) {
+                            if (real_imported_y_texture) {
+                                glDeleteTextures(1, &real_imported_y_texture);
+                                real_imported_y_texture = 0;
+                            }
+                            auto* egl_destroy_image_khr = reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(eglGetProcAddress("eglDestroyImageKHR"));
+                            auto egl_display = eglGetCurrentDisplay();
+                            if (egl_destroy_image_khr && egl_display != EGL_NO_DISPLAY && real_imported_y_egl_image != EGL_NO_IMAGE_KHR) {
+                                egl_destroy_image_khr(egl_display, real_imported_y_egl_image);
+                                real_imported_y_egl_image = EGL_NO_IMAGE_KHR;
+                            }
+
+                            y_import_result = import_real_external_memory_texture("y_r8", external_memory.planes[0], GL_R8_EXT, real_imported_y_texture, real_imported_y_memory_object);
+                            uv_import_result = y_import_result.is_error()
+                                ? ErrorOr<void>(y_import_result.release_error())
+                                : import_real_external_memory_texture("uv_rg8", uv_plane.value(), GL_RG8_EXT, real_imported_uv_texture, real_imported_uv_memory_object);
+                        }
                         if (!uv_import_result.is_error()) {
                             used_hardware_gl_upload = true;
                             hardware_gl_upload_direct_zero_copy = true;
                             hardware_gl_upload_copied_on_gpu = false;
                             hardware_gl_upload_copy_stage = "decoder_memory_import";
-                            hardware_gl_upload_mode = "vulkan_external_memory";
+                            hardware_gl_upload_mode = real_imported_y_egl_image != EGL_NO_IMAGE_KHR ? "vulkan_egl_dma_buf" : "vulkan_external_memory";
                             hardware_gl_upload_microseconds = 0;
                             uv_texture_width = visible_uv_width;
                             if (should_log_external_memory_success) {

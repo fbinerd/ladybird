@@ -1839,6 +1839,10 @@ public:
                     close(plane.fd);
                     plane.fd = -1;
                 }
+                if (plane.dma_buf_fd >= 0) {
+                    close(plane.dma_buf_fd);
+                    plane.dma_buf_fd = -1;
+                }
             }
         });
 
@@ -1865,23 +1869,39 @@ public:
             if (!exported_plane.has_memory)
                 continue;
 
-            VkMemoryGetFdInfoKHR fd_info {
-                .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
-                .pNext = nullptr,
-                .memory = vk_frame->mem[plane],
-                .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+            auto export_plane_fd = [&](VkExternalMemoryHandleTypeFlagBits handle_type, int& exported_fd) -> VkResult {
+                VkMemoryGetFdInfoKHR fd_info {
+                    .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                    .pNext = nullptr,
+                    .memory = vk_frame->mem[plane],
+                    .handleType = handle_type,
+                };
+                return get_memory_fd(vulkan_device_context->act_dev, &fd_info, &exported_fd);
             };
-            auto export_result = get_memory_fd(vulkan_device_context->act_dev, &fd_info, &exported_plane.fd);
+
+            auto export_result = export_plane_fd(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, exported_plane.fd);
             if (export_result != VK_SUCCESS || exported_plane.fd < 0) {
-                dbgln("MUNDO_MEDIA_FFMPEG vulkan_external_memory_descriptor frame_id={} plane={} status=export_failed result={} fd_valid={} size={} offset={}",
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_external_memory_descriptor frame_id={} plane={} status=opaque_fd_export_failed result={} fd_valid={} size={} offset={}",
                     descriptor().frame_id,
                     plane,
                     static_cast<int>(export_result),
                     exported_plane.fd >= 0,
                     exported_plane.allocation_size,
                     exported_plane.offset);
-                return Error::from_string_literal("Failed to export Vulkan frame memory fd");
+                return Error::from_string_literal("Failed to export Vulkan frame opaque fd");
             }
+
+            auto dma_buf_export_result = export_plane_fd(VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, exported_plane.dma_buf_fd);
+            if (dma_buf_export_result != VK_SUCCESS || exported_plane.dma_buf_fd < 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_external_memory_descriptor frame_id={} plane={} status=dma_buf_export_failed result={} fd_valid={} size={} offset={}",
+                    descriptor().frame_id,
+                    plane,
+                    static_cast<int>(dma_buf_export_result),
+                    exported_plane.dma_buf_fd >= 0,
+                    exported_plane.allocation_size,
+                    exported_plane.offset);
+            }
+
             ++external_memory.plane_count;
         }
 
@@ -1891,7 +1911,7 @@ public:
         static size_t s_vulkan_external_memory_descriptor_count { 0 };
         auto count = ++s_vulkan_external_memory_descriptor_count;
         if (count <= 8 || count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_external_memory_descriptor count={} frame_id={} status=ok planes={} single_image={} single_memory={} size={}x{} sw_format={} hw_format={} tiling={} frame_flags={} mem_flags={} plane0_fd={} plane0_size={} plane0_offset={} plane0_vk_format={} plane0_layout={} plane0_access={} plane1_fd={} plane1_size={} plane1_offset={} plane1_vk_format={} plane2_fd={} plane2_size={} plane2_offset={} plane2_vk_format={}",
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_external_memory_descriptor count={} frame_id={} status=ok planes={} single_image={} single_memory={} size={}x{} sw_format={} hw_format={} tiling={} frame_flags={} mem_flags={} plane0_fd={} plane0_dma_buf_fd={} plane0_size={} plane0_offset={} plane0_vk_format={} plane0_layout={} plane0_access={} plane1_fd={} plane1_dma_buf_fd={} plane1_size={} plane1_offset={} plane1_vk_format={} plane2_fd={} plane2_dma_buf_fd={} plane2_size={} plane2_offset={} plane2_vk_format={}",
                 count,
                 descriptor().frame_id,
                 external_memory.plane_count,
@@ -1905,16 +1925,19 @@ public:
                 external_memory.vulkan_frame_flags,
                 external_memory.vulkan_memory_flags,
                 external_memory.planes[0].fd,
+                external_memory.planes[0].dma_buf_fd,
                 external_memory.planes[0].allocation_size,
                 external_memory.planes[0].offset,
                 external_memory.planes[0].vulkan_format,
                 external_memory.planes[0].vulkan_image_layout,
                 external_memory.planes[0].vulkan_access,
                 external_memory.planes[1].fd,
+                external_memory.planes[1].dma_buf_fd,
                 external_memory.planes[1].allocation_size,
                 external_memory.planes[1].offset,
                 external_memory.planes[1].vulkan_format,
                 external_memory.planes[2].fd,
+                external_memory.planes[2].dma_buf_fd,
                 external_memory.planes[2].allocation_size,
                 external_memory.planes[2].offset,
                 external_memory.planes[2].vulkan_format);
