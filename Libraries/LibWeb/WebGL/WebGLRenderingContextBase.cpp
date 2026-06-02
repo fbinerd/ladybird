@@ -962,7 +962,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         context().probe_video_opaque_fd_texture_import(video_width, video_height, visible_uv_width, uv_texture_height, attempt_count);
     }
     static u64 s_last_external_memory_descriptor_frame_id { 0 };
-    if (has_hardware_handle && zero_copy_capable && hardware_frame_id != s_last_external_memory_descriptor_frame_id && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+    if (has_hardware_handle && direct_zero_copy_capable && hardware_frame_id != s_last_external_memory_descriptor_frame_id && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         s_last_external_memory_descriptor_frame_id = hardware_frame_id;
         auto external_memory_or_error = media_frame->hardware_handle()->export_external_memory();
         if (!external_memory_or_error.is_error()) {
