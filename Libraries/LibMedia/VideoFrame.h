@@ -78,6 +78,8 @@ struct MEDIA_API HardwareVideoFrameExternalMemoryPlane {
     u32 vulkan_image_layout { 0 };
     u32 vulkan_access { 0 };
     u32 queue_family { 0 };
+    u64 vulkan_drm_format_modifier { 0 };
+    bool has_vulkan_drm_format_modifier { false };
     bool has_image { false };
     bool has_memory { false };
 };

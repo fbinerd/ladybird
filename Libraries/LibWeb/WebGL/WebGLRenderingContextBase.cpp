@@ -967,7 +967,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         auto external_memory_or_error = media_frame->hardware_handle()->export_external_memory();
         if (!external_memory_or_error.is_error()) {
             auto external_memory = external_memory_or_error.release_value();
-            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DESCRIPTOR attempt={} frame_id={} backend={} status=ok planes={} single_image={} single_memory={} size={}x{} hw_format={} sw_format={} tiling={} frame_flags={} mem_flags={} p0_fd={} p0_dma_buf_fd={} p0_size={} p0_offset={} p0_size_px={}x{} p0_vk_format={} p0_layout={} p0_access={} p0_queue={} p0_sem_value={} p1_fd={} p1_dma_buf_fd={} p1_size={} p1_offset={} p1_size_px={}x{} p1_vk_format={} p1_layout={} p1_access={} p1_queue={} p1_sem_value={} p2_fd={} p2_dma_buf_fd={} p2_size={} p2_offset={} p2_size_px={}x{} p2_vk_format={} p2_layout={} p2_access={} p2_queue={} p2_sem_value={}",
+            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DESCRIPTOR attempt={} frame_id={} backend={} status=ok planes={} single_image={} single_memory={} size={}x{} hw_format={} sw_format={} tiling={} frame_flags={} mem_flags={} p0_fd={} p0_dma_buf_fd={} p0_size={} p0_offset={} p0_size_px={}x{} p0_vk_format={} p0_layout={} p0_access={} p0_queue={} p0_sem_value={} p0_has_modifier={} p0_modifier={} p1_fd={} p1_dma_buf_fd={} p1_size={} p1_offset={} p1_size_px={}x{} p1_vk_format={} p1_layout={} p1_access={} p1_queue={} p1_sem_value={} p1_has_modifier={} p1_modifier={} p2_fd={} p2_dma_buf_fd={} p2_size={} p2_offset={} p2_size_px={}x{} p2_vk_format={} p2_layout={} p2_access={} p2_queue={} p2_sem_value={} p2_has_modifier={} p2_modifier={}",
                 attempt_count,
                 hardware_frame_id,
                 hardware_backend,
@@ -992,6 +992,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 external_memory.planes[0].vulkan_access,
                 external_memory.planes[0].queue_family,
                 external_memory.planes[0].semaphore_value,
+                external_memory.planes[0].has_vulkan_drm_format_modifier,
+                external_memory.planes[0].vulkan_drm_format_modifier,
                 external_memory.planes[1].fd,
                 external_memory.planes[1].dma_buf_fd,
                 external_memory.planes[1].allocation_size,
@@ -1003,6 +1005,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 external_memory.planes[1].vulkan_access,
                 external_memory.planes[1].queue_family,
                 external_memory.planes[1].semaphore_value,
+                external_memory.planes[1].has_vulkan_drm_format_modifier,
+                external_memory.planes[1].vulkan_drm_format_modifier,
                 external_memory.planes[2].fd,
                 external_memory.planes[2].dma_buf_fd,
                 external_memory.planes[2].allocation_size,
@@ -1013,7 +1017,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 external_memory.planes[2].vulkan_image_layout,
                 external_memory.planes[2].vulkan_access,
                 external_memory.planes[2].queue_family,
-                external_memory.planes[2].semaphore_value);
+                external_memory.planes[2].semaphore_value,
+                external_memory.planes[2].has_vulkan_drm_format_modifier,
+                external_memory.planes[2].vulkan_drm_format_modifier);
 #if defined(__linux__)
             if (mundo_webgl_video_gl_memory_object_probe_enabled()) {
                 auto probe_real_external_memory_import = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, GLenum gl_internal_format) {
@@ -1528,7 +1534,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     bool egl_dma_buf_format_supported { false };
                     auto log_failure = [&](char const* reason, EGLint egl_error = EGL_SUCCESS, GLenum gl_error = GL_NO_ERROR) -> Error {
                         if (should_log_external_memory_success) {
-                            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_EGL_DMABUF_USE attempt={} frame_id={} backend={} label={} status=failed reason={} texture={} image={} fd={} drm_format={} drm_format_supported={} drm_format_count={} pitch={} offset={} allocation_size={} size={}x{} egl_error={} gl_error={} has_egl_create={} has_egl_query_formats={} has_gl_target={}",
+                            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_EGL_DMABUF_USE attempt={} frame_id={} backend={} label={} status=failed reason={} texture={} image={} fd={} drm_format={} drm_format_supported={} drm_format_count={} pitch={} offset={} allocation_size={} size={}x{} has_modifier={} modifier={} egl_error={} gl_error={} has_egl_create={} has_egl_query_formats={} has_gl_target={}",
                                 attempt_count,
                                 hardware_frame_id,
                                 hardware_backend,
@@ -1545,6 +1551,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                                 plane.allocation_size,
                                 plane.width,
                                 plane.height,
+                                plane.has_vulkan_drm_format_modifier,
+                                plane.vulkan_drm_format_modifier,
                                 egl_error,
                                 gl_error,
                                 egl_create_image_khr != nullptr,
@@ -1585,17 +1593,28 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             close(import_fd);
                     });
 
-                    EGLint attributes[] {
-                        EGL_WIDTH, static_cast<EGLint>(plane.width),
-                        EGL_HEIGHT, static_cast<EGLint>(plane.height),
-                        EGL_LINUX_DRM_FOURCC_EXT, static_cast<EGLint>(drm_format),
-                        EGL_DMA_BUF_PLANE0_FD_EXT, import_fd,
-                        EGL_DMA_BUF_PLANE0_OFFSET_EXT, static_cast<EGLint>(plane.offset),
-                        EGL_DMA_BUF_PLANE0_PITCH_EXT, static_cast<EGLint>(pitch),
-                        EGL_NONE,
-                    };
+                    Vector<EGLint> attributes;
+                    attributes.append(EGL_WIDTH);
+                    attributes.append(static_cast<EGLint>(plane.width));
+                    attributes.append(EGL_HEIGHT);
+                    attributes.append(static_cast<EGLint>(plane.height));
+                    attributes.append(EGL_LINUX_DRM_FOURCC_EXT);
+                    attributes.append(static_cast<EGLint>(drm_format));
+                    attributes.append(EGL_DMA_BUF_PLANE0_FD_EXT);
+                    attributes.append(import_fd);
+                    attributes.append(EGL_DMA_BUF_PLANE0_OFFSET_EXT);
+                    attributes.append(static_cast<EGLint>(plane.offset));
+                    attributes.append(EGL_DMA_BUF_PLANE0_PITCH_EXT);
+                    attributes.append(static_cast<EGLint>(pitch));
+                    if (plane.has_vulkan_drm_format_modifier) {
+                        attributes.append(EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT);
+                        attributes.append(static_cast<EGLint>(plane.vulkan_drm_format_modifier & 0xffffffff));
+                        attributes.append(EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT);
+                        attributes.append(static_cast<EGLint>(plane.vulkan_drm_format_modifier >> 32));
+                    }
+                    attributes.append(EGL_NONE);
 
-                    egl_image = egl_create_image_khr(egl_display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attributes);
+                    egl_image = egl_create_image_khr(egl_display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attributes.data());
                     auto egl_error = eglGetError();
                     if (egl_image == EGL_NO_IMAGE_KHR)
                         return log_failure("egl_dma_buf_create_image_failed", egl_error);
@@ -1616,7 +1635,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                         return log_failure("egl_dma_buf_bind_texture_failed", egl_error, gl_error);
 
                     if (should_log_external_memory_success) {
-                        dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_EGL_DMABUF_USE attempt={} frame_id={} backend={} label={} status=ok texture={} image={} fd={} drm_format={} drm_format_supported={} drm_format_count={} pitch={} offset={} size={}x{} egl_error={}",
+                        dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_EGL_DMABUF_USE attempt={} frame_id={} backend={} label={} status=ok texture={} image={} fd={} drm_format={} drm_format_supported={} drm_format_count={} pitch={} offset={} size={}x{} has_modifier={} modifier={} egl_error={}",
                             attempt_count,
                             hardware_frame_id,
                             hardware_backend,
@@ -1631,6 +1650,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             plane.offset,
                             plane.width,
                             plane.height,
+                            plane.has_vulkan_drm_format_modifier,
+                            plane.vulkan_drm_format_modifier,
                             egl_error);
                     }
                     return {};

@@ -1819,6 +1819,7 @@ public:
         auto* get_memory_fd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(get_device_proc_addr(vulkan_device_context->act_dev, "vkGetMemoryFdKHR"));
         if (!get_memory_fd)
             return Error::from_string_literal("Vulkan vkGetMemoryFdKHR is unavailable");
+        auto* get_image_drm_format_modifier_properties = reinterpret_cast<PFN_vkGetImageDrmFormatModifierPropertiesEXT>(get_device_proc_addr(vulkan_device_context->act_dev, "vkGetImageDrmFormatModifierPropertiesEXT"));
 
         auto const* vk_frame = reinterpret_cast<AVVkFrame const*>(m_frame->data[0]);
         HardwareVideoFrameExternalMemoryDescriptor external_memory;
@@ -1856,6 +1857,17 @@ public:
             exported_plane.vulkan_image_layout = static_cast<u32>(vk_frame->layout[plane]);
             exported_plane.vulkan_access = static_cast<u32>(vk_frame->access[plane]);
             exported_plane.queue_family = vk_frame->queue_family[plane];
+            if (get_image_drm_format_modifier_properties && vk_frame->img[plane] != VK_NULL_HANDLE) {
+                VkImageDrmFormatModifierPropertiesEXT modifier_properties {
+                    .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_PROPERTIES_EXT,
+                    .pNext = nullptr,
+                    .drmFormatModifier = 0,
+                };
+                if (get_image_drm_format_modifier_properties(vulkan_device_context->act_dev, vk_frame->img[plane], &modifier_properties) == VK_SUCCESS) {
+                    exported_plane.vulkan_drm_format_modifier = modifier_properties.drmFormatModifier;
+                    exported_plane.has_vulkan_drm_format_modifier = true;
+                }
+            }
             if (vulkan_frames_context)
                 exported_plane.vulkan_format = static_cast<u32>(vulkan_frames_context->format[plane]);
             if (plane == 0) {
@@ -1911,7 +1923,7 @@ public:
         static size_t s_vulkan_external_memory_descriptor_count { 0 };
         auto count = ++s_vulkan_external_memory_descriptor_count;
         if (count <= 8 || count % 120 == 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_external_memory_descriptor count={} frame_id={} status=ok planes={} single_image={} single_memory={} size={}x{} sw_format={} hw_format={} tiling={} frame_flags={} mem_flags={} plane0_fd={} plane0_dma_buf_fd={} plane0_size={} plane0_offset={} plane0_vk_format={} plane0_layout={} plane0_access={} plane1_fd={} plane1_dma_buf_fd={} plane1_size={} plane1_offset={} plane1_vk_format={} plane2_fd={} plane2_dma_buf_fd={} plane2_size={} plane2_offset={} plane2_vk_format={}",
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_external_memory_descriptor count={} frame_id={} status=ok planes={} single_image={} single_memory={} size={}x{} sw_format={} hw_format={} tiling={} frame_flags={} mem_flags={} plane0_fd={} plane0_dma_buf_fd={} plane0_size={} plane0_offset={} plane0_vk_format={} plane0_layout={} plane0_access={} plane0_has_modifier={} plane0_modifier={} plane1_fd={} plane1_dma_buf_fd={} plane1_size={} plane1_offset={} plane1_vk_format={} plane1_has_modifier={} plane1_modifier={} plane2_fd={} plane2_dma_buf_fd={} plane2_size={} plane2_offset={} plane2_vk_format={} plane2_has_modifier={} plane2_modifier={}",
                 count,
                 descriptor().frame_id,
                 external_memory.plane_count,
@@ -1931,16 +1943,22 @@ public:
                 external_memory.planes[0].vulkan_format,
                 external_memory.planes[0].vulkan_image_layout,
                 external_memory.planes[0].vulkan_access,
+                external_memory.planes[0].has_vulkan_drm_format_modifier,
+                external_memory.planes[0].vulkan_drm_format_modifier,
                 external_memory.planes[1].fd,
                 external_memory.planes[1].dma_buf_fd,
                 external_memory.planes[1].allocation_size,
                 external_memory.planes[1].offset,
                 external_memory.planes[1].vulkan_format,
+                external_memory.planes[1].has_vulkan_drm_format_modifier,
+                external_memory.planes[1].vulkan_drm_format_modifier,
                 external_memory.planes[2].fd,
                 external_memory.planes[2].dma_buf_fd,
                 external_memory.planes[2].allocation_size,
                 external_memory.planes[2].offset,
-                external_memory.planes[2].vulkan_format);
+                external_memory.planes[2].vulkan_format,
+                external_memory.planes[2].has_vulkan_drm_format_modifier,
+                external_memory.planes[2].vulkan_drm_format_modifier);
         }
 
         cleanup_exported_fds.disarm();
