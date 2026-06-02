@@ -225,6 +225,9 @@ private:
         int uv_plane { -1 };
         int y_coord_scale { -1 };
         int uv_coord_scale { -1 };
+        int uv_byte_mode { -1 };
+        int uv_texture_size { -1 };
+        int uv_visible_size { -1 };
         int uv_second_channel_is_alpha { -1 };
         int y_offset { -1 };
         int y_scale { -1 };

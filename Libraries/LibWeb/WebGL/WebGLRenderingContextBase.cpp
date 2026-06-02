@@ -1254,6 +1254,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             uniform sampler2D u_uv_plane;
             uniform vec2 u_y_coord_scale;
             uniform vec2 u_uv_coord_scale;
+            uniform float u_uv_byte_mode;
+            uniform vec2 u_uv_texture_size;
+            uniform vec2 u_uv_visible_size;
             uniform float u_uv_second_channel_is_alpha;
             uniform float u_y_offset;
             uniform float u_y_scale;
@@ -1263,8 +1266,19 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             void main()
             {
                 float y = (texture2D(u_y_plane, v_tex_coord * u_y_coord_scale).r - u_y_offset) * u_y_scale;
-                vec4 uv_sample = texture2D(u_uv_plane, v_tex_coord * u_uv_coord_scale);
-                vec2 uv = vec2(uv_sample.r, mix(uv_sample.g, uv_sample.a, u_uv_second_channel_is_alpha)) - vec2(0.5, 0.5);
+                vec2 uv;
+                if (u_uv_byte_mode > 0.5) {
+                    vec2 clamped_coord = clamp(v_tex_coord, vec2(0.0, 0.0), vec2(0.999999, 0.999999));
+                    float chroma_x = floor(clamped_coord.x * u_uv_visible_size.x);
+                    float chroma_y = floor(clamped_coord.y * u_uv_visible_size.y);
+                    float u_x = ((chroma_x * 2.0) + 0.5) / u_uv_texture_size.x;
+                    float v_x = ((chroma_x * 2.0) + 1.5) / u_uv_texture_size.x;
+                    float uv_y = (chroma_y + 0.5) / u_uv_texture_size.y;
+                    uv = vec2(texture2D(u_uv_plane, vec2(u_x, uv_y)).r, texture2D(u_uv_plane, vec2(v_x, uv_y)).r) - vec2(0.5, 0.5);
+                } else {
+                    vec4 uv_sample = texture2D(u_uv_plane, v_tex_coord * u_uv_coord_scale);
+                    uv = vec2(uv_sample.r, mix(uv_sample.g, uv_sample.a, u_uv_second_channel_is_alpha)) - vec2(0.5, 0.5);
+                }
                 vec3 yuv = vec3(y, uv.x, uv.y);
                 gl_FragColor = vec4(dot(yuv, u_r_coefficients), dot(yuv, u_g_coefficients), dot(yuv, u_b_coefficients), 1.0);
             }
@@ -1292,6 +1306,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         m_mundo_video_nv12_uniform_locations.uv_plane = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_plane");
         m_mundo_video_nv12_uniform_locations.y_coord_scale = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_coord_scale");
         m_mundo_video_nv12_uniform_locations.uv_coord_scale = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_coord_scale");
+        m_mundo_video_nv12_uniform_locations.uv_byte_mode = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_byte_mode");
+        m_mundo_video_nv12_uniform_locations.uv_texture_size = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_texture_size");
+        m_mundo_video_nv12_uniform_locations.uv_visible_size = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_visible_size");
         m_mundo_video_nv12_uniform_locations.uv_second_channel_is_alpha = glGetUniformLocation(m_mundo_video_nv12_program, "u_uv_second_channel_is_alpha");
         m_mundo_video_nv12_uniform_locations.y_offset = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_offset");
         m_mundo_video_nv12_uniform_locations.y_scale = glGetUniformLocation(m_mundo_video_nv12_program, "u_y_scale");
@@ -1467,6 +1484,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     char const* hardware_gl_upload_copy_stage = "none";
     char const* hardware_gl_upload_mode = "none";
     StringView hardware_gl_upload_failure_reason = "not_attempted"sv;
+    bool used_hardware_uv_byte_texture = false;
 #ifdef USE_VULKAN_DMABUF_IMAGES
     OpenGLContext::ImportedVideoOpaqueFDTexture* imported_y_texture { nullptr };
     OpenGLContext::ImportedVideoOpaqueFDTexture* imported_uv_texture { nullptr };
@@ -1502,7 +1520,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 #ifdef USE_VULKAN_DMABUF_IMAGES
             auto should_log_external_memory_success = should_log_mundo_webgl_texture_diagnostic(attempt_count);
             if (!strcmp(hardware_backend, "vulkan")) {
-                auto import_real_dma_buf_texture = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, u32 drm_format, u32 pitch, GLuint& texture, EGLImageKHR& egl_image) -> ErrorOr<void> {
+                auto import_real_dma_buf_texture = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, u32 drm_format, u32 pitch, bool nearest_filter, GLuint& texture, EGLImageKHR& egl_image) -> ErrorOr<void> {
                     auto* egl_create_image_khr = reinterpret_cast<PFNEGLCREATEIMAGEKHRPROC>(eglGetProcAddress("eglCreateImageKHR"));
                     auto* egl_query_dma_buf_formats_ext = reinterpret_cast<PFNEGLQUERYDMABUFFORMATSEXTPROC>(eglGetProcAddress("eglQueryDmaBufFormatsEXT"));
                     auto* gl_egl_image_target_texture_2d_oes = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(eglGetProcAddress("glEGLImageTargetTexture2DOES"));
@@ -1588,8 +1606,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                         return log_failure("egl_dma_buf_texture_create_failed", egl_error, gl_error);
 
                     glBindTexture(GL_TEXTURE_2D, texture);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, nearest_filter ? GL_NEAREST : GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, nearest_filter ? GL_NEAREST : GL_LINEAR);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                     gl_egl_image_target_texture_2d_oes(GL_TEXTURE_2D, egl_image);
@@ -1725,11 +1743,13 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
                     if (uv_plane.has_value()) {
                         auto y_pitch = external_memory.planes[0].width;
-                        auto uv_pitch = uv_plane.value().width * 2;
-                        auto y_import_result = import_real_dma_buf_texture("egl_y_r8", external_memory.planes[0], DRM_FORMAT_R8, y_pitch, real_imported_y_texture, real_imported_y_egl_image);
+                        auto uv_byte_plane = uv_plane.value();
+                        uv_byte_plane.width = external_memory.planes[0].width;
+                        auto uv_pitch = uv_byte_plane.width;
+                        auto y_import_result = import_real_dma_buf_texture("egl_y_r8", external_memory.planes[0], DRM_FORMAT_R8, y_pitch, false, real_imported_y_texture, real_imported_y_egl_image);
                         auto uv_import_result = y_import_result.is_error()
                             ? ErrorOr<void>(y_import_result.release_error())
-                            : import_real_dma_buf_texture("egl_uv_rg88", uv_plane.value(), DRM_FORMAT_RG88, uv_pitch, real_imported_uv_texture, real_imported_uv_egl_image);
+                            : import_real_dma_buf_texture("egl_uv_r8_bytes", uv_byte_plane, DRM_FORMAT_R8, uv_pitch, true, real_imported_uv_texture, real_imported_uv_egl_image);
                         if (uv_import_result.is_error()) {
                             if (real_imported_y_texture) {
                                 glDeleteTextures(1, &real_imported_y_texture);
@@ -1746,6 +1766,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             uv_import_result = y_import_result.is_error()
                                 ? ErrorOr<void>(y_import_result.release_error())
                                 : import_real_external_memory_texture("uv_rg8", uv_plane.value(), GL_RG8_EXT, real_imported_uv_texture, real_imported_uv_memory_object);
+                        } else {
+                            used_hardware_uv_byte_texture = true;
                         }
                         if (!uv_import_result.is_error()) {
                             used_hardware_gl_upload = true;
@@ -1754,9 +1776,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             hardware_gl_upload_copy_stage = "decoder_memory_import";
                             hardware_gl_upload_mode = real_imported_y_egl_image != EGL_NO_IMAGE_KHR ? "vulkan_egl_dma_buf" : "vulkan_external_memory";
                             hardware_gl_upload_microseconds = 0;
-                            uv_texture_width = visible_uv_width;
+                            uv_texture_width = used_hardware_uv_byte_texture ? video_width : visible_uv_width;
                             if (should_log_external_memory_success) {
-                                dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_USE attempt={} frame_id={} backend={} status=ok y_texture={} uv_texture={} direct_zero_copy=true size={}x{} uv_size={}x{} single_memory={} planes={}",
+                                dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_USE attempt={} frame_id={} backend={} status=ok y_texture={} uv_texture={} direct_zero_copy=true size={}x{} uv_size={}x{} uv_byte_texture={} single_memory={} planes={}",
                                     attempt_count,
                                     hardware_frame_id,
                                     hardware_backend,
@@ -1764,8 +1786,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                                     real_imported_uv_texture,
                                     video_width,
                                     video_height,
-                                    visible_uv_width,
+                                    uv_texture_width,
                                     uv_texture_height,
+                                    used_hardware_uv_byte_texture,
                                     external_memory.single_memory,
                                     external_memory.plane_count);
                             }
@@ -2244,6 +2267,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     glUniform1i(m_mundo_video_nv12_uniform_locations.uv_plane, 1);
     glUniform2f(m_mundo_video_nv12_uniform_locations.y_coord_scale, used_hardware_gl_upload ? 1.0f : static_cast<float>(video_width) / static_cast<float>(nv12_data->y_stride), 1.0f);
     glUniform2f(m_mundo_video_nv12_uniform_locations.uv_coord_scale, static_cast<float>(visible_uv_width) / static_cast<float>(uv_texture_width), 1.0f);
+    glUniform1f(m_mundo_video_nv12_uniform_locations.uv_byte_mode, used_hardware_uv_byte_texture ? 1.0f : 0.0f);
+    glUniform2f(m_mundo_video_nv12_uniform_locations.uv_texture_size, static_cast<float>(uv_texture_width), static_cast<float>(uv_texture_height));
+    glUniform2f(m_mundo_video_nv12_uniform_locations.uv_visible_size, static_cast<float>(visible_uv_width), static_cast<float>(uv_texture_height));
     glUniform1f(m_mundo_video_nv12_uniform_locations.uv_second_channel_is_alpha, used_hardware_gl_upload ? 0.0f : 1.0f);
 
     auto const& cicp = used_hardware_gl_upload ? media_frame->cicp() : nv12_data->cicp;
@@ -2277,7 +2303,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} frame_id={} hardware_backend={} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} requires_cpu_transfer={} has_hardware_handle={} upload_us={} size={}x{} offset={}x{} target_storage={} plane_storage={}/{} plane_upload={}/{} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
+        dbgln("MUNDO_WEBGL_VIDEO_NV12_SHADER_UPLOAD attempt={} kind={} frame_id={} hardware_backend={} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} requires_cpu_transfer={} has_hardware_handle={} upload_us={} size={}x{} offset={}x{} target_storage={} plane_storage={}/{} plane_upload={}/{} uv_byte_texture={} uv_texture_width={} y_bytes={} uv_bytes={} flip_y={} full_range={} preserved_gl_errors={} gl_error={} sample_yuv={},{},{} sample_rgba={},{},{},{}",
             attempt_count,
             is_sub_image ? "texSubImage2D"sv : "texImage2D"sv,
             hardware_frame_id,
@@ -2300,6 +2326,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                                                                   : "client"sv,
             used_hardware_gl_upload ? "gpu"sv : used_uv_plane_pbo ? "pbo"sv
                                                                    : "client"sv,
+            used_hardware_uv_byte_texture,
+            uv_texture_width,
             nv12_data ? nv12_data->y_plane_size() : 0,
             nv12_data ? nv12_data->uv_plane_size() : 0,
             m_unpack_flip_y,
