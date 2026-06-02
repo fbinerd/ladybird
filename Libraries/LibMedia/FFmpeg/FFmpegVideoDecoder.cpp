@@ -863,7 +863,7 @@ static void log_vulkan_frame_probe_once(AVFrame const* frame, HardwareVideoFrame
     }
 
     auto const* vk_frame = reinterpret_cast<AVVkFrame const*>(frame->data[0]);
-    dbgln("MUNDO_MEDIA_FFMPEG vulkan_frame_probe frame_id={} status=ok size={}x{} tiling={} flags={} img0={} img1={} img2={} mem0_size={} mem1_size={} mem2_size={} layout0={} layout1={} layout2={} queue0={} queue1={} queue2={}",
+    dbgln("MUNDO_MEDIA_FFMPEG vulkan_frame_probe frame_id={} status=ok size={}x{} tiling={} flags={} img0={} img1={} img2={} mem0_size={} mem1_size={} mem2_size={} offset0={} offset1={} offset2={} layout0={} layout1={} layout2={} access0={} access1={} access2={} queue0={} queue1={} queue2={} sem0={} sem1={} sem2={} sem_value0={} sem_value1={} sem_value2={}",
         descriptor.frame_id,
         frame->width,
         frame->height,
@@ -875,12 +875,24 @@ static void log_vulkan_frame_probe_once(AVFrame const* frame, HardwareVideoFrame
         vk_frame->size[0],
         vk_frame->size[1],
         vk_frame->size[2],
+        static_cast<i64>(vk_frame->offset[0]),
+        static_cast<i64>(vk_frame->offset[1]),
+        static_cast<i64>(vk_frame->offset[2]),
         static_cast<unsigned>(vk_frame->layout[0]),
         static_cast<unsigned>(vk_frame->layout[1]),
         static_cast<unsigned>(vk_frame->layout[2]),
+        static_cast<unsigned>(vk_frame->access[0]),
+        static_cast<unsigned>(vk_frame->access[1]),
+        static_cast<unsigned>(vk_frame->access[2]),
         vk_frame->queue_family[0],
         vk_frame->queue_family[1],
-        vk_frame->queue_family[2]);
+        vk_frame->queue_family[2],
+        reinterpret_cast<uintptr_t>(vk_frame->sem[0]),
+        reinterpret_cast<uintptr_t>(vk_frame->sem[1]),
+        reinterpret_cast<uintptr_t>(vk_frame->sem[2]),
+        vk_frame->sem_value[0],
+        vk_frame->sem_value[1],
+        vk_frame->sem_value[2]);
 
     if (!frame->hw_frames_ctx || !frame->hw_frames_ctx->data) {
         dbgln("MUNDO_MEDIA_FFMPEG vulkan_memory_export_probe frame_id={} status=no_hw_frames_ctx", descriptor.frame_id);
@@ -888,6 +900,29 @@ static void log_vulkan_frame_probe_once(AVFrame const* frame, HardwareVideoFrame
     }
 
     auto const* frames_context = reinterpret_cast<AVHWFramesContext const*>(frame->hw_frames_ctx->data);
+    auto const* vulkan_frames_context = reinterpret_cast<AVVulkanFramesContext const*>(frames_context->hwctx);
+    if (vulkan_frames_context) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_frames_context_probe frame_id={} hw_format={} sw_format={} size={}x{} initial_pool_size={} tiling={} usage={} flags={} img_flags={} nb_layers={} format0={} format1={} format2={} alloc_pnext0={} alloc_pnext1={} alloc_pnext2={} create_pnext={}",
+            descriptor.frame_id,
+            pixel_format_name(frames_context->format),
+            pixel_format_name(frames_context->sw_format),
+            frames_context->width,
+            frames_context->height,
+            frames_context->initial_pool_size,
+            static_cast<unsigned>(vulkan_frames_context->tiling),
+            static_cast<unsigned>(vulkan_frames_context->usage),
+            static_cast<unsigned>(vulkan_frames_context->flags),
+            static_cast<unsigned>(vulkan_frames_context->img_flags),
+            vulkan_frames_context->nb_layers,
+            static_cast<unsigned>(vulkan_frames_context->format[0]),
+            static_cast<unsigned>(vulkan_frames_context->format[1]),
+            static_cast<unsigned>(vulkan_frames_context->format[2]),
+            vulkan_frames_context->alloc_pnext[0] != nullptr,
+            vulkan_frames_context->alloc_pnext[1] != nullptr,
+            vulkan_frames_context->alloc_pnext[2] != nullptr,
+            vulkan_frames_context->create_pnext != nullptr);
+    }
+
     if (!frames_context->device_ctx || !frames_context->device_ctx->hwctx) {
         dbgln("MUNDO_MEDIA_FFMPEG vulkan_memory_export_probe frame_id={} status=no_device_ctx", descriptor.frame_id);
         return;
@@ -1756,6 +1791,140 @@ public:
 
         m_nv12_data = nv12_data;
         return nv12_data;
+    }
+
+    virtual ErrorOr<HardwareVideoFrameExternalMemoryDescriptor> export_external_memory() const override
+    {
+#if defined(__linux__)
+        if (m_frame->format != AV_PIX_FMT_VULKAN)
+            return Error::from_string_literal("External memory export is only implemented for Vulkan frames");
+        if (!m_frame->data[0])
+            return Error::from_string_literal("Vulkan frame has no AVVkFrame data");
+        if (!m_frame->hw_frames_ctx || !m_frame->hw_frames_ctx->data)
+            return Error::from_string_literal("Vulkan frame has no hardware frames context");
+
+        auto const* frames_context = reinterpret_cast<AVHWFramesContext const*>(m_frame->hw_frames_ctx->data);
+        if (!frames_context->device_ctx || !frames_context->device_ctx->hwctx)
+            return Error::from_string_literal("Vulkan frame has no hardware device context");
+
+        auto const* vulkan_frames_context = reinterpret_cast<AVVulkanFramesContext const*>(frames_context->hwctx);
+        auto const* vulkan_device_context = reinterpret_cast<AVVulkanDeviceContext const*>(frames_context->device_ctx->hwctx);
+        if (!vulkan_device_context->get_proc_addr || vulkan_device_context->inst == VK_NULL_HANDLE || vulkan_device_context->act_dev == VK_NULL_HANDLE)
+            return Error::from_string_literal("Vulkan device context cannot export memory");
+
+        auto* get_device_proc_addr = reinterpret_cast<PFN_vkGetDeviceProcAddr>(vulkan_device_context->get_proc_addr(vulkan_device_context->inst, "vkGetDeviceProcAddr"));
+        if (!get_device_proc_addr)
+            return Error::from_string_literal("Vulkan vkGetDeviceProcAddr is unavailable");
+
+        auto* get_memory_fd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(get_device_proc_addr(vulkan_device_context->act_dev, "vkGetMemoryFdKHR"));
+        if (!get_memory_fd)
+            return Error::from_string_literal("Vulkan vkGetMemoryFdKHR is unavailable");
+
+        auto const* vk_frame = reinterpret_cast<AVVkFrame const*>(m_frame->data[0]);
+        HardwareVideoFrameExternalMemoryDescriptor external_memory;
+        external_memory.backend = descriptor().backend;
+        external_memory.frame_id = descriptor().frame_id;
+        external_memory.size = descriptor().size;
+        external_memory.hardware_format = descriptor().hardware_format;
+        external_memory.software_format = descriptor().software_format;
+        external_memory.vulkan_tiling = static_cast<u32>(vk_frame->tiling);
+        external_memory.vulkan_frame_flags = static_cast<u32>(vk_frame->flags);
+        external_memory.vulkan_memory_flags = static_cast<u32>(vk_frame->flags);
+        external_memory.single_image = vk_frame->img[0] != VK_NULL_HANDLE && vk_frame->img[1] == VK_NULL_HANDLE && vk_frame->img[2] == VK_NULL_HANDLE;
+        external_memory.single_memory = vk_frame->mem[0] != VK_NULL_HANDLE && vk_frame->mem[1] == VK_NULL_HANDLE && vk_frame->mem[2] == VK_NULL_HANDLE;
+
+        auto cleanup_exported_fds = ArmedScopeGuard([&] {
+            for (auto& plane : external_memory.planes) {
+                if (plane.fd >= 0) {
+                    close(plane.fd);
+                    plane.fd = -1;
+                }
+            }
+        });
+
+        for (size_t plane = 0; plane < AK::array_size(external_memory.planes); ++plane) {
+            auto& exported_plane = external_memory.planes[plane];
+            exported_plane.has_image = vk_frame->img[plane] != VK_NULL_HANDLE;
+            exported_plane.has_memory = vk_frame->mem[plane] != VK_NULL_HANDLE && vk_frame->size[plane] > 0;
+            exported_plane.allocation_size = vk_frame->size[plane];
+            exported_plane.offset = static_cast<i64>(vk_frame->offset[plane]);
+            exported_plane.semaphore_value = vk_frame->sem_value[plane];
+            exported_plane.vulkan_image_layout = static_cast<u32>(vk_frame->layout[plane]);
+            exported_plane.vulkan_access = static_cast<u32>(vk_frame->access[plane]);
+            exported_plane.queue_family = vk_frame->queue_family[plane];
+            if (vulkan_frames_context)
+                exported_plane.vulkan_format = static_cast<u32>(vulkan_frames_context->format[plane]);
+            if (plane == 0) {
+                exported_plane.width = static_cast<u32>(m_frame->width);
+                exported_plane.height = static_cast<u32>(m_frame->height);
+            } else {
+                exported_plane.width = static_cast<u32>((m_frame->width + 1) / 2);
+                exported_plane.height = static_cast<u32>((m_frame->height + 1) / 2);
+            }
+
+            if (!exported_plane.has_memory)
+                continue;
+
+            VkMemoryGetFdInfoKHR fd_info {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
+                .pNext = nullptr,
+                .memory = vk_frame->mem[plane],
+                .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+            };
+            auto export_result = get_memory_fd(vulkan_device_context->act_dev, &fd_info, &exported_plane.fd);
+            if (export_result != VK_SUCCESS || exported_plane.fd < 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_external_memory_descriptor frame_id={} plane={} status=export_failed result={} fd_valid={} size={} offset={}",
+                    descriptor().frame_id,
+                    plane,
+                    static_cast<int>(export_result),
+                    exported_plane.fd >= 0,
+                    exported_plane.allocation_size,
+                    exported_plane.offset);
+                return Error::from_string_literal("Failed to export Vulkan frame memory fd");
+            }
+            ++external_memory.plane_count;
+        }
+
+        if (!external_memory.plane_count)
+            return Error::from_string_literal("Vulkan frame has no exportable memory planes");
+
+        static size_t s_vulkan_external_memory_descriptor_count { 0 };
+        auto count = ++s_vulkan_external_memory_descriptor_count;
+        if (count <= 8 || count % 120 == 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_external_memory_descriptor count={} frame_id={} status=ok planes={} single_image={} single_memory={} size={}x{} sw_format={} hw_format={} tiling={} frame_flags={} mem_flags={} plane0_fd={} plane0_size={} plane0_offset={} plane0_vk_format={} plane0_layout={} plane0_access={} plane1_fd={} plane1_size={} plane1_offset={} plane1_vk_format={} plane2_fd={} plane2_size={} plane2_offset={} plane2_vk_format={}",
+                count,
+                descriptor().frame_id,
+                external_memory.plane_count,
+                external_memory.single_image,
+                external_memory.single_memory,
+                m_frame->width,
+                m_frame->height,
+                pixel_format_name(frames_context->sw_format),
+                pixel_format_name(static_cast<AVPixelFormat>(m_frame->format)),
+                external_memory.vulkan_tiling,
+                external_memory.vulkan_frame_flags,
+                external_memory.vulkan_memory_flags,
+                external_memory.planes[0].fd,
+                external_memory.planes[0].allocation_size,
+                external_memory.planes[0].offset,
+                external_memory.planes[0].vulkan_format,
+                external_memory.planes[0].vulkan_image_layout,
+                external_memory.planes[0].vulkan_access,
+                external_memory.planes[1].fd,
+                external_memory.planes[1].allocation_size,
+                external_memory.planes[1].offset,
+                external_memory.planes[1].vulkan_format,
+                external_memory.planes[2].fd,
+                external_memory.planes[2].allocation_size,
+                external_memory.planes[2].offset,
+                external_memory.planes[2].vulkan_format);
+        }
+
+        cleanup_exported_fds.disarm();
+        return external_memory;
+#else
+        return Error::from_string_literal("External memory export is only implemented on Linux");
+#endif
     }
 
     virtual ErrorOr<HardwareVideoFrameGLTextureUploadResult> upload_to_gl_textures(HardwareVideoFrameGLTextureUploadRequest const& request) const override

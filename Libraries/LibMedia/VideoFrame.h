@@ -66,12 +66,43 @@ struct MEDIA_API HardwareVideoFrameGLTextureUploadResult {
     char const* upload_mode { "unknown" };
 };
 
+struct MEDIA_API HardwareVideoFrameExternalMemoryPlane {
+    int fd { -1 };
+    u64 allocation_size { 0 };
+    i64 offset { 0 };
+    u64 semaphore_value { 0 };
+    u32 width { 0 };
+    u32 height { 0 };
+    u32 vulkan_format { 0 };
+    u32 vulkan_image_layout { 0 };
+    u32 vulkan_access { 0 };
+    u32 queue_family { 0 };
+    bool has_image { false };
+    bool has_memory { false };
+};
+
+struct MEDIA_API HardwareVideoFrameExternalMemoryDescriptor {
+    HardwareVideoFrameBackend backend { HardwareVideoFrameBackend::None };
+    u64 frame_id { 0 };
+    Gfx::Size<u32> size;
+    int hardware_format { 0 };
+    int software_format { 0 };
+    u32 vulkan_tiling { 0 };
+    u32 vulkan_frame_flags { 0 };
+    u32 vulkan_memory_flags { 0 };
+    u32 plane_count { 0 };
+    bool single_image { false };
+    bool single_memory { false };
+    HardwareVideoFrameExternalMemoryPlane planes[3];
+};
+
 class MEDIA_API HardwareVideoFrameHandle : public RefCounted<HardwareVideoFrameHandle> {
 public:
     virtual ~HardwareVideoFrameHandle();
 
     HardwareVideoFrameDescriptor const& descriptor() const { return m_descriptor; }
     virtual ErrorOr<HardwareVideoFrameGLTextureUploadResult> upload_to_gl_textures(HardwareVideoFrameGLTextureUploadRequest const&) const;
+    virtual ErrorOr<HardwareVideoFrameExternalMemoryDescriptor> export_external_memory() const;
 
 protected:
     explicit HardwareVideoFrameHandle(HardwareVideoFrameDescriptor descriptor)

@@ -35,6 +35,11 @@ ErrorOr<HardwareVideoFrameGLTextureUploadResult> HardwareVideoFrameHandle::uploa
     return Error::from_string_literal("Hardware frame handle does not support GL texture upload");
 }
 
+ErrorOr<HardwareVideoFrameExternalMemoryDescriptor> HardwareVideoFrameHandle::export_external_memory() const
+{
+    return Error::from_string_literal("Hardware frame handle does not support external memory export");
+}
+
 NV12VideoFrameData::~NV12VideoFrameData()
 {
     if (m_external_storage_cleanup)

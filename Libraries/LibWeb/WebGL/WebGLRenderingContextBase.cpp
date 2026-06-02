@@ -935,6 +935,72 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             requires_cpu_transfer);
         context().probe_video_opaque_fd_texture_import(video_width, video_height, visible_uv_width, uv_texture_height, attempt_count);
     }
+    static u64 s_last_external_memory_descriptor_frame_id { 0 };
+    if (has_hardware_handle && zero_copy_capable && hardware_frame_id != s_last_external_memory_descriptor_frame_id && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+        s_last_external_memory_descriptor_frame_id = hardware_frame_id;
+        auto external_memory_or_error = media_frame->hardware_handle()->export_external_memory();
+        if (!external_memory_or_error.is_error()) {
+            auto external_memory = external_memory_or_error.release_value();
+            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DESCRIPTOR attempt={} frame_id={} backend={} status=ok planes={} single_image={} single_memory={} size={}x{} hw_format={} sw_format={} tiling={} frame_flags={} mem_flags={} p0_fd={} p0_size={} p0_offset={} p0_size_px={}x{} p0_vk_format={} p0_layout={} p0_access={} p0_queue={} p0_sem_value={} p1_fd={} p1_size={} p1_offset={} p1_size_px={}x{} p1_vk_format={} p1_layout={} p1_access={} p1_queue={} p1_sem_value={} p2_fd={} p2_size={} p2_offset={} p2_size_px={}x{} p2_vk_format={} p2_layout={} p2_access={} p2_queue={} p2_sem_value={}",
+                attempt_count,
+                hardware_frame_id,
+                hardware_backend,
+                external_memory.plane_count,
+                external_memory.single_image,
+                external_memory.single_memory,
+                external_memory.size.width(),
+                external_memory.size.height(),
+                external_memory.hardware_format,
+                external_memory.software_format,
+                external_memory.vulkan_tiling,
+                external_memory.vulkan_frame_flags,
+                external_memory.vulkan_memory_flags,
+                external_memory.planes[0].fd,
+                external_memory.planes[0].allocation_size,
+                external_memory.planes[0].offset,
+                external_memory.planes[0].width,
+                external_memory.planes[0].height,
+                external_memory.planes[0].vulkan_format,
+                external_memory.planes[0].vulkan_image_layout,
+                external_memory.planes[0].vulkan_access,
+                external_memory.planes[0].queue_family,
+                external_memory.planes[0].semaphore_value,
+                external_memory.planes[1].fd,
+                external_memory.planes[1].allocation_size,
+                external_memory.planes[1].offset,
+                external_memory.planes[1].width,
+                external_memory.planes[1].height,
+                external_memory.planes[1].vulkan_format,
+                external_memory.planes[1].vulkan_image_layout,
+                external_memory.planes[1].vulkan_access,
+                external_memory.planes[1].queue_family,
+                external_memory.planes[1].semaphore_value,
+                external_memory.planes[2].fd,
+                external_memory.planes[2].allocation_size,
+                external_memory.planes[2].offset,
+                external_memory.planes[2].width,
+                external_memory.planes[2].height,
+                external_memory.planes[2].vulkan_format,
+                external_memory.planes[2].vulkan_image_layout,
+                external_memory.planes[2].vulkan_access,
+                external_memory.planes[2].queue_family,
+                external_memory.planes[2].semaphore_value);
+#if defined(__linux__)
+            for (auto& plane : external_memory.planes) {
+                if (plane.fd >= 0) {
+                    close(plane.fd);
+                    plane.fd = -1;
+                }
+            }
+#endif
+        } else {
+            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DESCRIPTOR attempt={} frame_id={} backend={} status=failed reason={}",
+                attempt_count,
+                hardware_frame_id,
+                hardware_backend,
+                external_memory_or_error.error().string_literal());
+        }
+    }
     static u64 s_last_direct_zero_copy_blocked_frame_id { 0 };
     if (has_hardware_handle && zero_copy_capable && !direct_zero_copy_capable && hardware_frame_id != s_last_direct_zero_copy_blocked_frame_id && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         s_last_direct_zero_copy_blocked_frame_id = hardware_frame_id;
