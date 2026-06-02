@@ -332,74 +332,88 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
         return true;
     }
 
-    AVBufferRef* frames_ref = nullptr;
-    auto result = avcodec_get_hw_frames_parameters(codec_context, codec_context->hw_device_ctx, AV_PIX_FMT_VULKAN, &frames_ref);
-    if (result < 0 || !frames_ref) {
-        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=parameters_failed error={} code={}",
-            av_error_code_to_string(result), result);
-        if (frames_ref)
-            av_buffer_unref(&frames_ref);
-        return false;
-    }
-
-    auto* frames_context = reinterpret_cast<AVHWFramesContext*>(frames_ref->data);
-    if (!frames_context) {
-        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_frames_hwctx");
-        av_buffer_unref(&frames_ref);
-        return false;
-    }
-
-    auto* vulkan_frames_context = reinterpret_cast<AVVulkanFramesContext*>(frames_context->hwctx);
-    if (!vulkan_frames_context) {
-        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_vulkan_frames_hwctx");
-        av_buffer_unref(&frames_ref);
-        return false;
-    }
-
-    if (frames_context->free || frames_context->user_opaque) {
-        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=existing_user_callback_continuing free={} user_opaque={}",
-            frames_context->free != nullptr, frames_context->user_opaque != nullptr);
-    }
-
     auto handle_types = requested_vulkan_export_handle_types();
     auto requested_tiling = requested_vulkan_frame_tiling();
     auto const* export_memory_allocate_infos = vulkan_export_memory_allocate_infos(handle_types);
-    for (size_t plane = 0; plane < AV_NUM_DATA_POINTERS; ++plane) {
-        vulkan_frames_context->alloc_pnext[plane] = const_cast<VkExportMemoryAllocateInfo*>(&export_memory_allocate_infos[plane]);
-    }
+    auto try_tiling = [&](VkImageTiling tiling, char const* reason) -> bool {
+        AVBufferRef* frames_ref = nullptr;
+        auto result = avcodec_get_hw_frames_parameters(codec_context, codec_context->hw_device_ctx, AV_PIX_FMT_VULKAN, &frames_ref);
+        if (result < 0 || !frames_ref) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=parameters_failed error={} code={} requested_tiling={} reason={}",
+                av_error_code_to_string(result), result, vulkan_frame_tiling_name(tiling), reason);
+            if (frames_ref)
+                av_buffer_unref(&frames_ref);
+            return false;
+        }
 
-    vulkan_frames_context->tiling = requested_tiling;
-    vulkan_frames_context->flags = static_cast<AVVkFrameFlags>(vulkan_frames_context->flags | AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE);
+        auto* frames_context = reinterpret_cast<AVHWFramesContext*>(frames_ref->data);
+        if (!frames_context) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_frames_hwctx requested_tiling={} reason={}",
+                vulkan_frame_tiling_name(tiling), reason);
+            av_buffer_unref(&frames_ref);
+            return false;
+        }
 
-    result = av_hwframe_ctx_init(frames_ref);
-    if (result < 0) {
-        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=init_failed error={} code={} handle={} requested_tiling={}",
-            av_error_code_to_string(result), result, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(requested_tiling));
+        auto* vulkan_frames_context = reinterpret_cast<AVVulkanFramesContext*>(frames_context->hwctx);
+        if (!vulkan_frames_context) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_vulkan_frames_hwctx requested_tiling={} reason={}",
+                vulkan_frame_tiling_name(tiling), reason);
+            av_buffer_unref(&frames_ref);
+            return false;
+        }
+
+        if (frames_context->free || frames_context->user_opaque) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=existing_user_callback_continuing free={} user_opaque={} requested_tiling={} reason={}",
+                frames_context->free != nullptr, frames_context->user_opaque != nullptr, vulkan_frame_tiling_name(tiling), reason);
+        }
+
+        for (size_t plane = 0; plane < AV_NUM_DATA_POINTERS; ++plane) {
+            vulkan_frames_context->alloc_pnext[plane] = const_cast<VkExportMemoryAllocateInfo*>(&export_memory_allocate_infos[plane]);
+        }
+
+        vulkan_frames_context->tiling = tiling;
+        vulkan_frames_context->flags = static_cast<AVVkFrameFlags>(vulkan_frames_context->flags | AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE);
+
+        result = av_hwframe_ctx_init(frames_ref);
+        if (result < 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=init_failed error={} code={} handle={} requested_tiling={} reason={}",
+                av_error_code_to_string(result), result, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
+            av_buffer_unref(&frames_ref);
+            return false;
+        }
+
+        codec_context->hw_frames_ctx = av_buffer_ref(frames_ref);
+        if (!codec_context->hw_frames_ctx) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=ref_failed handle={} requested_tiling={} reason={}",
+                vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
+            av_buffer_unref(&frames_ref);
+            return false;
+        }
+
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=enabled handle={} requested_tiling={} fallback_reason={} format={} sw_format={} size={}x{} initial_pool_size={} tiling={} flags={}",
+            vulkan_export_handle_types_name(handle_types),
+            vulkan_frame_tiling_name(tiling),
+            reason,
+            pixel_format_name(frames_context->format),
+            pixel_format_name(frames_context->sw_format),
+            frames_context->width,
+            frames_context->height,
+            frames_context->initial_pool_size,
+            static_cast<unsigned>(vulkan_frames_context->tiling),
+            static_cast<unsigned>(vulkan_frames_context->flags));
+
         av_buffer_unref(&frames_ref);
-        return false;
-    }
+        return true;
+    };
 
-    codec_context->hw_frames_ctx = av_buffer_ref(frames_ref);
-    if (!codec_context->hw_frames_ctx) {
-        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=ref_failed handle={}",
-            vulkan_export_handle_types_name(handle_types));
-        av_buffer_unref(&frames_ref);
-        return false;
-    }
+    if (try_tiling(requested_tiling, "requested"))
+        return true;
+    if (requested_tiling != VK_IMAGE_TILING_LINEAR && try_tiling(VK_IMAGE_TILING_LINEAR, "requested_failed"))
+        return true;
 
-    dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=enabled handle={} requested_tiling={} format={} sw_format={} size={}x{} initial_pool_size={} tiling={} flags={}",
-        vulkan_export_handle_types_name(handle_types),
-        vulkan_frame_tiling_name(requested_tiling),
-        pixel_format_name(frames_context->format),
-        pixel_format_name(frames_context->sw_format),
-        frames_context->width,
-        frames_context->height,
-        frames_context->initial_pool_size,
-        static_cast<unsigned>(vulkan_frames_context->tiling),
-        static_cast<unsigned>(vulkan_frames_context->flags));
-
-    av_buffer_unref(&frames_ref);
-    return true;
+    dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=all_tilings_failed requested_tiling={}",
+        vulkan_frame_tiling_name(requested_tiling));
+    return false;
 }
 
 static void log_hwaccel_probe(AVCodec const* codec, CodecID codec_id, VideoDecoderBackend backend)
@@ -498,8 +512,16 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
             if (preferred_format != AV_PIX_FMT_NONE) {
                 for (auto const* format = formats; *format >= 0; ++format) {
                     if (*format == preferred_format) {
-                        if (preferred_format == AV_PIX_FMT_VULKAN)
-                            configure_vulkan_exportable_frames_context(codec_context);
+                        if (preferred_format == AV_PIX_FMT_VULKAN && !configure_vulkan_exportable_frames_context(codec_context)) {
+                            dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=skip reason=vulkan_exportable_context_failed codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                                avcodec_get_name(codec_context->codec_id),
+                                codec_profile_name(codec_context),
+                                codec_context->level,
+                                codec_context->width,
+                                codec_context->height,
+                                pixel_format_name(codec_context->sw_pix_fmt));
+                            continue;
+                        }
                         dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected={} reason=requested_backend codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
                             pixel_format_name(preferred_format),
                             avcodec_get_name(codec_context->codec_id),
