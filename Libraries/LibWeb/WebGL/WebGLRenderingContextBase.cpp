@@ -1094,6 +1094,25 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             probe_real_external_memory_import("plane0_r8", external_memory.planes[0], GL_R8_EXT);
             if (external_memory.plane_count > 1)
                 probe_real_external_memory_import("plane1_rg8", external_memory.planes[1], GL_RG8_EXT);
+            else if (external_memory.single_memory && external_memory.planes[0].fd >= 0 && external_memory.planes[0].width && external_memory.planes[0].height) {
+                auto inferred_uv_plane = external_memory.planes[0];
+                auto y_plane_byte_count = static_cast<u64>(external_memory.planes[0].width) * static_cast<u64>(external_memory.planes[0].height);
+                inferred_uv_plane.offset = static_cast<i64>(static_cast<u64>(external_memory.planes[0].offset) + y_plane_byte_count);
+                inferred_uv_plane.width = (external_memory.planes[0].width + 1) / 2;
+                inferred_uv_plane.height = (external_memory.planes[0].height + 1) / 2;
+                if (inferred_uv_plane.offset >= 0 && static_cast<u64>(inferred_uv_plane.offset) < inferred_uv_plane.allocation_size)
+                    probe_real_external_memory_import("inferred_uv_rg8", inferred_uv_plane, GL_RG8_EXT);
+                else {
+                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} frame_id={} backend={} label=inferred_uv_rg8 status=skipped reason=invalid_inferred_offset allocation_size={} offset={} size={}x{}",
+                        attempt_count,
+                        hardware_frame_id,
+                        hardware_backend,
+                        inferred_uv_plane.allocation_size,
+                        inferred_uv_plane.offset,
+                        inferred_uv_plane.width,
+                        inferred_uv_plane.height);
+                }
+            }
 
             for (auto& plane : external_memory.planes) {
                 if (plane.fd >= 0) {
