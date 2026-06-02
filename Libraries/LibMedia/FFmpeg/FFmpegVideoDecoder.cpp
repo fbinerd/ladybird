@@ -23,6 +23,7 @@
 #include <string.h>
 #if defined(__linux__)
 #    include <dlfcn.h>
+#    include <drm/drm_fourcc.h>
 #    include <fcntl.h>
 #    include <unistd.h>
 #endif
@@ -1879,7 +1880,7 @@ public:
                 };
                 if (get_image_drm_format_modifier_properties(vulkan_device_context->act_dev, vk_frame->img[plane], &modifier_properties) == VK_SUCCESS) {
                     exported_plane.vulkan_drm_format_modifier = modifier_properties.drmFormatModifier;
-                    exported_plane.has_vulkan_drm_format_modifier = true;
+                    exported_plane.has_vulkan_drm_format_modifier = modifier_properties.drmFormatModifier != DRM_FORMAT_MOD_INVALID;
                 }
             }
             if (vulkan_frames_context)

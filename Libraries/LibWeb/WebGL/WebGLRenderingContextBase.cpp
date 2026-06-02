@@ -1606,7 +1606,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     attributes.append(static_cast<EGLint>(plane.offset));
                     attributes.append(EGL_DMA_BUF_PLANE0_PITCH_EXT);
                     attributes.append(static_cast<EGLint>(pitch));
-                    if (plane.has_vulkan_drm_format_modifier) {
+                    if (plane.has_vulkan_drm_format_modifier && plane.vulkan_drm_format_modifier != DRM_FORMAT_MOD_INVALID) {
                         attributes.append(EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT);
                         attributes.append(static_cast<EGLint>(plane.vulkan_drm_format_modifier & 0xffffffff));
                         attributes.append(EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT);
