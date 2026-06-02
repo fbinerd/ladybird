@@ -148,6 +148,11 @@ static bool can_create_hw_device(VideoDecoderBackend backend)
     return result >= 0;
 }
 
+static bool hardware_backend_is_usable(AVCodec const* codec, VideoDecoderBackend backend)
+{
+    return codec_has_hw_config(codec, backend) && can_create_hw_device(backend);
+}
+
 static void log_available_ffmpeg_hwdevices_once()
 {
     static Atomic<bool> did_log { false };
@@ -386,14 +391,18 @@ static void log_video_decoder_backend_probe(AVCodec const* codec, CodecID codec_
 
     auto requested_backend = requested_video_decoder_backend();
     auto active_backend = VideoDecoderBackend::Software;
-    if (requested_backend == VideoDecoderBackend::Nvdec && codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec))
+    if (requested_backend == VideoDecoderBackend::Nvdec && hardware_backend_is_usable(codec, VideoDecoderBackend::Nvdec))
         active_backend = VideoDecoderBackend::Nvdec;
-    else if (requested_backend == VideoDecoderBackend::Vulkan && codec_has_hw_config(codec, VideoDecoderBackend::Vulkan) && can_create_hw_device(VideoDecoderBackend::Vulkan))
+    else if (requested_backend == VideoDecoderBackend::Vulkan && hardware_backend_is_usable(codec, VideoDecoderBackend::Vulkan))
         active_backend = VideoDecoderBackend::Vulkan;
-    else if (requested_backend == VideoDecoderBackend::Vaapi && codec_has_hw_config(codec, VideoDecoderBackend::Vaapi) && can_create_hw_device(VideoDecoderBackend::Vaapi))
+    else if (requested_backend == VideoDecoderBackend::Vaapi && hardware_backend_is_usable(codec, VideoDecoderBackend::Vaapi))
         active_backend = VideoDecoderBackend::Vaapi;
-    else if (requested_backend == VideoDecoderBackend::Auto && codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec))
-        active_backend = VideoDecoderBackend::Nvdec;
+    else if (requested_backend == VideoDecoderBackend::Auto) {
+        if (vulkan_exportable_frames_enabled() && hardware_backend_is_usable(codec, VideoDecoderBackend::Vulkan))
+            active_backend = VideoDecoderBackend::Vulkan;
+        else if (hardware_backend_is_usable(codec, VideoDecoderBackend::Nvdec))
+            active_backend = VideoDecoderBackend::Nvdec;
+    }
 
     dbgln("MUNDO_MEDIA_FFMPEG video_decoder_backend requested={} codec={} active={}",
         video_decoder_backend_name(requested_backend), codec_id, video_decoder_backend_name(active_backend));
@@ -456,10 +465,12 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
         } else {
             auto requested_backend = requested_video_decoder_backend();
             auto preferred_format = hw_pixel_format_for_backend(requested_backend);
+            if (requested_backend == VideoDecoderBackend::Auto && vulkan_exportable_frames_enabled())
+                preferred_format = AV_PIX_FMT_VULKAN;
             if (preferred_format != AV_PIX_FMT_NONE) {
                 for (auto const* format = formats; *format >= 0; ++format) {
                     if (*format == preferred_format) {
-                        if (requested_backend == VideoDecoderBackend::Vulkan)
+                        if (preferred_format == AV_PIX_FMT_VULKAN)
                             configure_vulkan_exportable_frames_context(codec_context);
                         dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected={} reason=requested_backend codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
                             pixel_format_name(preferred_format),
@@ -530,12 +541,15 @@ static VideoDecoderBackend selected_hardware_decoder_backend(AVCodec const* code
         return VideoDecoderBackend::Software;
 
     if (requested_backend == VideoDecoderBackend::Nvdec || requested_backend == VideoDecoderBackend::Vaapi || requested_backend == VideoDecoderBackend::Vulkan) {
-        if (codec_has_hw_config(codec, requested_backend) && can_create_hw_device(requested_backend))
+        if (hardware_backend_is_usable(codec, requested_backend))
             return requested_backend;
         return VideoDecoderBackend::Software;
     }
 
-    if (codec_has_hw_config(codec, VideoDecoderBackend::Nvdec) && can_create_hw_device(VideoDecoderBackend::Nvdec))
+    if (vulkan_exportable_frames_enabled() && hardware_backend_is_usable(codec, VideoDecoderBackend::Vulkan))
+        return VideoDecoderBackend::Vulkan;
+
+    if (hardware_backend_is_usable(codec, VideoDecoderBackend::Nvdec))
         return VideoDecoderBackend::Nvdec;
 
     return VideoDecoderBackend::Software;
