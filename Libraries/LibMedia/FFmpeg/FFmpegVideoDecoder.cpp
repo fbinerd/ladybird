@@ -497,6 +497,16 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
                 pixel_format_name(codec_context->sw_pix_fmt));
         } else if (should_keep_small_frame_on_software(codec_context)) {
             skipped_hardware_format = true;
+            if (should_require_hardware_decode()) {
+                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=none reason=small_frame require_hardware_decode=true codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                    avcodec_get_name(codec_context->codec_id),
+                    codec_profile_name(codec_context),
+                    codec_context->level,
+                    codec_context->width,
+                    codec_context->height,
+                    pixel_format_name(codec_context->sw_pix_fmt));
+                return AV_PIX_FMT_NONE;
+            }
             dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=small_frame codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
                 avcodec_get_name(codec_context->codec_id),
                 codec_profile_name(codec_context),
@@ -548,6 +558,16 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
             }
         }
         if (!skipped_hardware_format) {
+            if (should_require_hardware_decode()) {
+                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=none reason=hardware_required_no_usable_hw_format codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                    avcodec_get_name(codec_context->codec_id),
+                    codec_profile_name(codec_context),
+                    codec_context->level,
+                    codec_context->width,
+                    codec_context->height,
+                    pixel_format_name(codec_context->sw_pix_fmt));
+                return AV_PIX_FMT_NONE;
+            }
             dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=software reason=cuda_not_offered codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
                 avcodec_get_name(codec_context->codec_id),
                 codec_profile_name(codec_context),
@@ -556,6 +576,17 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
                 codec_context->height,
                 pixel_format_name(codec_context->sw_pix_fmt));
         }
+    }
+
+    if (should_require_hardware_decode()) {
+        dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=none reason=hardware_required_no_hw_device_ctx codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+            avcodec_get_name(codec_context->codec_id),
+            codec_profile_name(codec_context),
+            codec_context->level,
+            codec_context->width,
+            codec_context->height,
+            pixel_format_name(codec_context->sw_pix_fmt));
+        return AV_PIX_FMT_NONE;
     }
 
     while (*formats >= 0) {
