@@ -1762,7 +1762,14 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             uv_plane = inferred_uv_plane;
                     }
 
-                    if (uv_plane.has_value()) {
+                    constexpr u32 vulkan_image_tiling_linear = 1;
+                    auto can_import_vulkan_dmabuf_without_layout_conversion = [&] {
+                        if (external_memory.planes[0].has_vulkan_drm_format_modifier)
+                            return true;
+                        return external_memory.vulkan_tiling == vulkan_image_tiling_linear;
+                    };
+
+                    if (uv_plane.has_value() && can_import_vulkan_dmabuf_without_layout_conversion()) {
                         auto y_pitch = external_memory.planes[0].width;
                         auto uv_byte_plane = uv_plane.value();
                         uv_byte_plane.width = external_memory.planes[0].width;
@@ -1829,7 +1836,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             }
                         }
                     } else {
-                        hardware_gl_upload_failure_reason = "vulkan_external_memory_uv_plane_unavailable"sv;
+                        hardware_gl_upload_failure_reason = uv_plane.has_value()
+                            ? "vulkan_dmabuf_requires_modifier_or_linear_tiling"sv
+                            : "vulkan_external_memory_uv_plane_unavailable"sv;
                         hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
                     }
                 } else {
