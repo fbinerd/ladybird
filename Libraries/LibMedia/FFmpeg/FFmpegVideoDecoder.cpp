@@ -512,10 +512,10 @@ static void log_video_decoder_backend_probe(AVCodec const* codec, CodecID codec_
     else if (requested_backend == VideoDecoderBackend::Vaapi && hardware_backend_is_usable(codec, VideoDecoderBackend::Vaapi))
         active_backend = VideoDecoderBackend::Vaapi;
     else if (requested_backend == VideoDecoderBackend::Auto) {
-        if (hardware_backend_is_usable(codec, VideoDecoderBackend::Nvdec))
-            active_backend = VideoDecoderBackend::Nvdec;
-        else if (should_auto_prefer_vulkan_decode() && vulkan_exportable_frames_enabled() && hardware_backend_is_usable(codec, VideoDecoderBackend::Vulkan))
+        if (should_auto_prefer_vulkan_decode() && vulkan_exportable_frames_enabled() && hardware_backend_is_usable(codec, VideoDecoderBackend::Vulkan))
             active_backend = VideoDecoderBackend::Vulkan;
+        else if (hardware_backend_is_usable(codec, VideoDecoderBackend::Nvdec))
+            active_backend = VideoDecoderBackend::Nvdec;
     }
 
     dbgln("MUNDO_MEDIA_FFMPEG video_decoder_backend requested={} codec={} active={}",
@@ -697,11 +697,11 @@ static VideoDecoderBackend selected_hardware_decoder_backend(AVCodec const* code
         return VideoDecoderBackend::Software;
     }
 
-    if (hardware_backend_is_usable(codec, VideoDecoderBackend::Nvdec))
-        return VideoDecoderBackend::Nvdec;
-
     if (should_auto_prefer_vulkan_decode() && vulkan_exportable_frames_enabled() && hardware_backend_is_usable(codec, VideoDecoderBackend::Vulkan))
         return VideoDecoderBackend::Vulkan;
+
+    if (hardware_backend_is_usable(codec, VideoDecoderBackend::Nvdec))
+        return VideoDecoderBackend::Nvdec;
 
     return VideoDecoderBackend::Software;
 }
