@@ -271,6 +271,19 @@ static bool vulkan_exportable_frames_enabled()
         && strcmp(raw_value, "off");
 }
 
+static bool vulkan_allow_decoder_pool_bridge_probe()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_VULKAN_ALLOW_DECODER_POOL_BRIDGE");
+    if (!raw_value)
+        return false;
+
+    return raw_value[0] != '\0'
+        && strcmp(raw_value, "0")
+        && strcmp(raw_value, "false")
+        && strcmp(raw_value, "no")
+        && strcmp(raw_value, "off");
+}
+
 static VkExternalMemoryHandleTypeFlags requested_vulkan_export_handle_types()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_VULKAN_EXPORT_HANDLE");
@@ -593,6 +606,16 @@ static AVPixelFormat negotiate_output_format(AVCodecContext* codec_context, AVPi
                 for (auto const* format = formats; *format >= 0; ++format) {
                     if (*format == preferred_format) {
                         if (preferred_format == AV_PIX_FMT_VULKAN && !configure_vulkan_exportable_frames_context(codec_context)) {
+                            if (vulkan_allow_decoder_pool_bridge_probe()) {
+                                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=vulkan reason=exportable_context_failed_decoder_pool_bridge_probe codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
+                                    avcodec_get_name(codec_context->codec_id),
+                                    codec_profile_name(codec_context),
+                                    codec_context->level,
+                                    codec_context->width,
+                                    codec_context->height,
+                                    pixel_format_name(codec_context->sw_pix_fmt));
+                                return *format;
+                            }
                             dbgln("MUNDO_MEDIA_FFMPEG hwaccel_format selected=skip reason=vulkan_exportable_context_failed codec={} profile={} level={} size={}x{} sw_pix_fmt={}",
                                 avcodec_get_name(codec_context->codec_id),
                                 codec_profile_name(codec_context),
