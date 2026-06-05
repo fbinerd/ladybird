@@ -820,6 +820,23 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
     record_mundo_webgl_timing_summary("drawArrays", (MonotonicTime::now() - start).to_microseconds());
     if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
         dbgln("MUNDO_WEBGL_TIMING count={} op=drawArrays duration={}ms threshold={}ms mode={} first={} count={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), mode, first, count);
+    if (m_texture_binding_2d && m_texture_binding_2d->has_hardware_video_backing()) {
+        static size_t s_hardware_video_draw_arrays_count { 0 };
+        auto log_count = ++s_hardware_video_draw_arrays_count;
+        if (log_count <= 8 || log_count % 120 == 0) {
+            auto const& backing = m_texture_binding_2d->hardware_video_backing().value();
+            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawArrays frame_id={} texture_target=2d size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={}",
+                log_count,
+                backing.frame_id,
+                backing.width,
+                backing.height,
+                backing.backend,
+                backing.upload_mode,
+                backing.copy_stage,
+                backing.direct_zero_copy,
+                backing.copied_on_gpu);
+        }
+    }
 }
 
 void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL::Long count, WebIDL::UnsignedLong type, WebIDL::LongLong offset)
@@ -835,6 +852,23 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
     record_mundo_webgl_timing_summary("drawElements", (MonotonicTime::now() - start).to_microseconds());
     if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
         dbgln("MUNDO_WEBGL_TIMING count={} op=drawElements duration={}ms threshold={}ms mode={} count={} type={} offset={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), mode, count, type, offset);
+    if (m_texture_binding_2d && m_texture_binding_2d->has_hardware_video_backing()) {
+        static size_t s_hardware_video_draw_elements_count { 0 };
+        auto log_count = ++s_hardware_video_draw_elements_count;
+        if (log_count <= 8 || log_count % 120 == 0) {
+            auto const& backing = m_texture_binding_2d->hardware_video_backing().value();
+            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawElements frame_id={} texture_target=2d size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={}",
+                log_count,
+                backing.frame_id,
+                backing.width,
+                backing.height,
+                backing.backend,
+                backing.upload_mode,
+                backing.copy_stage,
+                backing.direct_zero_copy,
+                backing.copied_on_gpu);
+        }
+    }
     needs_to_present();
 }
 
