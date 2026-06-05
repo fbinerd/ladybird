@@ -708,6 +708,24 @@ bool VideoDataProvider::ThreadData::handle_seek()
 {
     VERIFY(m_decoder);
 
+    auto should_abort_decoder_io_for_shutdown = [&] {
+        {
+            auto locker = take_lock();
+            if (m_requested_state == RequestedState::Exit) {
+                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decode_aborted_for_shutdown track_id={} reason=exit_state", m_track.identifier());
+                return true;
+            }
+        }
+
+        if (!main_thread_event_loop_alive()) {
+            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decode_aborted_for_shutdown track_id={} reason=main_thread_event_loop_dead", m_track.identifier());
+            exit();
+            return true;
+        }
+
+        return false;
+    };
+
     auto seek_id = m_seek_id.load();
     if (m_last_processed_seek_id == seek_id)
         return false;
@@ -811,6 +829,9 @@ bool VideoDataProvider::ThreadData::handle_seek()
                 if (!found_desired_keyframe)
                     continue;
 
+                if (should_abort_decoder_io_for_shutdown())
+                    return true;
+
                 auto decode_result = m_decoder->receive_coded_data(coded_frame.timestamp(), coded_frame.duration(), coded_frame.data());
                 if (decode_result.is_error()) {
                     handle_error(decode_result.release_error());
@@ -861,6 +882,24 @@ bool VideoDataProvider::ThreadData::handle_seek()
 void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
 {
     VERIFY(m_decoder);
+
+    auto should_abort_decoder_io_for_shutdown = [&] {
+        {
+            auto locker = take_lock();
+            if (m_requested_state != RequestedState::Running) {
+                dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decode_aborted_for_shutdown track_id={} reason=state state={}", m_track.identifier(), to_underlying(m_requested_state));
+                return true;
+            }
+        }
+
+        if (!main_thread_event_loop_alive()) {
+            dbgln("MUNDO_MEDIA_VIDEO_PROVIDER decode_aborted_for_shutdown track_id={} reason=main_thread_event_loop_dead", m_track.identifier());
+            exit();
+            return true;
+        }
+
+        return false;
+    };
 
     {
         auto locker = take_lock();
@@ -947,6 +986,9 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
             dbgln("MUNDO_MEDIA_VIDEO_PROVIDER coded_frame count={} track_id={} timestamp={}ms duration={}ms size={}", m_coded_frame_count, m_track.identifier(), coded_frame.timestamp().to_milliseconds(), coded_frame.duration().to_milliseconds(), coded_frame.data().size());
         dispatch_frame_end_time(coded_frame);
 
+        if (should_abort_decoder_io_for_shutdown())
+            return;
+
         auto decode_result = m_decoder->receive_coded_data(coded_frame.timestamp(), coded_frame.duration(), coded_frame.data());
         if (decode_result.is_error()) {
             set_error_and_wait_for_seek(decode_result.release_error());
@@ -955,6 +997,9 @@ void VideoDataProvider::ThreadData::push_data_and_decode_some_frames()
     }
 
     while (true) {
+        if (should_abort_decoder_io_for_shutdown())
+            return;
+
         auto frame_result = m_decoder->get_decoded_frame(m_track.video_data().cicp);
         if (frame_result.is_error()) {
             if (frame_result.error().category() == DecoderErrorCategory::NeedsMoreInput) {

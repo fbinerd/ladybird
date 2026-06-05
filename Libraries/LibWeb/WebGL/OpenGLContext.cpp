@@ -8,6 +8,7 @@
 #include <AK/OwnPtr.h>
 #include <AK/ScopeGuard.h>
 #include <AK/String.h>
+#include <AK/Time.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SharedImageBuffer.h>
 #ifdef USE_VULKAN_DMABUF_IMAGES
@@ -17,6 +18,18 @@
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#ifdef USE_VULKAN_DMABUF_IMAGES
+#    include <core/SkColorSpace.h>
+#    include <core/SkImage.h>
+#    include <gpu/ganesh/GrBackendSurface.h>
+#    include <gpu/ganesh/GrContextThreadSafeProxy.h>
+#    include <gpu/ganesh/GrDirectContext.h>
+#    include <gpu/ganesh/SkImageGanesh.h>
+#    include <gpu/ganesh/vk/GrVkBackendSurface.h>
+#    include <gpu/ganesh/vk/GrVkTypes.h>
+#    include <private/chromium/GrPromiseImageTexture.h>
+#    include <private/chromium/SkImageChromium.h>
+#endif
 #define EGL_EGLEXT_PROTOTYPES 1
 extern "C" {
 #include <EGL/eglext_angle.h>
@@ -64,6 +77,8 @@ struct OpenGLContext::Impl {
     EGLImage egl_image { EGL_NO_IMAGE };
     Optional<ImportedVideoOpaqueFDTexture> cached_video_y_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_uv_texture;
+    Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_texture;
+    Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_target_texture;
     struct {
         PFNEGLQUERYDMABUFFORMATSEXTPROC query_dma_buf_formats { nullptr };
         PFNEGLQUERYDMABUFMODIFIERSEXTPROC query_dma_buf_modifiers { nullptr };
@@ -115,6 +130,12 @@ void OpenGLContext::free_surface_resources()
     if (m_impl->cached_video_uv_texture.has_value())
         delete_imported_video_opaque_fd_texture(m_impl->cached_video_uv_texture.value());
     m_impl->cached_video_uv_texture.clear();
+    if (m_impl->cached_video_rgba_texture.has_value())
+        delete_imported_video_opaque_fd_texture(m_impl->cached_video_rgba_texture.value());
+    m_impl->cached_video_rgba_texture.clear();
+    if (m_impl->cached_video_rgba_target_texture.has_value())
+        delete_imported_video_opaque_fd_texture(m_impl->cached_video_rgba_target_texture.value());
+    m_impl->cached_video_rgba_target_texture.clear();
 
     if (m_impl->egl_image != EGL_NO_IMAGE) {
         eglDestroyImage(m_impl->display, m_impl->egl_image);
@@ -243,6 +264,8 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
 #    ifdef USE_VULKAN_DMABUF_IMAGES
                                                          .cached_video_y_texture = {},
                                                          .cached_video_uv_texture = {},
+                                                         .cached_video_rgba_texture = {},
+                                                         .cached_video_rgba_target_texture = {},
                                                          .ext_procs = {
                                                              .query_dma_buf_formats = pfn_egl_query_dma_buf_formats_ext,
                                                              .query_dma_buf_modifiers = pfn_egl_query_dma_buf_modifiers_ext,
@@ -729,6 +752,176 @@ void OpenGLContext::probe_video_opaque_fd_texture_import(u32 width, u32 height, 
     probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_uv_rg8", uv_width, uv_height, VK_FORMAT_R8G8_UNORM, GL_RG8_EXT, log_count, true);
 }
 
+void OpenGLContext::probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const& external_memory, size_t log_count)
+{
+    static size_t s_probe_count { 0 };
+    auto probe_count = ++s_probe_count;
+    if (probe_count != 1 && probe_count % 120 != 0)
+        return;
+
+    auto log_failure = [&](StringView reason) {
+        dbgln("MUNDO_WEBGL_VIDEO_SKIA_YCBCR_IMPORT_PROBE attempt={} count={} frame_id={} status=failed reason={} backend={} size={}x{} planes={} single_image={} single_memory={}",
+            log_count,
+            probe_count,
+            external_memory.frame_id,
+            reason,
+            Media::hardware_video_frame_backend_name(external_memory.backend),
+            external_memory.size.width(),
+            external_memory.size.height(),
+            external_memory.plane_count,
+            external_memory.single_image,
+            external_memory.single_memory);
+    };
+
+    if (external_memory.backend != Media::HardwareVideoFrameBackend::Vulkan) {
+        log_failure("not_vulkan"sv);
+        return;
+    }
+    if (!external_memory.single_image || !external_memory.single_memory || external_memory.plane_count != 1) {
+        log_failure("not_single_nv12_image"sv);
+        return;
+    }
+
+    auto const& plane = external_memory.planes[0];
+    if (plane.fd < 0 || !plane.allocation_size) {
+        log_failure("missing_opaque_fd"sv);
+        return;
+    }
+
+    auto source_fd = dup(plane.fd);
+    if (source_fd < 0) {
+        log_failure("fd_dup_failed"sv);
+        return;
+    }
+
+    auto& vulkan_context = m_skia_backend_context->vulkan_context();
+    auto imported_source_or_error = Gfx::import_vulkan_nv12_external_memory(
+        vulkan_context,
+        source_fd,
+        VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+        plane.allocation_size,
+        external_memory.size.width(),
+        external_memory.size.height(),
+        static_cast<VkFormat>(plane.vulkan_format),
+        static_cast<VkImageLayout>(plane.vulkan_image_layout));
+    if (imported_source_or_error.is_error()) {
+        log_failure(imported_source_or_error.error().string_literal());
+        return;
+    }
+    auto imported_source = imported_source_or_error.release_value();
+    if (!imported_source->direct_sample_ready) {
+        log_failure("vulkan_ycbcr_direct_sample_not_ready"sv);
+        return;
+    }
+
+    VkFormatProperties format_properties {};
+    vkGetPhysicalDeviceFormatProperties(vulkan_context.physical_device, imported_source->format, &format_properties);
+
+    skgpu::VulkanYcbcrConversionInfo ycbcr_info {
+        imported_source->format,
+        VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709,
+        VK_SAMPLER_YCBCR_RANGE_ITU_NARROW,
+        VK_CHROMA_LOCATION_MIDPOINT,
+        VK_CHROMA_LOCATION_MIDPOINT,
+        VK_FILTER_LINEAR,
+        VK_FALSE,
+        VkComponentMapping {
+            .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+        },
+        format_properties.optimalTilingFeatures,
+    };
+
+    GrVkImageInfo image_info {};
+    image_info.fImage = imported_source->image;
+    image_info.fAlloc.fMemory = imported_source->memory;
+    image_info.fAlloc.fOffset = 0;
+    image_info.fAlloc.fSize = imported_source->allocation_size;
+    image_info.fAlloc.fFlags = 0;
+    image_info.fImageTiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.fImageLayout = imported_source->layout;
+    image_info.fFormat = imported_source->format;
+    image_info.fImageUsageFlags = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR | VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR;
+    image_info.fSampleCount = 1;
+    image_info.fLevelCount = 1;
+    image_info.fCurrentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
+    image_info.fProtected = skgpu::Protected::kNo;
+    image_info.fYcbcrConversionInfo = ycbcr_info;
+    image_info.fSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    auto backend_texture = GrBackendTextures::MakeVk(external_memory.size.width(), external_memory.size.height(), image_info, "mundo-video-nv12-ycbcr-probe");
+    if (!backend_texture.isValid()) {
+        log_failure("skia_backend_texture_invalid"sv);
+        return;
+    }
+
+    m_skia_backend_context->lock();
+    auto image = SkImages::BorrowTextureFrom(
+        m_skia_backend_context->sk_context(),
+        backend_texture,
+        kTopLeft_GrSurfaceOrigin,
+        kRGBA_8888_SkColorType,
+        kOpaque_SkAlphaType,
+        SkColorSpace::MakeSRGB());
+    m_skia_backend_context->unlock();
+
+    auto backend_format = backend_texture.getBackendFormat();
+    auto const* backend_format_ycbcr_info = GrBackendFormats::GetVkYcbcrConversionInfo(backend_format);
+
+    if (!image) {
+        auto ycbcr_backend_format = GrBackendFormats::MakeVk(ycbcr_info, false);
+        auto promise_image = SkImages::PromiseTextureFrom(
+            m_skia_backend_context->sk_context()->threadSafeProxy(),
+            ycbcr_backend_format,
+            SkISize::Make(external_memory.size.width(), external_memory.size.height()),
+            skgpu::Mipmapped::kNo,
+            kTopLeft_GrSurfaceOrigin,
+            kRGBA_8888_SkColorType,
+            kOpaque_SkAlphaType,
+            SkColorSpace::MakeSRGB(),
+            [](SkImages::PromiseImageTextureContext) -> sk_sp<GrPromiseImageTexture> {
+                return nullptr;
+            },
+            [](SkImages::PromiseImageTextureContext) {
+            },
+            nullptr);
+
+        dbgln("MUNDO_WEBGL_VIDEO_SKIA_YCBCR_IMPORT_PROBE attempt={} count={} frame_id={} status=failed reason=skia_borrow_texture_failed backend={} size={}x{} planes={} single_image={} single_memory={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={}",
+            log_count,
+            probe_count,
+            external_memory.frame_id,
+            Media::hardware_video_frame_backend_name(external_memory.backend),
+            external_memory.size.width(),
+            external_memory.size.height(),
+            external_memory.plane_count,
+            external_memory.single_image,
+            external_memory.single_memory,
+            backend_texture.isValid(),
+            backend_format.isValid(),
+            backend_format_ycbcr_info != nullptr,
+            ycbcr_backend_format.isValid(),
+            promise_image != nullptr);
+        return;
+    }
+
+    dbgln("MUNDO_WEBGL_VIDEO_SKIA_YCBCR_IMPORT_PROBE attempt={} count={} frame_id={} status=ok size={}x{} format={} image={} required_size={} allocation_size={} optimal_features={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={}",
+        log_count,
+        probe_count,
+        external_memory.frame_id,
+        external_memory.size.width(),
+        external_memory.size.height(),
+        to_underlying(imported_source->format),
+        reinterpret_cast<uintptr_t>(imported_source->image),
+        imported_source->required_size,
+        imported_source->allocation_size,
+        format_properties.optimalTilingFeatures,
+        backend_texture.isValid(),
+        backend_format.isValid(),
+        backend_format_ycbcr_info != nullptr);
+}
+
 ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count)
 {
     auto log_failure = [&](StringView reason, u32 gl_error = 0) {
@@ -886,10 +1079,320 @@ ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexturePair> OpenGLContext::get_or_c
     };
 }
 
+ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture*> OpenGLContext::get_or_create_imported_video_rgba_texture(u32 width, u32 height, size_t log_count)
+{
+    auto texture_matches = [](ImportedVideoOpaqueFDTexture const& texture, u32 expected_width, u32 expected_height) {
+        return texture.width == expected_width && texture.height == expected_height && texture.texture && texture.memory_object && texture.allocation_size;
+    };
+
+    auto reused = m_impl->cached_video_rgba_texture.has_value() && texture_matches(m_impl->cached_video_rgba_texture.value(), width, height);
+    if (!reused) {
+        if (m_impl->cached_video_rgba_texture.has_value())
+            delete_imported_video_opaque_fd_texture(m_impl->cached_video_rgba_texture.value());
+        m_impl->cached_video_rgba_texture = TRY(create_imported_video_opaque_fd_texture(width, height, VK_FORMAT_R8G8B8A8_UNORM, GL_RGBA8, "video_rgba8_cached", log_count));
+    }
+
+    if (log_count <= 8 || log_count % 120 == 0) {
+        dbgln("MUNDO_WEBGL_VIDEO_RGBA_TARGET_IMPORT count={} status=ok texture={} size={}x{} allocation_size={} reused={} vk_format={} gl_internal_format={}",
+            log_count,
+            m_impl->cached_video_rgba_texture->texture,
+            width,
+            height,
+            m_impl->cached_video_rgba_texture->allocation_size,
+            reused,
+            to_underlying(VK_FORMAT_R8G8B8A8_UNORM),
+            GL_RGBA8);
+    }
+
+    return &m_impl->cached_video_rgba_texture.value();
+}
+
+ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture*> OpenGLContext::get_or_create_imported_video_rgba_target_texture(u32 target_texture, u32 width, u32 height, size_t log_count)
+{
+    auto texture_matches = [&](ImportedVideoOpaqueFDTexture const& texture, u32 expected_texture, u32 expected_width, u32 expected_height) {
+        return texture.texture == expected_texture && texture.width == expected_width && texture.height == expected_height && texture.memory_object && texture.allocation_size;
+    };
+
+    auto reused = m_impl->cached_video_rgba_target_texture.has_value() && texture_matches(m_impl->cached_video_rgba_target_texture.value(), target_texture, width, height);
+    if (!reused) {
+        if (m_impl->cached_video_rgba_target_texture.has_value())
+            delete_imported_video_opaque_fd_texture(m_impl->cached_video_rgba_target_texture.value());
+
+        auto log_failure = [&](StringView reason, u32 gl_error = 0) {
+            dbgln("MUNDO_WEBGL_VIDEO_TARGET_TEXTURE_STORAGE_IMPORT count={} status=failed reason={} gl_error={} target_texture={} size={}x{} vk_format={} gl_internal_format={}",
+                log_count,
+                reason,
+                gl_error,
+                target_texture,
+                width,
+                height,
+                to_underlying(VK_FORMAT_R8G8B8A8_UNORM),
+                GL_RGBA8);
+        };
+
+        auto* gl_create_memory_objects_ext = reinterpret_cast<PFNGLCREATEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glCreateMemoryObjectsEXT"));
+        auto* gl_delete_memory_objects_ext = reinterpret_cast<PFNGLDELETEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glDeleteMemoryObjectsEXT"));
+        auto* gl_memory_object_parameteriv_ext = reinterpret_cast<PFNGLMEMORYOBJECTPARAMETERIVEXTPROC>(eglGetProcAddress("glMemoryObjectParameterivEXT"));
+        auto* gl_import_memory_fd_ext = reinterpret_cast<PFNGLIMPORTMEMORYFDEXTPROC>(eglGetProcAddress("glImportMemoryFdEXT"));
+        auto* gl_tex_storage_mem_2d_ext = reinterpret_cast<PFNGLTEXSTORAGEMEM2DEXTPROC>(eglGetProcAddress("glTexStorageMem2DEXT"));
+        if (!gl_create_memory_objects_ext || !gl_delete_memory_objects_ext || !gl_memory_object_parameteriv_ext || !gl_import_memory_fd_ext || !gl_tex_storage_mem_2d_ext) {
+            log_failure("missing_gl_memory_object_fd_extension"sv);
+            return Error::from_string_literal("GL memory object fd extension functions are unavailable");
+        }
+
+        auto image_or_error = Gfx::create_opaque_fd_vulkan_image(m_skia_backend_context->vulkan_context(), width, height, VK_FORMAT_R8G8B8A8_UNORM);
+        if (image_or_error.is_error()) {
+            log_failure(image_or_error.error().string_literal());
+            return image_or_error.release_error();
+        }
+        auto image = image_or_error.release_value();
+        auto fd = image->get_opaque_fd();
+        if (fd < 0) {
+            log_failure("vulkan_opaque_fd_export_failed"sv);
+            return Error::from_string_literal("Failed to export Vulkan opaque fd for WebGL target texture import");
+        }
+
+        GLuint memory_object { 0 };
+        auto cleanup = ArmedScopeGuard([&] {
+            if (memory_object)
+                gl_delete_memory_objects_ext(1, &memory_object);
+            if (fd >= 0)
+                close(fd);
+        });
+
+        while (glGetError() != GL_NO_ERROR) {
+        }
+
+        gl_create_memory_objects_ext(1, &memory_object);
+        auto create_error = glGetError();
+        if (create_error != GL_NO_ERROR || !memory_object) {
+            log_failure("gl_memory_object_create_failed"sv, create_error);
+            return Error::from_string_literal("Failed to create GL memory object for WebGL target texture");
+        }
+
+        GLint dedicated = GL_TRUE;
+        gl_memory_object_parameteriv_ext(memory_object, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
+        auto parameter_error = glGetError();
+        if (parameter_error != GL_NO_ERROR) {
+            log_failure("gl_memory_object_dedicated_flag_failed"sv, parameter_error);
+            return Error::from_string_literal("Failed to set GL memory object dedicated flag for WebGL target texture");
+        }
+
+        gl_import_memory_fd_ext(memory_object, image->info.allocation_size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
+        fd = -1; // glImportMemoryFdEXT takes ownership.
+        auto import_error = glGetError();
+        if (import_error != GL_NO_ERROR) {
+            log_failure("gl_memory_object_fd_import_failed"sv, import_error);
+            return Error::from_string_literal("Failed to import Vulkan opaque fd into WebGL target memory object");
+        }
+
+        glBindTexture(GL_TEXTURE_2D, target_texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        gl_tex_storage_mem_2d_ext(GL_TEXTURE_2D, 1, GL_RGBA8, width, height, memory_object, 0);
+        auto storage_error = glGetError();
+        if (storage_error != GL_NO_ERROR) {
+            log_failure("gl_target_texture_storage_mem_failed"sv, storage_error);
+            return Error::from_string_literal("Failed to bind WebGL target texture storage to imported video memory object");
+        }
+
+        cleanup.disarm();
+        m_impl->cached_video_rgba_target_texture = ImportedVideoOpaqueFDTexture {
+            .image = image,
+            .memory_object = memory_object,
+            .texture = target_texture,
+            .width = width,
+            .height = height,
+            .allocation_size = image->info.allocation_size,
+            .owns_texture = false,
+        };
+    }
+
+    if (log_count <= 8 || log_count % 120 == 0) {
+        dbgln("MUNDO_WEBGL_VIDEO_TARGET_TEXTURE_STORAGE_IMPORT count={} status=ok target_texture={} size={}x{} allocation_size={} reused={} vk_format={} gl_internal_format={}",
+            log_count,
+            target_texture,
+            width,
+            height,
+            m_impl->cached_video_rgba_target_texture->allocation_size,
+            reused,
+            to_underlying(VK_FORMAT_R8G8B8A8_UNORM),
+            GL_RGBA8);
+    }
+
+    return &m_impl->cached_video_rgba_target_texture.value();
+}
+
+ErrorOr<u64> OpenGLContext::copy_vulkan_nv12_external_memory_to_imported_video_textures(Media::HardwareVideoFrameExternalMemoryDescriptor const& external_memory, ImportedVideoOpaqueFDTexturePair const& texture_pair, size_t log_count)
+{
+    if (external_memory.backend != Media::HardwareVideoFrameBackend::Vulkan)
+        return Error::from_string_literal("external memory source is not Vulkan");
+    if (!external_memory.single_image || !external_memory.single_memory || external_memory.plane_count != 1)
+        return Error::from_string_literal("Vulkan plane copy requires a single-image single-memory NV12 source");
+    if (!texture_pair.y || !texture_pair.uv)
+        return Error::from_string_literal("missing imported video texture pair");
+
+    auto const& plane = external_memory.planes[0];
+    if (plane.fd < 0 || !plane.allocation_size)
+        return Error::from_string_literal("Vulkan plane copy source has no opaque fd");
+
+    auto try_copy = [&](char const* label, int fd, VkExternalMemoryHandleTypeFlagBits handle_type) -> ErrorOr<u64> {
+        if (fd < 0)
+            return Error::from_string_literal("missing Vulkan plane copy fd");
+
+        auto source_fd = dup(fd);
+        if (source_fd < 0)
+            return Error::from_string_literal("failed to duplicate Vulkan plane copy source fd");
+
+        auto started_at = MonotonicTime::now();
+        auto copy_result = Gfx::copy_vulkan_nv12_external_memory_planes_to_opaque_images(
+            m_skia_backend_context->vulkan_context(),
+            source_fd,
+            handle_type,
+            plane.allocation_size,
+            external_memory.size.width(),
+            external_memory.size.height(),
+            static_cast<VkFormat>(plane.vulkan_format),
+            static_cast<VkImageLayout>(plane.vulkan_image_layout),
+            texture_pair.y->image,
+            texture_pair.uv->image);
+        auto copy_microseconds = (MonotonicTime::now() - started_at).to_microseconds();
+
+        if (copy_result.is_error()) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_PLANE_COPY count={} frame_id={} status=failed label={} reason={} copy_us={} size={}x{} source_format={} source_layout={} source_allocation_size={} handle_type={} y_texture={} uv_texture={}",
+                log_count,
+                external_memory.frame_id,
+                label,
+                copy_result.error().string_literal(),
+                copy_microseconds,
+                external_memory.size.width(),
+                external_memory.size.height(),
+                plane.vulkan_format,
+                plane.vulkan_image_layout,
+                plane.allocation_size,
+                to_underlying(handle_type),
+                texture_pair.y->texture,
+                texture_pair.uv->texture);
+            return copy_result.release_error();
+        }
+
+        if (log_count <= 8 || log_count % 120 == 0 || copy_microseconds > 5000) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_PLANE_COPY count={} frame_id={} status=ok label={} copy_us={} size={}x{} source_format={} source_layout={} source_allocation_size={} handle_type={} y_texture={} uv_texture={}",
+                log_count,
+                external_memory.frame_id,
+                label,
+                copy_microseconds,
+                external_memory.size.width(),
+                external_memory.size.height(),
+                plane.vulkan_format,
+                plane.vulkan_image_layout,
+                plane.allocation_size,
+                to_underlying(handle_type),
+                texture_pair.y->texture,
+                texture_pair.uv->texture);
+        }
+        return copy_microseconds;
+    };
+
+    auto opaque_result = try_copy("opaque_fd", plane.fd, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
+    if (!opaque_result.is_error())
+        return opaque_result.release_value();
+
+    auto dma_buf_result = try_copy("dma_buf", plane.dma_buf_fd, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+    if (!dma_buf_result.is_error())
+        return dma_buf_result.release_value();
+
+    return dma_buf_result.release_error();
+}
+
+ErrorOr<u64> OpenGLContext::render_vulkan_nv12_external_memory_to_imported_video_rgba_texture(Media::HardwareVideoFrameExternalMemoryDescriptor const& external_memory, ImportedVideoOpaqueFDTexture const& rgba_texture, size_t log_count, bool flip_y)
+{
+    if (external_memory.backend != Media::HardwareVideoFrameBackend::Vulkan)
+        return Error::from_string_literal("external memory source is not Vulkan");
+    if (!external_memory.single_image || !external_memory.single_memory || external_memory.plane_count != 1)
+        return Error::from_string_literal("Vulkan RGBA render requires a single-image single-memory NV12 source");
+    if (!rgba_texture.texture || !rgba_texture.memory_object)
+        return Error::from_string_literal("missing imported video RGBA texture");
+
+    auto const& plane = external_memory.planes[0];
+    if (plane.fd < 0 || !plane.allocation_size)
+        return Error::from_string_literal("Vulkan RGBA render source has no opaque fd");
+
+    auto try_render = [&](char const* label, int fd, VkExternalMemoryHandleTypeFlagBits handle_type) -> ErrorOr<u64> {
+        if (fd < 0)
+            return Error::from_string_literal("missing Vulkan RGBA render fd");
+
+        auto source_fd = dup(fd);
+        if (source_fd < 0)
+            return Error::from_string_literal("failed to duplicate Vulkan RGBA render source fd");
+
+        auto started_at = MonotonicTime::now();
+        auto render_result = Gfx::render_vulkan_nv12_external_memory_to_opaque_rgba_image(
+            m_skia_backend_context->vulkan_context(),
+            source_fd,
+            handle_type,
+            plane.allocation_size,
+            external_memory.size.width(),
+            external_memory.size.height(),
+            static_cast<VkFormat>(plane.vulkan_format),
+            static_cast<VkImageLayout>(plane.vulkan_image_layout),
+            rgba_texture.image,
+            flip_y);
+        auto render_microseconds = (MonotonicTime::now() - started_at).to_microseconds();
+
+        if (render_result.is_error()) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_RGBA_RENDER count={} frame_id={} status=failed label={} reason={} render_us={} size={}x{} source_format={} source_layout={} source_allocation_size={} handle_type={} rgba_texture={} flip_y={}",
+                log_count,
+                external_memory.frame_id,
+                label,
+                render_result.error().string_literal(),
+                render_microseconds,
+                external_memory.size.width(),
+                external_memory.size.height(),
+                plane.vulkan_format,
+                plane.vulkan_image_layout,
+                plane.allocation_size,
+                to_underlying(handle_type),
+                rgba_texture.texture,
+                flip_y);
+            return render_result.release_error();
+        }
+
+        if (log_count <= 8 || log_count % 120 == 0 || render_microseconds > 5000) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_RGBA_RENDER count={} frame_id={} status=ok label={} render_us={} size={}x{} source_format={} source_layout={} source_allocation_size={} handle_type={} rgba_texture={} flip_y={}",
+                log_count,
+                external_memory.frame_id,
+                label,
+                render_microseconds,
+                external_memory.size.width(),
+                external_memory.size.height(),
+                plane.vulkan_format,
+                plane.vulkan_image_layout,
+                plane.allocation_size,
+                to_underlying(handle_type),
+                rgba_texture.texture,
+                flip_y);
+        }
+        return render_microseconds;
+    };
+
+    auto opaque_result = try_render("opaque_fd", plane.fd, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
+    if (!opaque_result.is_error())
+        return opaque_result.release_value();
+
+    auto dma_buf_result = try_render("dma_buf", plane.dma_buf_fd, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+    if (!dma_buf_result.is_error())
+        return dma_buf_result.release_value();
+
+    return dma_buf_result.release_error();
+}
+
 void OpenGLContext::delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture& texture)
 {
     auto* gl_delete_memory_objects_ext = reinterpret_cast<PFNGLDELETEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glDeleteMemoryObjectsEXT"));
-    if (texture.texture) {
+    if (texture.owns_texture && texture.texture) {
         auto gl_texture = static_cast<GLuint>(texture.texture);
         glDeleteTextures(1, &gl_texture);
         texture.texture = 0;

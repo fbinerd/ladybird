@@ -27,6 +27,16 @@ WebGLTexture::WebGLTexture(JS::Realm& realm, GC::Ref<WebGLRenderingContextBase> 
 
 WebGLTexture::~WebGLTexture() = default;
 
+void WebGLTexture::set_hardware_video_backing(HardwareVideoBacking backing)
+{
+    m_hardware_video_backing = backing;
+}
+
+void WebGLTexture::clear_hardware_video_backing()
+{
+    m_hardware_video_backing.clear();
+}
+
 void WebGLTexture::initialize(JS::Realm& realm)
 {
     WEB_SET_PROTOTYPE_FOR_INTERFACE(WebGLTexture);

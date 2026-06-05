@@ -13,6 +13,7 @@
 #include <AK/Vector.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Size.h>
+#include <LibMedia/VideoFrame.h>
 #include <LibWeb/Export.h>
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
@@ -69,6 +70,7 @@ public:
         u32 width { 0 };
         u32 height { 0 };
         u64 allocation_size { 0 };
+        bool owns_texture { true };
     };
     struct ImportedVideoOpaqueFDTexturePair {
         ImportedVideoOpaqueFDTexture* y { nullptr };
@@ -80,6 +82,11 @@ public:
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture> create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexturePair> get_or_create_imported_video_opaque_fd_textures(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
+    ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_imported_video_rgba_texture(u32 width, u32 height, size_t log_count);
+    ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_imported_video_rgba_target_texture(u32 target_texture, u32 width, u32 height, size_t log_count);
+    ErrorOr<u64> copy_vulkan_nv12_external_memory_to_imported_video_textures(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexturePair const&, size_t log_count);
+    ErrorOr<u64> render_vulkan_nv12_external_memory_to_imported_video_rgba_texture(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexture const&, size_t log_count, bool flip_y = false);
+    void probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const&, size_t log_count);
     void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif
 

@@ -80,7 +80,53 @@ static ErrorOr<VkPhysicalDevice> pick_physical_device(VkInstance instance)
     VERIFY_NOT_REACHED();
 }
 
-static ErrorOr<VkDevice> create_logical_device(VkPhysicalDevice physical_device, uint32_t* graphics_queue_family)
+struct VulkanDeviceFeatureProbe {
+    bool sampler_ycbcr_conversion_supported { false };
+    bool nv12_ycbcr_sampling_supported { false };
+};
+
+static VulkanDeviceFeatureProbe probe_vulkan_device_features(VkPhysicalDevice physical_device)
+{
+    VkPhysicalDeviceSamplerYcbcrConversionFeatures sampler_ycbcr_features {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES,
+        .pNext = nullptr,
+        .samplerYcbcrConversion = VK_FALSE,
+    };
+    VkPhysicalDeviceFeatures2 features {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &sampler_ycbcr_features,
+        .features = {},
+    };
+    vkGetPhysicalDeviceFeatures2(physical_device, &features);
+
+    VkFormatProperties2 nv12_format_properties {
+        .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+        .pNext = nullptr,
+        .formatProperties = {},
+    };
+    vkGetPhysicalDeviceFormatProperties2(physical_device, VK_FORMAT_G8_B8R8_2PLANE_420_UNORM, &nv12_format_properties);
+    auto optimal_features = nv12_format_properties.formatProperties.optimalTilingFeatures;
+    auto nv12_sampled = (optimal_features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+    auto nv12_ycbcr = (optimal_features & (VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT
+                               | VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_SEPARATE_RECONSTRUCTION_FILTER_BIT
+                               | VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_CHROMA_RECONSTRUCTION_EXPLICIT_BIT
+                               | VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_CHROMA_RECONSTRUCTION_EXPLICIT_FORCEABLE_BIT))
+        != 0;
+
+    dbgln("MUNDO_VULKAN_VIDEO_YCBCR_CAPS sampler_ycbcr_conversion={} nv12_sampled={} nv12_ycbcr_features={} optimal_features={} linear_features={}",
+        sampler_ycbcr_features.samplerYcbcrConversion,
+        nv12_sampled,
+        nv12_ycbcr,
+        static_cast<unsigned long long>(optimal_features),
+        static_cast<unsigned long long>(nv12_format_properties.formatProperties.linearTilingFeatures));
+
+    return VulkanDeviceFeatureProbe {
+        .sampler_ycbcr_conversion_supported = sampler_ycbcr_features.samplerYcbcrConversion == VK_TRUE,
+        .nv12_ycbcr_sampling_supported = sampler_ycbcr_features.samplerYcbcrConversion == VK_TRUE && nv12_sampled && nv12_ycbcr,
+    };
+}
+
+static ErrorOr<VkDevice> create_logical_device(VkPhysicalDevice physical_device, uint32_t* graphics_queue_family, VulkanDeviceFeatureProbe const& feature_probe)
 {
     VkDevice device;
 
@@ -114,6 +160,11 @@ static ErrorOr<VkDevice> create_logical_device(VkPhysicalDevice physical_device,
     queue_create_info.pQueuePriorities = &queue_priority;
 
     VkPhysicalDeviceFeatures deviceFeatures {};
+    VkPhysicalDeviceSamplerYcbcrConversionFeatures sampler_ycbcr_features {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES,
+        .pNext = nullptr,
+        .samplerYcbcrConversion = feature_probe.sampler_ycbcr_conversion_supported ? VK_TRUE : VK_FALSE,
+    };
 #ifdef USE_VULKAN_DMABUF_IMAGES
     Array<char const*, 4> device_extensions = {
         VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
@@ -126,6 +177,7 @@ static ErrorOr<VkDevice> create_logical_device(VkPhysicalDevice physical_device,
 #endif
     VkDeviceCreateInfo create_device_info {};
     create_device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    create_device_info.pNext = &sampler_ycbcr_features;
     create_device_info.pQueueCreateInfos = &queue_create_info;
     create_device_info.queueCreateInfoCount = 1;
     create_device_info.pEnabledFeatures = &deviceFeatures;
@@ -174,6 +226,22 @@ static ErrorOr<VkCommandBuffer> allocate_command_buffer(VkDevice logical_device,
     }
     return command_buffer;
 }
+
+static ErrorOr<VkFence> create_command_fence(VkDevice logical_device)
+{
+    VkFenceCreateInfo fence_info {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+    };
+    VkFence fence = VK_NULL_HANDLE;
+    VkResult result = vkCreateFence(logical_device, &fence_info, nullptr, &fence);
+    if (result != VK_SUCCESS) {
+        dbgln("vkCreateFence returned {}", to_underlying(result));
+        return Error::from_string_literal("command fence creation failed");
+    }
+    return fence;
+}
 #endif
 
 ErrorOr<VulkanContext> create_vulkan_context()
@@ -181,19 +249,25 @@ ErrorOr<VulkanContext> create_vulkan_context()
     uint32_t const api_version = VK_API_VERSION_1_1; // v1.1 needed for vkGetPhysicalDeviceFormatProperties2
     auto* instance = TRY(create_instance(api_version));
     auto* physical_device = TRY(pick_physical_device(instance));
+    auto feature_probe = probe_vulkan_device_features(physical_device);
 
     uint32_t graphics_queue_family = 0;
-    auto* logical_device = TRY(create_logical_device(physical_device, &graphics_queue_family));
+    auto* logical_device = TRY(create_logical_device(physical_device, &graphics_queue_family, feature_probe));
     VkQueue graphics_queue;
     vkGetDeviceQueue(logical_device, graphics_queue_family, 0, &graphics_queue);
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
     VkCommandPool command_pool = TRY(create_command_pool(logical_device, graphics_queue_family));
     VkCommandBuffer command_buffer = TRY(allocate_command_buffer(logical_device, command_pool));
+    VkFence command_fence = TRY(create_command_fence(logical_device));
 
     auto pfn_vk_get_memory_fd_khr = reinterpret_cast<PFN_vkGetMemoryFdKHR>(vkGetDeviceProcAddr(logical_device, "vkGetMemoryFdKHR"));
     if (pfn_vk_get_memory_fd_khr == nullptr) {
         return Error::from_string_literal("vkGetMemoryFdKHR unavailable");
+    }
+    auto pfn_vk_get_memory_fd_properties_khr = reinterpret_cast<PFN_vkGetMemoryFdPropertiesKHR>(vkGetDeviceProcAddr(logical_device, "vkGetMemoryFdPropertiesKHR"));
+    if (pfn_vk_get_memory_fd_properties_khr == nullptr) {
+        return Error::from_string_literal("vkGetMemoryFdPropertiesKHR unavailable");
     }
     auto pfn_vk_get_image_drm_format_modifier_properties_khr = reinterpret_cast<PFN_vkGetImageDrmFormatModifierPropertiesEXT>(vkGetDeviceProcAddr(logical_device, "vkGetImageDrmFormatModifierPropertiesEXT"));
     if (pfn_vk_get_image_drm_format_modifier_properties_khr == nullptr) {
@@ -208,11 +282,15 @@ ErrorOr<VulkanContext> create_vulkan_context()
         .logical_device = logical_device,
         .graphics_queue = graphics_queue,
         .graphics_queue_family = graphics_queue_family,
+        .sampler_ycbcr_conversion_supported = feature_probe.sampler_ycbcr_conversion_supported,
+        .nv12_ycbcr_sampling_supported = feature_probe.nv12_ycbcr_sampling_supported,
 #ifdef USE_VULKAN_DMABUF_IMAGES
         .command_pool = command_pool,
         .command_buffer = command_buffer,
+        .command_fence = command_fence,
         .ext_procs = {
             .get_memory_fd = pfn_vk_get_memory_fd_khr,
+            .get_memory_fd_properties = pfn_vk_get_memory_fd_properties_khr,
             .get_image_drm_format_modifier_properties = pfn_vk_get_image_drm_format_modifier_properties_khr,
         },
 #endif

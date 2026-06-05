@@ -74,6 +74,7 @@ struct MEDIA_API HardwareVideoFrameExternalMemoryPlane {
     u64 semaphore_value { 0 };
     u32 width { 0 };
     u32 height { 0 };
+    u32 pitch { 0 };
     u32 vulkan_format { 0 };
     u32 vulkan_image_layout { 0 };
     u32 vulkan_access { 0 };

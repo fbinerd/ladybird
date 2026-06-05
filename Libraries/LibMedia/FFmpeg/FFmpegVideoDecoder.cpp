@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #if defined(__linux__)
+#    include <errno.h>
 #    include <dlfcn.h>
 #    include <drm/drm_fourcc.h>
 #    include <fcntl.h>
@@ -275,7 +276,7 @@ static bool vulkan_allow_decoder_pool_bridge_probe()
 {
     auto const* raw_value = getenv("MUNDO_VIDEO_VULKAN_ALLOW_DECODER_POOL_BRIDGE");
     if (!raw_value)
-        return false;
+        return true;
 
     return raw_value[0] != '\0'
         && strcmp(raw_value, "0")
@@ -332,6 +333,32 @@ static char const* vulkan_frame_tiling_name(VkImageTiling tiling)
     return "unknown";
 }
 
+static bool requested_vulkan_disable_multiplane()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_VULKAN_DISABLE_MULTIPLANE");
+    if (!raw_value)
+        return false;
+
+    return raw_value[0] != '\0'
+        && strcmp(raw_value, "0")
+        && strcmp(raw_value, "false")
+        && strcmp(raw_value, "no")
+        && strcmp(raw_value, "off");
+}
+
+static bool vulkan_cuda_allow_unsafe_uv_offset0()
+{
+    auto const* raw_value = getenv("MUNDO_VIDEO_VULKAN_CUDA_ALLOW_UNSAFE_UV_OFFSET0");
+    if (!raw_value)
+        return false;
+
+    return raw_value[0] != '\0'
+        && strcmp(raw_value, "0")
+        && strcmp(raw_value, "false")
+        && strcmp(raw_value, "no")
+        && strcmp(raw_value, "off");
+}
+
 static VkExportMemoryAllocateInfo const* vulkan_export_memory_allocate_infos(VkExternalMemoryHandleTypeFlags handle_types)
 {
     static VkExportMemoryAllocateInfo s_opaque_fd_infos[AV_NUM_DATA_POINTERS];
@@ -379,14 +406,25 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
         return true;
     }
 
+    static Atomic<int> s_known_failed_codec_id { AV_CODEC_ID_NONE };
+    if (s_known_failed_codec_id.load() == codec_context->codec_id) {
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=skipped reason=known_failed_codec codec={} requested_handle={} requested_tiling={} requested_disable_multiplane={}",
+            codec_context->codec ? codec_context->codec->name : "unknown",
+            vulkan_export_handle_types_name(requested_vulkan_export_handle_types()),
+            vulkan_frame_tiling_name(requested_vulkan_frame_tiling()),
+            requested_vulkan_disable_multiplane());
+        return false;
+    }
+
     auto requested_tiling = requested_vulkan_frame_tiling();
-    auto try_configuration = [&](VkExternalMemoryHandleTypeFlags handle_types, VkImageTiling tiling, char const* reason) -> bool {
+    auto requested_disable_multiplane = requested_vulkan_disable_multiplane();
+    auto try_configuration = [&](VkExternalMemoryHandleTypeFlags handle_types, VkImageTiling tiling, bool disable_multiplane, char const* reason) -> bool {
         auto const* export_memory_allocate_infos = vulkan_export_memory_allocate_infos(handle_types);
         AVBufferRef* frames_ref = nullptr;
         auto result = avcodec_get_hw_frames_parameters(codec_context, codec_context->hw_device_ctx, AV_PIX_FMT_VULKAN, &frames_ref);
         if (result < 0 || !frames_ref) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=parameters_failed error={} code={} handle={} requested_tiling={} reason={}",
-                av_error_code_to_string(result), result, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=parameters_failed error={} code={} handle={} requested_tiling={} disable_multiplane={} reason={}",
+                av_error_code_to_string(result), result, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), disable_multiplane, reason);
             if (frames_ref)
                 av_buffer_unref(&frames_ref);
             return false;
@@ -394,23 +432,23 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
 
         auto* frames_context = reinterpret_cast<AVHWFramesContext*>(frames_ref->data);
         if (!frames_context) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_frames_hwctx handle={} requested_tiling={} reason={}",
-                vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_frames_hwctx handle={} requested_tiling={} disable_multiplane={} reason={}",
+                vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), disable_multiplane, reason);
             av_buffer_unref(&frames_ref);
             return false;
         }
 
         auto* vulkan_frames_context = reinterpret_cast<AVVulkanFramesContext*>(frames_context->hwctx);
         if (!vulkan_frames_context) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_vulkan_frames_hwctx handle={} requested_tiling={} reason={}",
-                vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=no_vulkan_frames_hwctx handle={} requested_tiling={} disable_multiplane={} reason={}",
+                vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), disable_multiplane, reason);
             av_buffer_unref(&frames_ref);
             return false;
         }
 
         if (frames_context->free || frames_context->user_opaque) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=existing_user_callback_continuing free={} user_opaque={} handle={} requested_tiling={} reason={}",
-                frames_context->free != nullptr, frames_context->user_opaque != nullptr, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=existing_user_callback_continuing free={} user_opaque={} handle={} requested_tiling={} disable_multiplane={} reason={}",
+                frames_context->free != nullptr, frames_context->user_opaque != nullptr, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), disable_multiplane, reason);
         }
 
         for (size_t plane = 0; plane < AV_NUM_DATA_POINTERS; ++plane) {
@@ -418,27 +456,32 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
         }
 
         vulkan_frames_context->tiling = tiling;
-        vulkan_frames_context->flags = static_cast<AVVkFrameFlags>(vulkan_frames_context->flags | AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE);
+        if (disable_multiplane) {
+            vulkan_frames_context->flags = static_cast<AVVkFrameFlags>(vulkan_frames_context->flags | AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE);
+        } else {
+            vulkan_frames_context->flags = static_cast<AVVkFrameFlags>(static_cast<unsigned>(vulkan_frames_context->flags) & ~static_cast<unsigned>(AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE));
+        }
 
         result = av_hwframe_ctx_init(frames_ref);
         if (result < 0) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=init_failed error={} code={} handle={} requested_tiling={} reason={}",
-                av_error_code_to_string(result), result, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=init_failed error={} code={} handle={} requested_tiling={} disable_multiplane={} flags={} reason={}",
+                av_error_code_to_string(result), result, vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), disable_multiplane, static_cast<unsigned>(vulkan_frames_context->flags), reason);
             av_buffer_unref(&frames_ref);
             return false;
         }
 
         codec_context->hw_frames_ctx = av_buffer_ref(frames_ref);
         if (!codec_context->hw_frames_ctx) {
-            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=ref_failed handle={} requested_tiling={} reason={}",
-                vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), reason);
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=ref_failed handle={} requested_tiling={} disable_multiplane={} reason={}",
+                vulkan_export_handle_types_name(handle_types), vulkan_frame_tiling_name(tiling), disable_multiplane, reason);
             av_buffer_unref(&frames_ref);
             return false;
         }
 
-        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=enabled handle={} requested_tiling={} fallback_reason={} format={} sw_format={} size={}x{} initial_pool_size={} tiling={} flags={}",
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=enabled handle={} requested_tiling={} disable_multiplane={} fallback_reason={} format={} sw_format={} size={}x{} initial_pool_size={} tiling={} flags={}",
             vulkan_export_handle_types_name(handle_types),
             vulkan_frame_tiling_name(tiling),
+            disable_multiplane,
             reason,
             pixel_format_name(frames_context->format),
             pixel_format_name(frames_context->sw_format),
@@ -463,6 +506,10 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
         requested_tiling,
         VK_IMAGE_TILING_LINEAR,
     };
+    bool disable_multiplane_candidates[] {
+        requested_disable_multiplane,
+        !requested_disable_multiplane,
+    };
 
     for (size_t handle_index = 0; handle_index < AK::array_size(handle_type_candidates); ++handle_index) {
         auto handle_types = handle_type_candidates[handle_index];
@@ -476,28 +523,42 @@ static bool configure_vulkan_exportable_frames_context(AVCodecContext* codec_con
         if (already_tried_handle)
             continue;
 
-        for (size_t tiling_index = 0; tiling_index < AK::array_size(tiling_candidates); ++tiling_index) {
-            auto tiling = tiling_candidates[tiling_index];
-            bool already_tried_tiling = false;
-            for (size_t previous_tiling_index = 0; previous_tiling_index < tiling_index; ++previous_tiling_index) {
-                if (tiling_candidates[previous_tiling_index] == tiling) {
-                    already_tried_tiling = true;
+        for (size_t disable_multiplane_index = 0; disable_multiplane_index < AK::array_size(disable_multiplane_candidates); ++disable_multiplane_index) {
+            auto disable_multiplane = disable_multiplane_candidates[disable_multiplane_index];
+            bool already_tried_disable_multiplane = false;
+            for (size_t previous_disable_multiplane_index = 0; previous_disable_multiplane_index < disable_multiplane_index; ++previous_disable_multiplane_index) {
+                if (disable_multiplane_candidates[previous_disable_multiplane_index] == disable_multiplane) {
+                    already_tried_disable_multiplane = true;
                     break;
                 }
             }
-            if (already_tried_tiling)
+            if (already_tried_disable_multiplane)
                 continue;
 
-            auto const* reason = handle_types == requested_handle_types && tiling == requested_tiling
-                ? "requested"
-                : "fallback";
-            if (try_configuration(handle_types, tiling, reason))
-                return true;
+            for (size_t tiling_index = 0; tiling_index < AK::array_size(tiling_candidates); ++tiling_index) {
+                auto tiling = tiling_candidates[tiling_index];
+                bool already_tried_tiling = false;
+                for (size_t previous_tiling_index = 0; previous_tiling_index < tiling_index; ++previous_tiling_index) {
+                    if (tiling_candidates[previous_tiling_index] == tiling) {
+                        already_tried_tiling = true;
+                        break;
+                    }
+                }
+                if (already_tried_tiling)
+                    continue;
+
+                auto const* reason = handle_types == requested_handle_types && tiling == requested_tiling && disable_multiplane == requested_disable_multiplane
+                    ? "requested"
+                    : "fallback";
+                if (try_configuration(handle_types, tiling, disable_multiplane, reason))
+                    return true;
+            }
         }
     }
 
-    dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=all_configurations_failed requested_handle={} requested_tiling={}",
-        vulkan_export_handle_types_name(requested_handle_types), vulkan_frame_tiling_name(requested_tiling));
+    dbgln("MUNDO_MEDIA_FFMPEG vulkan_exportable_frames_context status=all_configurations_failed requested_handle={} requested_tiling={} requested_disable_multiplane={}",
+        vulkan_export_handle_types_name(requested_handle_types), vulkan_frame_tiling_name(requested_tiling), requested_disable_multiplane);
+    s_known_failed_codec_id.store(codec_context->codec_id);
     return false;
 }
 
@@ -1049,6 +1110,78 @@ static void log_vulkan_frame_probe_once(AVFrame const* frame, HardwareVideoFrame
             frame->height);
         return;
     }
+
+    auto log_drm_prime_map_attempt = [&](char const* mode, int flags) {
+        auto* mapped_frame = av_frame_alloc();
+        if (!mapped_frame) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_drm_prime_map_probe frame_id={} mode={} status=failed error=allocation_failed", descriptor.frame_id, mode);
+            return;
+        }
+        auto cleanup_mapped_frame = ScopeGuard([&] {
+            av_frame_free(&mapped_frame);
+        });
+
+        mapped_frame->format = AV_PIX_FMT_DRM_PRIME;
+        auto map_result = av_hwframe_map(mapped_frame, frame, flags);
+        if (map_result < 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_drm_prime_map_probe frame_id={} mode={} status=failed error={} code={}",
+                descriptor.frame_id,
+                mode,
+                av_error_code_to_string(map_result),
+                map_result);
+            return;
+        }
+
+        auto mapped_format = static_cast<AVPixelFormat>(mapped_frame->format);
+        if (mapped_format != AV_PIX_FMT_DRM_PRIME || !mapped_frame->data[0]) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_drm_prime_map_probe frame_id={} mode={} status=mapped_non_drm_prime format={}",
+                descriptor.frame_id,
+                mode,
+                pixel_format_name(mapped_format));
+            return;
+        }
+
+        auto const* drm_descriptor = reinterpret_cast<AVDRMFrameDescriptor const*>(mapped_frame->data[0]);
+        dbgln("MUNDO_MEDIA_FFMPEG vulkan_drm_prime_map_probe frame_id={} mode={} status=success objects={} layers={} width={} height={}",
+            descriptor.frame_id,
+            mode,
+            drm_descriptor->nb_objects,
+            drm_descriptor->nb_layers,
+            mapped_frame->width,
+            mapped_frame->height);
+
+        for (int object_index = 0; object_index < drm_descriptor->nb_objects; ++object_index) {
+            auto const& object = drm_descriptor->objects[object_index];
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_drm_prime_map_object frame_id={} object={} fd={} size={} modifier={}",
+                descriptor.frame_id,
+                object_index,
+                object.fd,
+                object.size,
+                object.format_modifier);
+        }
+
+        for (int layer_index = 0; layer_index < drm_descriptor->nb_layers; ++layer_index) {
+            auto const& layer = drm_descriptor->layers[layer_index];
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_drm_prime_map_layer frame_id={} layer={} drm_format={} planes={}",
+                descriptor.frame_id,
+                layer_index,
+                layer.format,
+                layer.nb_planes);
+            for (int plane_index = 0; plane_index < layer.nb_planes; ++plane_index) {
+                auto const& plane = layer.planes[plane_index];
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_drm_prime_map_plane frame_id={} layer={} plane={} object={} offset={} pitch={}",
+                    descriptor.frame_id,
+                    layer_index,
+                    plane_index,
+                    plane.object_index,
+                    plane.offset,
+                    plane.pitch);
+            }
+        }
+    };
+
+    log_drm_prime_map_attempt("direct", AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+    log_drm_prime_map_attempt("fallback", AV_HWFRAME_MAP_READ);
 
     auto const* vk_frame = reinterpret_cast<AVVkFrame const*>(frame->data[0]);
     dbgln("MUNDO_MEDIA_FFMPEG vulkan_frame_probe frame_id={} status=ok size={}x{} tiling={} flags={} img0={} img1={} img2={} mem0_size={} mem1_size={} mem2_size={} offset0={} offset1={} offset2={} layout0={} layout1={} layout2={} access0={} access1={} access2={} queue0={} queue1={} queue2={} sem0={} sem1={} sem2={} sem_value0={} sem_value1={} sem_value2={}",
@@ -1888,10 +2021,11 @@ public:
         return make_ref_counted<RetainedHardwareFrameSource>(retained_frame, cicp, descriptor);
     }
 
-    RetainedHardwareFrameSource(AVFrame* frame, CodingIndependentCodePoints cicp, HardwareVideoFrameDescriptor descriptor)
+    RetainedHardwareFrameSource(AVFrame* frame, CodingIndependentCodePoints cicp, HardwareVideoFrameDescriptor descriptor, bool is_vulkan_bridge_frame = false)
         : HardwareVideoFrameHandle(descriptor)
         , m_frame(frame)
         , m_cicp(cicp)
+        , m_is_vulkan_bridge_frame(is_vulkan_bridge_frame)
     {
 #if defined(__linux__)
         if (descriptor.backend == HardwareVideoFrameBackend::Cuda) {
@@ -2008,6 +2142,119 @@ public:
         if (!get_memory_fd)
             return Error::from_string_literal("Vulkan vkGetMemoryFdKHR is unavailable");
         auto* get_image_drm_format_modifier_properties = reinterpret_cast<PFN_vkGetImageDrmFormatModifierPropertiesEXT>(get_device_proc_addr(vulkan_device_context->act_dev, "vkGetImageDrmFormatModifierPropertiesEXT"));
+
+        auto export_drm_prime_external_memory = [&]() -> ErrorOr<HardwareVideoFrameExternalMemoryDescriptor> {
+            auto* mapped_frame = av_frame_alloc();
+            if (!mapped_frame)
+                return Error::from_string_literal("Failed to allocate DRM PRIME mapped frame");
+            auto cleanup_mapped_frame = ScopeGuard([&] {
+                av_frame_free(&mapped_frame);
+            });
+
+            mapped_frame->format = AV_PIX_FMT_DRM_PRIME;
+            auto map_result = av_hwframe_map(mapped_frame, m_frame, AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+            if (map_result < 0) {
+                map_result = av_hwframe_map(mapped_frame, m_frame, AV_HWFRAME_MAP_READ);
+                if (map_result < 0)
+                    return Error::from_string_literal("Vulkan frame did not map to DRM PRIME");
+            }
+
+            if (static_cast<AVPixelFormat>(mapped_frame->format) != AV_PIX_FMT_DRM_PRIME || !mapped_frame->data[0])
+                return Error::from_string_literal("Vulkan frame DRM PRIME map returned no DRM descriptor");
+
+            auto const* drm_descriptor = reinterpret_cast<AVDRMFrameDescriptor const*>(mapped_frame->data[0]);
+            if (drm_descriptor->nb_objects <= 0 || drm_descriptor->nb_layers <= 0)
+                return Error::from_string_literal("Vulkan DRM PRIME descriptor is empty");
+
+            auto const& layer = drm_descriptor->layers[0];
+            if (layer.nb_planes <= 0)
+                return Error::from_string_literal("Vulkan DRM PRIME descriptor has no planes");
+
+            HardwareVideoFrameExternalMemoryDescriptor external_memory;
+            external_memory.backend = descriptor().backend;
+            external_memory.frame_id = descriptor().frame_id;
+            external_memory.size = descriptor().size;
+            external_memory.hardware_format = descriptor().hardware_format;
+            external_memory.software_format = descriptor().software_format;
+            external_memory.vulkan_tiling = static_cast<u32>(VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT);
+            external_memory.single_image = false;
+            external_memory.single_memory = drm_descriptor->nb_objects == 1;
+
+            auto cleanup_exported_fds = ArmedScopeGuard([&] {
+                for (auto& plane : external_memory.planes) {
+                    if (plane.dma_buf_fd >= 0) {
+                        close(plane.dma_buf_fd);
+                        plane.dma_buf_fd = -1;
+                    }
+                }
+            });
+
+            auto plane_count = min(layer.nb_planes, static_cast<int>(AK::array_size(external_memory.planes)));
+            for (int plane_index = 0; plane_index < plane_count; ++plane_index) {
+                auto const& drm_plane = layer.planes[plane_index];
+                if (drm_plane.object_index < 0 || drm_plane.object_index >= drm_descriptor->nb_objects)
+                    return Error::from_string_literal("Vulkan DRM PRIME plane references invalid object");
+
+                auto const& object = drm_descriptor->objects[drm_plane.object_index];
+                auto duplicated_fd = dup(object.fd);
+                if (duplicated_fd < 0)
+                    return Error::from_string_literal("Failed to duplicate Vulkan DRM PRIME dma-buf fd");
+
+                auto& exported_plane = external_memory.planes[plane_index];
+                exported_plane.dma_buf_fd = duplicated_fd;
+                exported_plane.allocation_size = object.size;
+                exported_plane.offset = drm_plane.offset;
+                exported_plane.pitch = drm_plane.pitch;
+                exported_plane.has_memory = true;
+                exported_plane.has_image = true;
+                exported_plane.vulkan_drm_format_modifier = object.format_modifier;
+                exported_plane.has_vulkan_drm_format_modifier = object.format_modifier != DRM_FORMAT_MOD_INVALID;
+                if (plane_index == 0) {
+                    exported_plane.width = static_cast<u32>(m_frame->width);
+                    exported_plane.height = static_cast<u32>(m_frame->height);
+                } else {
+                    exported_plane.width = static_cast<u32>((m_frame->width + 1) / 2);
+                    exported_plane.height = static_cast<u32>((m_frame->height + 1) / 2);
+                }
+                ++external_memory.plane_count;
+            }
+
+            if (external_memory.plane_count < 2)
+                return Error::from_string_literal("Vulkan DRM PRIME descriptor did not expose separate Y/UV planes");
+
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_drm_prime_external_memory_descriptor frame_id={} status=ok objects={} layers={} drm_format={} planes={} single_memory={} y_fd={} y_offset={} y_pitch={} y_size={} y_modifier={} uv_fd={} uv_offset={} uv_pitch={} uv_size={} uv_modifier={}",
+                descriptor().frame_id,
+                drm_descriptor->nb_objects,
+                drm_descriptor->nb_layers,
+                layer.format,
+                external_memory.plane_count,
+                external_memory.single_memory,
+                external_memory.planes[0].dma_buf_fd,
+                external_memory.planes[0].offset,
+                external_memory.planes[0].pitch,
+                external_memory.planes[0].allocation_size,
+                external_memory.planes[0].vulkan_drm_format_modifier,
+                external_memory.planes[1].dma_buf_fd,
+                external_memory.planes[1].offset,
+                external_memory.planes[1].pitch,
+                external_memory.planes[1].allocation_size,
+                external_memory.planes[1].vulkan_drm_format_modifier);
+
+            cleanup_exported_fds.disarm();
+            return external_memory;
+        };
+
+        static bool s_skip_vulkan_drm_prime_external_memory_descriptor { false };
+        if (!s_skip_vulkan_drm_prime_external_memory_descriptor) {
+            auto drm_prime_external_memory = export_drm_prime_external_memory();
+            if (!drm_prime_external_memory.is_error())
+                return drm_prime_external_memory.release_value();
+
+            s_skip_vulkan_drm_prime_external_memory_descriptor = true;
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_drm_prime_external_memory_descriptor frame_id={} status=failed action=skip_future_queries reason={}",
+                descriptor().frame_id,
+                drm_prime_external_memory.error().string_literal());
+        }
 
         auto const* vk_frame = reinterpret_cast<AVVkFrame const*>(m_frame->data[0]);
         HardwareVideoFrameExternalMemoryDescriptor external_memory;
@@ -2148,6 +2395,22 @@ public:
                 external_memory.planes[2].has_vulkan_drm_format_modifier,
                 external_memory.planes[2].vulkan_drm_format_modifier);
         }
+        if (external_memory.single_image && external_memory.single_memory && external_memory.vulkan_tiling == VK_IMAGE_TILING_OPTIMAL && external_memory.plane_count == 1 && !external_memory.planes[0].has_vulkan_drm_format_modifier) {
+            static size_t s_vulkan_optimal_multiplanar_export_count { 0 };
+            auto optimal_count = ++s_vulkan_optimal_multiplanar_export_count;
+            if (optimal_count <= 8 || optimal_count % 120 == 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_zero_copy_blocker count={} frame_id={} reason=single_optimal_multiplanar_image_without_drm_prime size={}x{} sw_format={} vk_format={} allocation_size={} y_offset={} inferred_uv_offset={} next_step=gpu_to_gpu_multiplanar_conversion",
+                    optimal_count,
+                    descriptor().frame_id,
+                    m_frame->width,
+                    m_frame->height,
+                    pixel_format_name(frames_context->sw_format),
+                    external_memory.planes[0].vulkan_format,
+                    external_memory.planes[0].allocation_size,
+                    external_memory.planes[0].offset,
+                    static_cast<u64>(external_memory.planes[0].offset) + static_cast<u64>(m_frame->width) * static_cast<u64>(m_frame->height));
+            }
+        }
 
         cleanup_exported_fds.disarm();
         return external_memory;
@@ -2159,17 +2422,211 @@ public:
     virtual ErrorOr<HardwareVideoFrameGLTextureUploadResult> upload_to_gl_textures(HardwareVideoFrameGLTextureUploadRequest const& request) const override
     {
 #if defined(__linux__)
-        if (m_frame->format != AV_PIX_FMT_CUDA)
-            return Error::from_string_literal("Retained frame is not a CUDA frame");
-        if (!m_frame->data[0] || !m_frame->data[1])
-            return Error::from_string_literal("CUDA frame does not expose both NV12 planes");
-        if (m_frame->linesize[0] <= 0 || m_frame->linesize[1] <= 0)
-            return Error::from_string_literal("CUDA frame has invalid plane pitch");
         auto use_external_memory_upload = request.texture_target == 0 && request.y_upload_buffer && request.uv_upload_buffer && request.y_upload_buffer_size && request.uv_upload_buffer_size;
         if (!request.y_texture || !request.uv_texture || (!request.texture_target && !use_external_memory_upload))
             return Error::from_string_literal("Invalid GL texture upload request");
 
         auto* functions = TRY(cuda_gl_functions());
+        if (m_frame->format == AV_PIX_FMT_VULKAN) {
+            if (!use_external_memory_upload)
+                return Error::from_string_literal("Vulkan GPU bridge requires external texture memory");
+
+            auto init_result = functions->cuInit(0);
+            if (init_result != CUDA_SUCCESS) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} step=init result={} error={}",
+                    descriptor().frame_id, static_cast<int>(init_result), cuda_error_name(*functions, init_result));
+                return Error::from_string_literal("Failed to initialize CUDA for Vulkan GPU bridge");
+            }
+
+            CUdevice device { 0 };
+            auto device_result = functions->cuDeviceGet(&device, 0);
+            if (device_result != CUDA_SUCCESS) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} step=device_get result={} error={}",
+                    descriptor().frame_id, static_cast<int>(device_result), cuda_error_name(*functions, device_result));
+                return Error::from_string_literal("Failed to get CUDA device for Vulkan GPU bridge");
+            }
+
+            CUcontext primary_context { nullptr };
+            auto retain_result = functions->cuDevicePrimaryCtxRetain(&primary_context, device);
+            if (retain_result != CUDA_SUCCESS || !primary_context) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} step=primary_ctx_retain result={} error={} context={}",
+                    descriptor().frame_id, static_cast<int>(retain_result), cuda_error_name(*functions, retain_result), primary_context);
+                return Error::from_string_literal("Failed to retain CUDA primary context for Vulkan GPU bridge");
+            }
+            auto release_primary_context = ScopeGuard([&] {
+                functions->cuDevicePrimaryCtxRelease(device);
+            });
+
+            CUcontext previous_context { nullptr };
+            auto push_result = functions->cuCtxPushCurrent(primary_context);
+            if (push_result != CUDA_SUCCESS) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} step=ctx_push result={} error={} context={}",
+                    descriptor().frame_id, static_cast<int>(push_result), cuda_error_name(*functions, push_result), primary_context);
+                return Error::from_string_literal("Failed to push CUDA primary context for Vulkan GPU bridge");
+            }
+            auto pop_context = ScopeGuard([&] {
+                functions->cuCtxPopCurrent(&previous_context);
+            });
+
+            auto external_memory = TRY(export_external_memory());
+            auto close_exported_fds = ScopeGuard([&] {
+                for (auto& plane : external_memory.planes) {
+                    if (plane.fd >= 0) {
+                        close(plane.fd);
+                        plane.fd = -1;
+                    }
+                    if (plane.dma_buf_fd >= 0) {
+                        close(plane.dma_buf_fd);
+                        plane.dma_buf_fd = -1;
+                    }
+                }
+            });
+
+            if (external_memory.plane_count < 1 || external_memory.planes[0].fd < 0)
+                return Error::from_string_literal("Vulkan GPU bridge source has no exportable memory fd");
+
+            if (external_memory.single_image
+                && external_memory.single_memory
+                && external_memory.plane_count == 1
+                && external_memory.vulkan_tiling == VK_IMAGE_TILING_OPTIMAL
+                && !external_memory.planes[0].has_vulkan_drm_format_modifier) {
+                if (!m_is_vulkan_bridge_frame) {
+                    auto bridge_frame = create_exportable_vulkan_bridge_frame();
+                    if (!bridge_frame.is_error()) {
+                        auto bridge_source = make_ref_counted<RetainedHardwareFrameSource>(bridge_frame.release_value(), m_cicp, descriptor(), true);
+                        auto bridge_upload = bridge_source->upload_to_gl_textures(request);
+                        if (!bridge_upload.is_error()) {
+                            dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=uploaded_via_bridge copy_stage={} upload_mode={} upload_us={}",
+                                descriptor().frame_id,
+                                bridge_upload.value().copy_stage,
+                                bridge_upload.value().upload_mode,
+                                bridge_upload.value().upload_microseconds);
+                            return bridge_upload.release_value();
+                        }
+                        dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=upload_failed reason={}",
+                            descriptor().frame_id,
+                            bridge_upload.error().string_literal());
+                    } else {
+                        dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=create_failed reason={}",
+                            descriptor().frame_id,
+                            bridge_frame.error().string_literal());
+                    }
+                }
+
+                static size_t s_vulkan_cuda_bridge_impossible_count { 0 };
+                auto impossible_count = ++s_vulkan_cuda_bridge_impossible_count;
+                if (impossible_count <= 8 || impossible_count % 120 == 0) {
+                    dbgln("MUNDO_MEDIA_FFMPEG vulkan_zero_copy_blocker count={} frame_id={} reason=single_optimal_multiplanar_image_cannot_be_split_by_cuda_offset size={}x{} allocation_size={} y_offset={} inferred_uv_offset={} next_step=gpu_to_gpu_multiplanar_conversion",
+                        impossible_count,
+                        descriptor().frame_id,
+                        request.width,
+                        request.height,
+                        external_memory.planes[0].allocation_size,
+                        external_memory.planes[0].offset,
+                        static_cast<u64>(external_memory.planes[0].offset) + static_cast<u64>(request.width) * static_cast<u64>(request.height));
+                }
+                return Error::from_string_literal("Vulkan optimal multiplanar frame requires GPU-to-GPU plane conversion");
+            }
+
+            auto const& y_source_plane = external_memory.planes[0];
+            auto const& uv_source_plane = external_memory.plane_count > 1 && external_memory.planes[1].fd >= 0 ? external_memory.planes[1] : external_memory.planes[0];
+            auto y_source_offset = y_source_plane.offset > 0 ? static_cast<size_t>(y_source_plane.offset) : 0;
+            auto uv_source_offset = external_memory.plane_count > 1 && external_memory.planes[1].fd >= 0
+                ? (uv_source_plane.offset > 0 ? static_cast<size_t>(uv_source_plane.offset) : 0)
+                : y_source_offset + static_cast<size_t>(request.width) * static_cast<size_t>(request.height);
+
+            auto duplicate_source_fd = [&](char const* plane_name, int fd) -> ErrorOr<int> {
+                auto duplicated_fd = dup(fd);
+                if (duplicated_fd < 0) {
+                    dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} plane={} step=dup_source_fd fd={} errno={}",
+                        descriptor().frame_id, plane_name, fd, errno);
+                    return Error::from_string_literal("Failed to duplicate Vulkan external memory fd");
+                }
+                return duplicated_fd;
+            };
+
+            auto y_source_fd = TRY(duplicate_source_fd("y", y_source_plane.fd));
+
+            auto upload_start = MonotonicTime::now();
+            TRY(copy_external_memory_array_to_external_memory_array(*functions, "y", descriptor().frame_id, y_source_fd, y_source_plane.allocation_size, y_source_offset, true, static_cast<int>(request.y_upload_buffer), request.y_upload_buffer_size, true, request.width, request.height, 1, request.width, request.height));
+            auto uv_source_fd = TRY(duplicate_source_fd("uv", uv_source_plane.fd));
+            auto uv_copy_result = copy_external_memory_array_to_external_memory_array(*functions, "uv", descriptor().frame_id, uv_source_fd, uv_source_plane.allocation_size, uv_source_offset, true, static_cast<int>(request.uv_upload_buffer), request.uv_upload_buffer_size, true, request.uv_width * 2, request.uv_height, 2, request.uv_width, request.uv_height);
+            auto uv_offset_fallback_used = false;
+            if (uv_copy_result.is_error() && external_memory.single_image && external_memory.single_memory && uv_source_offset != 0 && vulkan_cuda_allow_unsafe_uv_offset0()) {
+                auto fallback_uv_source_fd = TRY(duplicate_source_fd("uv_offset0", uv_source_plane.fd));
+                auto fallback_result = copy_external_memory_array_to_external_memory_array(*functions, "uv_offset0", descriptor().frame_id, fallback_uv_source_fd, uv_source_plane.allocation_size, 0, true, static_cast<int>(request.uv_upload_buffer), request.uv_upload_buffer_size, true, request.uv_width * 2, request.uv_height, 2, request.uv_width, request.uv_height);
+                if (!fallback_result.is_error()) {
+                    uv_offset_fallback_used = true;
+                    dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_uv_offset_fallback frame_id={} original_offset={} fallback_offset=0 status=ok array={}x{} width_bytes={} height={}",
+                        descriptor().frame_id,
+                        uv_source_offset,
+                        request.uv_width,
+                        request.uv_height,
+                        request.uv_width * 2,
+                        request.uv_height);
+                } else {
+                    dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_uv_offset_fallback frame_id={} original_offset={} fallback_offset=0 status=failed reason={}",
+                        descriptor().frame_id,
+                        uv_source_offset,
+                        fallback_result.error().string_literal());
+                    return uv_copy_result.release_error();
+                }
+            } else if (uv_copy_result.is_error()) {
+                if (external_memory.single_image && external_memory.single_memory && uv_source_offset != 0) {
+                    dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_uv_offset_fallback frame_id={} original_offset={} fallback_offset=0 status=blocked reason=unsafe_single_image_uv_guess enable=MUNDO_VIDEO_VULKAN_CUDA_ALLOW_UNSAFE_UV_OFFSET0",
+                        descriptor().frame_id,
+                        uv_source_offset);
+                    dbgln("MUNDO_MEDIA_FFMPEG vulkan_zero_copy_blocker frame_id={} reason=single_optimal_multiplanar_uv_not_mappable_with_cuda_external_array source_offset={} source_allocation_size={} source_tiling={} source_planes={} next_step=gpu_to_gpu_multiplanar_conversion",
+                        descriptor().frame_id,
+                        uv_source_offset,
+                        uv_source_plane.allocation_size,
+                        external_memory.vulkan_tiling,
+                        external_memory.plane_count);
+                    return Error::from_string_literal("Vulkan optimal multiplanar frame requires GPU-to-GPU plane conversion");
+                }
+                return uv_copy_result.release_error();
+            }
+            auto upload_microseconds = (MonotonicTime::now() - upload_start).to_microseconds();
+
+            m_was_gpu_uploaded = true;
+            static size_t s_vulkan_cuda_bridge_upload_count { 0 };
+            auto count = ++s_vulkan_cuda_bridge_upload_count;
+            if (count <= 8 || count % 120 == 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_upload count={} frame_id={} copy_stage=gpu_to_gpu_vulkan_cuda_bridge direct_zero_copy=false copied_on_gpu=true size={}x{} uv={}x{} upload_us={} source_single_memory={} source_single_image={} source_tiling={} source_plane_count={} y_offset={} uv_offset={} uv_offset_fallback={} y_size={} uv_size={}",
+                    count,
+                    descriptor().frame_id,
+                    request.width,
+                    request.height,
+                    request.uv_width,
+                    request.uv_height,
+                    upload_microseconds,
+                    external_memory.single_memory,
+                    external_memory.single_image,
+                    external_memory.vulkan_tiling,
+                    external_memory.plane_count,
+                    y_source_offset,
+                    uv_source_offset,
+                    uv_offset_fallback_used,
+                    y_source_plane.allocation_size,
+                    uv_source_plane.allocation_size);
+            }
+
+            return HardwareVideoFrameGLTextureUploadResult {
+                .upload_microseconds = static_cast<u64>(upload_microseconds),
+                .direct_zero_copy = false,
+                .copied_on_gpu = true,
+                .copy_stage = "gpu_to_gpu_vulkan_cuda_bridge",
+                .upload_mode = "vulkan_cuda_external_memory",
+            };
+        }
+
+        if (m_frame->format != AV_PIX_FMT_CUDA)
+            return Error::from_string_literal("Retained frame is not a CUDA or Vulkan frame");
+        if (!m_frame->data[0] || !m_frame->data[1])
+            return Error::from_string_literal("CUDA frame does not expose both NV12 planes");
+        if (m_frame->linesize[0] <= 0 || m_frame->linesize[1] <= 0)
+            return Error::from_string_literal("CUDA frame has invalid plane pitch");
+
         auto* cuda_context = cuda_context_from_frame();
         if (!cuda_context)
             return Error::from_string_literal("CUDA frame has no associated CUDA context");
@@ -2230,8 +2687,169 @@ public:
 
 private:
 #if defined(__linux__)
+    ErrorOr<AVFrame*> create_exportable_vulkan_bridge_frame() const
+    {
+        if (m_frame->format != AV_PIX_FMT_VULKAN)
+            return Error::from_string_literal("Vulkan bridge requires a Vulkan source frame");
+        if (!m_frame->hw_frames_ctx || !m_frame->hw_frames_ctx->data)
+            return Error::from_string_literal("Vulkan bridge source has no hardware frames context");
+
+        auto* source_frames_context = reinterpret_cast<AVHWFramesContext*>(m_frame->hw_frames_ctx->data);
+        if (!source_frames_context->device_ref)
+            return Error::from_string_literal("Vulkan bridge source has no device reference");
+
+        struct BridgeCandidate {
+            VkExternalMemoryHandleTypeFlags handle_types;
+            VkImageTiling tiling;
+            bool disable_multiplane;
+        };
+
+        BridgeCandidate candidates[] {
+            { VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, VK_IMAGE_TILING_LINEAR, true },
+            { VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT, true },
+            { VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT, true },
+            { VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT, true },
+            { VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, VK_IMAGE_TILING_LINEAR, false },
+        };
+
+        for (auto const& candidate : candidates) {
+            auto* bridge_frames_ref = av_hwframe_ctx_alloc(source_frames_context->device_ref);
+            if (!bridge_frames_ref) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=ctx_alloc_failed handle={} tiling={} disable_multiplane={}",
+                    descriptor().frame_id,
+                    vulkan_export_handle_types_name(candidate.handle_types),
+                    vulkan_frame_tiling_name(candidate.tiling),
+                    candidate.disable_multiplane);
+                continue;
+            }
+            auto cleanup_bridge_frames_ref = ScopeGuard([&] {
+                av_buffer_unref(&bridge_frames_ref);
+            });
+
+            auto* bridge_frames_context = reinterpret_cast<AVHWFramesContext*>(bridge_frames_ref->data);
+            if (!bridge_frames_context) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=no_bridge_frames_context handle={} tiling={} disable_multiplane={}",
+                    descriptor().frame_id,
+                    vulkan_export_handle_types_name(candidate.handle_types),
+                    vulkan_frame_tiling_name(candidate.tiling),
+                    candidate.disable_multiplane);
+                continue;
+            }
+
+            bridge_frames_context->format = AV_PIX_FMT_VULKAN;
+            bridge_frames_context->sw_format = source_frames_context->sw_format;
+            bridge_frames_context->width = source_frames_context->width > 0 ? source_frames_context->width : m_frame->width;
+            bridge_frames_context->height = source_frames_context->height > 0 ? source_frames_context->height : m_frame->height;
+            bridge_frames_context->initial_pool_size = 1;
+
+            auto* bridge_vulkan_frames_context = reinterpret_cast<AVVulkanFramesContext*>(bridge_frames_context->hwctx);
+            if (!bridge_vulkan_frames_context) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=no_bridge_vulkan_context handle={} tiling={} disable_multiplane={}",
+                    descriptor().frame_id,
+                    vulkan_export_handle_types_name(candidate.handle_types),
+                    vulkan_frame_tiling_name(candidate.tiling),
+                    candidate.disable_multiplane);
+                continue;
+            }
+
+            auto const* export_memory_allocate_infos = vulkan_export_memory_allocate_infos(candidate.handle_types);
+            for (size_t plane = 0; plane < AV_NUM_DATA_POINTERS; ++plane)
+                bridge_vulkan_frames_context->alloc_pnext[plane] = const_cast<VkExportMemoryAllocateInfo*>(&export_memory_allocate_infos[plane]);
+
+            bridge_vulkan_frames_context->tiling = candidate.tiling;
+            if (candidate.disable_multiplane)
+                bridge_vulkan_frames_context->flags = static_cast<AVVkFrameFlags>(bridge_vulkan_frames_context->flags | AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE);
+            else
+                bridge_vulkan_frames_context->flags = static_cast<AVVkFrameFlags>(static_cast<unsigned>(bridge_vulkan_frames_context->flags) & ~static_cast<unsigned>(AV_VK_FRAME_FLAG_DISABLE_MULTIPLANE));
+
+            auto init_result = av_hwframe_ctx_init(bridge_frames_ref);
+            if (init_result < 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=ctx_init_failed error={} code={} handle={} tiling={} disable_multiplane={} sw_format={} size={}x{} flags={}",
+                    descriptor().frame_id,
+                    av_error_code_to_string(init_result),
+                    init_result,
+                    vulkan_export_handle_types_name(candidate.handle_types),
+                    vulkan_frame_tiling_name(candidate.tiling),
+                    candidate.disable_multiplane,
+                    pixel_format_name(bridge_frames_context->sw_format),
+                    bridge_frames_context->width,
+                    bridge_frames_context->height,
+                    static_cast<unsigned>(bridge_vulkan_frames_context->flags));
+                continue;
+            }
+
+            auto* bridge_frame = av_frame_alloc();
+            if (!bridge_frame)
+                return Error::from_errno(ENOMEM);
+
+            auto cleanup_bridge_frame = ArmedScopeGuard([&] {
+                av_frame_free(&bridge_frame);
+            });
+
+            auto buffer_result = av_hwframe_get_buffer(bridge_frames_ref, bridge_frame, 0);
+            if (buffer_result < 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=get_buffer_failed error={} code={} handle={} tiling={} disable_multiplane={}",
+                    descriptor().frame_id,
+                    av_error_code_to_string(buffer_result),
+                    buffer_result,
+                    vulkan_export_handle_types_name(candidate.handle_types),
+                    vulkan_frame_tiling_name(candidate.tiling),
+                    candidate.disable_multiplane);
+                continue;
+            }
+
+            bridge_frame->width = m_frame->width;
+            bridge_frame->height = m_frame->height;
+            auto transfer_start = MonotonicTime::now();
+            auto transfer_result = av_hwframe_transfer_data(bridge_frame, m_frame, 0);
+            auto transfer_microseconds = (MonotonicTime::now() - transfer_start).to_microseconds();
+            if (transfer_result < 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=transfer_failed error={} code={} handle={} tiling={} disable_multiplane={} transfer_us={}",
+                    descriptor().frame_id,
+                    av_error_code_to_string(transfer_result),
+                    transfer_result,
+                    vulkan_export_handle_types_name(candidate.handle_types),
+                    vulkan_frame_tiling_name(candidate.tiling),
+                    candidate.disable_multiplane,
+                    transfer_microseconds);
+                continue;
+            }
+
+            auto props_result = av_frame_copy_props(bridge_frame, m_frame);
+            if (props_result < 0) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=copy_props_failed error={} code={} handle={} tiling={} disable_multiplane={}",
+                    descriptor().frame_id,
+                    av_error_code_to_string(props_result),
+                    props_result,
+                    vulkan_export_handle_types_name(candidate.handle_types),
+                    vulkan_frame_tiling_name(candidate.tiling),
+                    candidate.disable_multiplane);
+                continue;
+            }
+
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_bridge_frame frame_id={} status=created handle={} tiling={} disable_multiplane={} sw_format={} size={}x{} transfer_us={}",
+                descriptor().frame_id,
+                vulkan_export_handle_types_name(candidate.handle_types),
+                vulkan_frame_tiling_name(candidate.tiling),
+                candidate.disable_multiplane,
+                pixel_format_name(bridge_frames_context->sw_format),
+                bridge_frame->width,
+                bridge_frame->height,
+                transfer_microseconds);
+
+            cleanup_bridge_frame.disarm();
+            return bridge_frame;
+        }
+
+        return Error::from_string_literal("No exportable Vulkan bridge frame configuration worked");
+    }
+
     struct CudaGLFunctions {
         void* library { nullptr };
+        tcuInit* cuInit { nullptr };
+        tcuDeviceGet* cuDeviceGet { nullptr };
+        tcuDevicePrimaryCtxRetain* cuDevicePrimaryCtxRetain { nullptr };
+        tcuDevicePrimaryCtxRelease* cuDevicePrimaryCtxRelease { nullptr };
         tcuCtxPushCurrent_v2* cuCtxPushCurrent { nullptr };
         tcuCtxPopCurrent_v2* cuCtxPopCurrent { nullptr };
         tcuGetErrorName* cuGetErrorName { nullptr };
@@ -2269,6 +2887,10 @@ private:
             s_load_attempted = true;
             s_functions.library = dlopen("libcuda.so.1", RTLD_LAZY);
             if (s_functions.library) {
+                s_functions.cuInit = reinterpret_cast<tcuInit*>(dlsym(s_functions.library, "cuInit"));
+                s_functions.cuDeviceGet = reinterpret_cast<tcuDeviceGet*>(dlsym(s_functions.library, "cuDeviceGet"));
+                s_functions.cuDevicePrimaryCtxRetain = reinterpret_cast<tcuDevicePrimaryCtxRetain*>(dlsym(s_functions.library, "cuDevicePrimaryCtxRetain"));
+                s_functions.cuDevicePrimaryCtxRelease = reinterpret_cast<tcuDevicePrimaryCtxRelease*>(dlsym(s_functions.library, "cuDevicePrimaryCtxRelease"));
                 s_functions.cuCtxPushCurrent = reinterpret_cast<tcuCtxPushCurrent_v2*>(dlsym(s_functions.library, "cuCtxPushCurrent_v2"));
                 s_functions.cuCtxPopCurrent = reinterpret_cast<tcuCtxPopCurrent_v2*>(dlsym(s_functions.library, "cuCtxPopCurrent_v2"));
                 s_functions.cuGetErrorName = reinterpret_cast<tcuGetErrorName*>(dlsym(s_functions.library, "cuGetErrorName"));
@@ -2306,7 +2928,7 @@ private:
 
         if (!s_functions.library)
             return Error::from_string_literal("Failed to load libcuda.so.1");
-        if (!s_functions.cuCtxPushCurrent || !s_functions.cuCtxPopCurrent || !s_functions.cuGraphicsGLRegisterImage || !s_functions.cuGraphicsGLRegisterBuffer || !s_functions.cuGraphicsUnregisterResource || !s_functions.cuGraphicsMapResources || !s_functions.cuGraphicsUnmapResources || !s_functions.cuGraphicsSubResourceGetMappedArray || !s_functions.cuGraphicsResourceGetMappedPointer || !s_functions.cuMemcpy2D)
+        if (!s_functions.cuInit || !s_functions.cuDeviceGet || !s_functions.cuDevicePrimaryCtxRetain || !s_functions.cuDevicePrimaryCtxRelease || !s_functions.cuCtxPushCurrent || !s_functions.cuCtxPopCurrent || !s_functions.cuGraphicsGLRegisterImage || !s_functions.cuGraphicsGLRegisterBuffer || !s_functions.cuGraphicsUnregisterResource || !s_functions.cuGraphicsMapResources || !s_functions.cuGraphicsUnmapResources || !s_functions.cuGraphicsSubResourceGetMappedArray || !s_functions.cuGraphicsResourceGetMappedPointer || !s_functions.cuMemcpy2D)
             return Error::from_string_literal("Missing CUDA GL interop symbols");
         return &s_functions;
     }
@@ -2456,6 +3078,107 @@ private:
         return {};
     }
 
+    static ErrorOr<void> copy_external_memory_array_to_external_memory_array(CudaGLFunctions& functions, char const* plane_name, u64 frame_id, int source_fd, size_t source_memory_size, size_t source_offset, bool source_dedicated, int destination_fd, size_t destination_memory_size, bool destination_dedicated, u32 width_in_bytes, u32 height, unsigned num_channels, u32 array_width, u32 array_height)
+    {
+        if (!functions.cuImportExternalMemory || !functions.cuDestroyExternalMemory || !functions.cuExternalMemoryGetMappedMipmappedArray || !functions.cuMipmappedArrayGetLevel || !functions.cuMipmappedArrayDestroy)
+            return Error::from_string_literal("Missing CUDA external memory image symbols");
+        if (source_fd < 0 || destination_fd < 0)
+            return Error::from_string_literal("Invalid CUDA external memory fd");
+
+        auto import_external_memory = [&](char const* role, int& fd, size_t memory_size, bool dedicated) -> ErrorOr<CUexternalMemory> {
+            CUDA_EXTERNAL_MEMORY_HANDLE_DESC memory_handle_desc {};
+            memory_handle_desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+            memory_handle_desc.handle.fd = fd;
+            memory_handle_desc.size = memory_size;
+            memory_handle_desc.flags = dedicated ? cuda_external_memory_dedicated_flag : 0;
+
+            CUexternalMemory external_memory { nullptr };
+            auto import_result = functions.cuImportExternalMemory(&external_memory, &memory_handle_desc);
+            if (import_result != CUDA_SUCCESS) {
+                close(fd);
+                fd = -1;
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} plane={} role={} step=import result={} error={} fd={} size={} dedicated={} width_bytes={} height={} channels={}",
+                    frame_id, plane_name, role, static_cast<int>(import_result), cuda_error_name(functions, import_result), memory_handle_desc.handle.fd, memory_size, dedicated, width_in_bytes, height, num_channels);
+                return Error::from_string_literal("Failed to import external memory for Vulkan CUDA bridge");
+            }
+            // CUDA takes ownership of the fd after successful import.
+            fd = -1;
+            return external_memory;
+        };
+
+        auto map_external_memory_array = [&](char const* role, CUexternalMemory external_memory, size_t offset) -> ErrorOr<CUmipmappedArray> {
+            CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mipmapped_array_desc {};
+            mipmapped_array_desc.offset = offset;
+            mipmapped_array_desc.arrayDesc.Width = array_width;
+            mipmapped_array_desc.arrayDesc.Height = array_height;
+            mipmapped_array_desc.arrayDesc.Depth = 0;
+            mipmapped_array_desc.arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
+            mipmapped_array_desc.arrayDesc.NumChannels = num_channels;
+            mipmapped_array_desc.arrayDesc.Flags = 0;
+            mipmapped_array_desc.numLevels = 1;
+
+            CUmipmappedArray mipmapped_array { nullptr };
+            auto mapped_array_result = functions.cuExternalMemoryGetMappedMipmappedArray(&mipmapped_array, external_memory, &mipmapped_array_desc);
+            if (mapped_array_result != CUDA_SUCCESS || !mipmapped_array) {
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} plane={} role={} step=map_mipmap result={} error={} offset={} array={}x{} width_bytes={} height={} channels={}",
+                    frame_id, plane_name, role, static_cast<int>(mapped_array_result), cuda_error_name(functions, mapped_array_result), offset, array_width, array_height, width_in_bytes, height, num_channels);
+                return Error::from_string_literal("Failed to map external memory array for Vulkan CUDA bridge");
+            }
+            return mipmapped_array;
+        };
+
+        auto source_external_memory = TRY(import_external_memory("source", source_fd, source_memory_size, source_dedicated));
+        auto destroy_source_external_memory = ScopeGuard([&] {
+            functions.cuDestroyExternalMemory(source_external_memory);
+        });
+
+        auto source_mipmapped_array = TRY(map_external_memory_array("source", source_external_memory, source_offset));
+        auto destroy_source_mipmapped_array = ScopeGuard([&] {
+            functions.cuMipmappedArrayDestroy(source_mipmapped_array);
+        });
+
+        CUarray source_array { nullptr };
+        auto source_level_result = functions.cuMipmappedArrayGetLevel(&source_array, source_mipmapped_array, 0);
+        if (source_level_result != CUDA_SUCCESS || !source_array) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} plane={} role=source step=mipmap_level result={} error={}",
+                frame_id, plane_name, static_cast<int>(source_level_result), cuda_error_name(functions, source_level_result));
+            return Error::from_string_literal("Failed to get source array for Vulkan CUDA bridge");
+        }
+
+        auto destination_external_memory = TRY(import_external_memory("destination", destination_fd, destination_memory_size, destination_dedicated));
+        auto destroy_destination_external_memory = ScopeGuard([&] {
+            functions.cuDestroyExternalMemory(destination_external_memory);
+        });
+        auto destination_mipmapped_array = TRY(map_external_memory_array("destination", destination_external_memory, 0));
+        auto destroy_destination_mipmapped_array = ScopeGuard([&] {
+            functions.cuMipmappedArrayDestroy(destination_mipmapped_array);
+        });
+
+        CUarray destination_array { nullptr };
+        auto destination_level_result = functions.cuMipmappedArrayGetLevel(&destination_array, destination_mipmapped_array, 0);
+        if (destination_level_result != CUDA_SUCCESS || !destination_array) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} plane={} role=destination step=mipmap_level result={} error={}",
+                frame_id, plane_name, static_cast<int>(destination_level_result), cuda_error_name(functions, destination_level_result));
+            return Error::from_string_literal("Failed to get destination array for Vulkan CUDA bridge");
+        }
+
+        CUDA_MEMCPY2D copy {};
+        copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
+        copy.srcArray = source_array;
+        copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+        copy.dstArray = destination_array;
+        copy.WidthInBytes = width_in_bytes;
+        copy.Height = height;
+        auto copy_result = functions.cuMemcpy2D(&copy);
+        if (copy_result != CUDA_SUCCESS) {
+            dbgln("MUNDO_MEDIA_FFMPEG vulkan_cuda_bridge_error frame_id={} plane={} step=copy result={} error={} source_offset={} source_size={} destination_size={} array={}x{} width_bytes={} height={} channels={}",
+                frame_id, plane_name, static_cast<int>(copy_result), cuda_error_name(functions, copy_result), source_offset, source_memory_size, destination_memory_size, array_width, array_height, width_in_bytes, height, num_channels);
+            return Error::from_string_literal("Failed to copy Vulkan external memory array on GPU");
+        }
+
+        return {};
+    }
+
     static ErrorOr<void> copy_cuda_plane_to_gl_buffer(CudaGLFunctions& functions, char const* plane_name, u64 frame_id, CUdeviceptr source, size_t source_pitch, u32 buffer, u32 width_in_bytes, u32 height, size_t buffer_size)
     {
         auto required_size = static_cast<size_t>(width_in_bytes) * static_cast<size_t>(height);
@@ -2521,6 +3244,7 @@ private:
     AVFrame* m_frame { nullptr };
     CodingIndependentCodePoints m_cicp;
     RefPtr<NV12VideoFrameData> m_nv12_data;
+    bool m_is_vulkan_bridge_frame { false };
     bool m_was_transferred { false };
     mutable bool m_was_gpu_uploaded { false };
 };

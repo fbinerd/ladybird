@@ -45,6 +45,7 @@ extern "C" {
 #include <LibWeb/WebGL/Extensions/WebGLDrawBuffers.h>
 #include <LibWeb/WebGL/OpenGLContext.h>
 #include <LibWeb/WebGL/WebGLRenderingContextBase.h>
+#include <LibWeb/WebGL/WebGLTexture.h>
 
 #include <core/SkCanvas.h>
 #include <core/SkColorSpace.h>
@@ -825,6 +826,11 @@ Optional<GLuint> WebGLRenderingContextBase::current_bound_texture_handle_for_tar
     return {};
 }
 
+GC::Ptr<WebGLTexture> WebGLRenderingContextBase::current_bound_texture_for_target(WebIDL::UnsignedLong) const
+{
+    return nullptr;
+}
+
 bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fast_path(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width, Optional<int> destination_height, bool is_sub_image)
 {
     static size_t s_video_nv12_shader_attempt_count { 0 };
@@ -916,6 +922,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     if (!media_frame)
         return reject("missing_nv12_frame"sv);
     auto const* hardware_backend = "none";
+    auto hardware_backend_kind = Media::HardwareVideoFrameBackend::None;
     auto hardware_frame_id = 0ull;
     auto zero_copy_capable = false;
     auto cpu_zero_copy_capable = false;
@@ -923,6 +930,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto requires_cpu_transfer = false;
     auto has_hardware_handle = media_frame->hardware_handle() != nullptr;
     if (auto const& hardware_descriptor = media_frame->hardware_descriptor(); hardware_descriptor.has_value()) {
+        hardware_backend_kind = hardware_descriptor->backend;
         hardware_backend = Media::hardware_video_frame_backend_name(hardware_descriptor->backend);
         hardware_frame_id = hardware_descriptor->frame_id;
         zero_copy_capable = hardware_descriptor->zero_copy_capable;
@@ -941,6 +949,34 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto visible_uv_width = (video_width + 1) / 2;
     auto uv_texture_height = (video_height + 1) / 2;
     auto const* nv12_data = media_frame->cached_nv12_data();
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    Optional<Media::HardwareVideoFrameExternalMemoryDescriptor> cached_external_memory;
+    auto close_cached_external_memory_fds = ArmedScopeGuard([&] {
+        if (!cached_external_memory.has_value())
+            return;
+        for (auto& plane : cached_external_memory->planes) {
+            if (plane.fd >= 0) {
+                close(plane.fd);
+                plane.fd = -1;
+            }
+            if (plane.dma_buf_fd >= 0) {
+                close(plane.dma_buf_fd);
+                plane.dma_buf_fd = -1;
+            }
+        }
+    });
+    auto ensure_cached_external_memory = [&]() -> ErrorOr<void> {
+        if (cached_external_memory.has_value())
+            return {};
+        if (!media_frame->hardware_handle())
+            return Error::from_string_literal("missing_hardware_frame_handle");
+        auto external_memory_or_error = media_frame->hardware_handle()->export_external_memory();
+        if (external_memory_or_error.is_error())
+            return external_memory_or_error.release_error();
+        cached_external_memory = external_memory_or_error.release_value();
+        return {};
+    };
+#endif
     static int s_video_opaque_fd_plane_probe_width { 0 };
     static int s_video_opaque_fd_plane_probe_height { 0 };
     if (has_hardware_handle && zero_copy_capable && video_width > 0 && video_height > 0 && (s_video_opaque_fd_plane_probe_width != video_width || s_video_opaque_fd_plane_probe_height != video_height)) {
@@ -964,9 +1000,9 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     static u64 s_last_external_memory_descriptor_frame_id { 0 };
     if (has_hardware_handle && direct_zero_copy_capable && hardware_frame_id != s_last_external_memory_descriptor_frame_id && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         s_last_external_memory_descriptor_frame_id = hardware_frame_id;
-        auto external_memory_or_error = media_frame->hardware_handle()->export_external_memory();
+        auto external_memory_or_error = ensure_cached_external_memory();
         if (!external_memory_or_error.is_error()) {
-            auto external_memory = external_memory_or_error.release_value();
+            auto const& external_memory = cached_external_memory.value();
             dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DESCRIPTOR attempt={} frame_id={} backend={} status=ok planes={} single_image={} single_memory={} size={}x{} hw_format={} sw_format={} tiling={} frame_flags={} mem_flags={} p0_fd={} p0_dma_buf_fd={} p0_size={} p0_offset={} p0_size_px={}x{} p0_vk_format={} p0_layout={} p0_access={} p0_queue={} p0_sem_value={} p0_has_modifier={} p0_modifier={} p1_fd={} p1_dma_buf_fd={} p1_size={} p1_offset={} p1_size_px={}x{} p1_vk_format={} p1_layout={} p1_access={} p1_queue={} p1_sem_value={} p1_has_modifier={} p1_modifier={} p2_fd={} p2_dma_buf_fd={} p2_size={} p2_offset={} p2_size_px={}x{} p2_vk_format={} p2_layout={} p2_access={} p2_queue={} p2_sem_value={} p2_has_modifier={} p2_modifier={}",
                 attempt_count,
                 hardware_frame_id,
@@ -1149,17 +1185,6 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     }
                 }
             }
-
-            for (auto& plane : external_memory.planes) {
-                if (plane.fd >= 0) {
-                    close(plane.fd);
-                    plane.fd = -1;
-                }
-                if (plane.dma_buf_fd >= 0) {
-                    close(plane.dma_buf_fd);
-                    plane.dma_buf_fd = -1;
-                }
-            }
 #endif
         } else {
             dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DESCRIPTOR attempt={} frame_id={} backend={} status=failed reason={}",
@@ -1185,9 +1210,10 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     auto require_gpu_for_hardware_frame = mundo_webgl_video_require_gpu_for_hardware_frame_enabled();
     auto can_attempt_hardware_gl_upload = has_hardware_handle
         && zero_copy_capable
-        && !is_sub_image
-        && ((cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture)
-            || (cuda_upload_mode == MundoWebGLVideoCudaUploadMode::PBO && !s_cuda_gl_buffer_upload_disabled));
+        && ((cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture && hardware_backend_kind == Media::HardwareVideoFrameBackend::Vulkan)
+            || (!is_sub_image
+                && ((cuda_upload_mode == MundoWebGLVideoCudaUploadMode::Texture)
+                    || (cuda_upload_mode == MundoWebGLVideoCudaUploadMode::PBO && !s_cuda_gl_buffer_upload_disabled))));
     if (s_cuda_gl_buffer_upload_disabled && cuda_upload_mode == MundoWebGLVideoCudaUploadMode::PBO && has_hardware_handle && zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason=cuda_gl_buffer_interop_disabled has_hardware_handle={} gl_api=gles_angle_or_egl",
             attempt_count,
@@ -1464,19 +1490,6 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                                                                        });
         }
     };
-    if (!is_sub_image) {
-        auto previous_state = previous_texture_2d > 0 ? m_mundo_video_nv12_target_texture_states.find(target_texture_key) : m_mundo_video_nv12_target_texture_states.end();
-        if (previous_state != m_mundo_video_nv12_target_texture_states.end()
-            && previous_state->value.width == video_width
-            && previous_state->value.height == video_height
-            && previous_state->value.internalformat == internalformat
-            && previous_state->value.format == format
-            && previous_state->value.type == type) {
-            reused_target_storage = true;
-        } else {
-            allocate_target_storage();
-        }
-    }
     auto used_y_plane_pbo = false;
     auto used_uv_plane_pbo = false;
     auto uv_texture_width = nv12_data ? nv12_data->uv_stride / 2 : visible_uv_width;
@@ -1487,6 +1500,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     u64 hardware_gl_upload_microseconds = 0;
     bool hardware_gl_upload_direct_zero_copy = false;
     bool hardware_gl_upload_copied_on_gpu = false;
+    bool hardware_gl_direct_zero_copy_ready = direct_zero_copy_capable;
     char const* hardware_gl_upload_copy_stage = "none";
     char const* hardware_gl_upload_mode = "none";
     StringView hardware_gl_upload_failure_reason = "not_attempted"sv;
@@ -1494,6 +1508,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 #ifdef USE_VULKAN_DMABUF_IMAGES
     OpenGLContext::ImportedVideoOpaqueFDTexture* imported_y_texture { nullptr };
     OpenGLContext::ImportedVideoOpaqueFDTexture* imported_uv_texture { nullptr };
+    OpenGLContext::ImportedVideoOpaqueFDTexture* imported_rgba_texture { nullptr };
     GLuint real_imported_y_texture { 0 };
     GLuint real_imported_uv_texture { 0 };
     GLuint real_imported_y_memory_object { 0 };
@@ -1519,6 +1534,160 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
     });
 #endif
 
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    if (!is_sub_image && can_attempt_hardware_gl_upload && hardware_backend_kind == Media::HardwareVideoFrameBackend::Vulkan && previous_texture_2d > 0) {
+        auto external_memory_or_error = ensure_cached_external_memory();
+        if (!external_memory_or_error.is_error()) {
+            auto const& external_memory = cached_external_memory.value();
+            auto target_rgba_or_error = context().get_or_create_imported_video_rgba_target_texture(static_cast<u32>(previous_texture_2d), static_cast<u32>(video_width), static_cast<u32>(video_height), attempt_count);
+            if (!target_rgba_or_error.is_error()) {
+                auto* target_rgba_texture = target_rgba_or_error.value();
+                auto target_render_result = context().render_vulkan_nv12_external_memory_to_imported_video_rgba_texture(external_memory, *target_rgba_texture, attempt_count, m_unpack_flip_y);
+                if (!target_render_result.is_error()) {
+                    hardware_gl_upload_microseconds = target_render_result.value();
+                    hardware_gl_upload_direct_zero_copy = false;
+                    hardware_gl_upload_copied_on_gpu = true;
+                    hardware_gl_upload_copy_stage = "gpu_to_gpu_vulkan_ycbcr_target_render";
+                    hardware_gl_upload_mode = "vulkan_render_nv12_to_webgl_texture_storage";
+                    reused_target_storage = true;
+                    m_mundo_video_nv12_target_texture_states.set(target_texture_key, MundoVideoNV12TargetTextureState {
+                                                                               .width = video_width,
+                                                                               .height = video_height,
+                                                                               .internalformat = internalformat,
+                                                                               .format = format,
+                                                                               .type = type,
+                                                                           });
+                    if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                        dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_UPLOAD_OK attempt={} frame_id={} backend={} upload_us={} target_texture={} direct_zero_copy=false copy_stage=gpu_to_gpu_vulkan_ycbcr_target_render upload_mode=vulkan_render_nv12_to_webgl_texture_storage sub_image=false flip_y={}",
+                            attempt_count,
+                            hardware_frame_id,
+                            hardware_backend,
+                            hardware_gl_upload_microseconds,
+                            previous_texture_2d,
+                            m_unpack_flip_y);
+                    }
+                    if (auto texture = current_bound_texture_for_target(target)) {
+                        texture->set_hardware_video_backing(WebGLTexture::HardwareVideoBacking {
+                            .frame_id = hardware_frame_id,
+                            .width = static_cast<u32>(video_width),
+                            .height = static_cast<u32>(video_height),
+                            .backend = hardware_backend,
+                            .upload_mode = "vulkan_render_nv12_to_webgl_texture_storage",
+                            .copy_stage = "gpu_to_gpu_vulkan_ycbcr_target_render",
+                            .direct_zero_copy = false,
+                            .copied_on_gpu = true,
+                        });
+                        if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_SET attempt={} frame_id={} texture={} size={}x{} backend={} upload_mode=vulkan_render_nv12_to_webgl_texture_storage direct_zero_copy=false copied_on_gpu=true next_step=sample_video_backing_in_renderer",
+                                attempt_count,
+                                hardware_frame_id,
+                                previous_texture_2d,
+                                video_width,
+                                video_height,
+                                hardware_backend);
+                        }
+                    }
+                    restore_state();
+                    return true;
+                }
+                hardware_gl_upload_failure_reason = target_render_result.error().string_literal();
+            } else {
+                hardware_gl_upload_failure_reason = target_rgba_or_error.error().string_literal();
+            }
+            if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=vulkan_target_texture_storage_path_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=vulkan_render_nv12_to_webgl_texture_storage fallback=vulkan_render_nv12_to_rgba_texture",
+                    attempt_count,
+                    hardware_frame_id,
+                    hardware_backend,
+                    hardware_gl_upload_failure_reason,
+                    has_hardware_handle);
+            }
+        } else if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+            dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=vulkan_target_texture_storage_path_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=vulkan_render_nv12_to_webgl_texture_storage fallback=vulkan_render_nv12_to_rgba_texture",
+                attempt_count,
+                hardware_frame_id,
+                hardware_backend,
+                external_memory_or_error.error().string_literal(),
+                has_hardware_handle);
+        }
+    }
+#endif
+    if (!is_sub_image) {
+        auto previous_state = previous_texture_2d > 0 ? m_mundo_video_nv12_target_texture_states.find(target_texture_key) : m_mundo_video_nv12_target_texture_states.end();
+        if (previous_state != m_mundo_video_nv12_target_texture_states.end()
+            && previous_state->value.width == video_width
+            && previous_state->value.height == video_height
+            && previous_state->value.internalformat == internalformat
+            && previous_state->value.format == format
+            && previous_state->value.type == type) {
+            reused_target_storage = true;
+        } else {
+            allocate_target_storage();
+        }
+    }
+
+    auto blit_imported_rgba_texture_to_target = [&](GLuint rgba_texture, char const* upload_mode) -> ErrorOr<void> {
+        if (!rgba_texture || previous_texture_2d <= 0)
+            return Error::from_string_literal("missing RGBA source or destination texture");
+
+        if (!m_mundo_video_rgba_blit_read_framebuffer)
+            glGenFramebuffers(1, &m_mundo_video_rgba_blit_read_framebuffer);
+        if (!m_mundo_video_rgba_blit_draw_framebuffer)
+            glGenFramebuffers(1, &m_mundo_video_rgba_blit_draw_framebuffer);
+        if (!m_mundo_video_rgba_blit_read_framebuffer || !m_mundo_video_rgba_blit_draw_framebuffer)
+            return Error::from_string_literal("failed to create RGBA blit framebuffers");
+
+        glBindFramebuffer(GL_READ_FRAMEBUFFER_NV, m_mundo_video_rgba_blit_read_framebuffer);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER_NV, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rgba_texture, 0);
+        auto read_status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER_NV);
+        if (read_status != GL_FRAMEBUFFER_COMPLETE) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_RGBA_BLIT attempt={} frame_id={} status=failed reason=read_framebuffer_incomplete read_status={} rgba_texture={} target_texture={} mode={}",
+                attempt_count, hardware_frame_id, read_status, rgba_texture, previous_texture_2d, upload_mode);
+            return Error::from_string_literal("RGBA blit read framebuffer incomplete");
+        }
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER_NV, m_mundo_video_rgba_blit_draw_framebuffer);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER_NV, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, previous_texture_2d, level);
+        auto draw_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER_NV);
+        if (draw_status != GL_FRAMEBUFFER_COMPLETE) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_RGBA_BLIT attempt={} frame_id={} status=failed reason=draw_framebuffer_incomplete draw_status={} rgba_texture={} target_texture={} mode={}",
+                attempt_count, hardware_frame_id, draw_status, rgba_texture, previous_texture_2d, upload_mode);
+            return Error::from_string_literal("RGBA blit draw framebuffer incomplete");
+        }
+
+        auto source_y0 = m_unpack_flip_y ? video_height : 0;
+        auto source_y1 = m_unpack_flip_y ? 0 : video_height;
+        auto destination_x0 = is_sub_image ? xoffset : 0;
+        auto destination_y0 = is_sub_image ? yoffset : 0;
+        glBlitFramebufferNV(
+            0, source_y0, video_width, source_y1,
+            destination_x0, destination_y0, destination_x0 + video_width, destination_y0 + video_height,
+            GL_COLOR_BUFFER_BIT,
+            GL_NEAREST);
+        auto blit_error = glGetError();
+        if (blit_error != GL_NO_ERROR) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_RGBA_BLIT attempt={} frame_id={} status=failed reason=gl_blit_error gl_error={} rgba_texture={} target_texture={} mode={} flip_y={} sub_image={}",
+                attempt_count, hardware_frame_id, blit_error, rgba_texture, previous_texture_2d, upload_mode, m_unpack_flip_y, is_sub_image);
+            return Error::from_string_literal("RGBA blit GL error");
+        }
+
+        if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_RGBA_BLIT attempt={} frame_id={} status=ok rgba_texture={} target_texture={} size={}x{} offset={}x{} mode={} flip_y={} sub_image={}",
+                attempt_count,
+                hardware_frame_id,
+                rgba_texture,
+                previous_texture_2d,
+                video_width,
+                video_height,
+                destination_x0,
+                destination_y0,
+                upload_mode,
+                m_unpack_flip_y,
+                is_sub_image);
+        }
+        return {};
+    };
+
     if (can_attempt_hardware_gl_upload) {
         reused_y_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_y_texture, GL_TEXTURE0, GL_R8_EXT, GL_RED_EXT, video_width, video_height, nullptr, 0, m_mundo_video_nv12_y_texture_state, m_mundo_video_nv12_y_upload_pbos, used_y_plane_pbo);
         reused_uv_plane_storage = upload_mundo_video_nv12_plane_texture(m_mundo_video_nv12_uv_texture, GL_TEXTURE1, GL_RG8_EXT, GL_RG_EXT, visible_uv_width, uv_texture_height, nullptr, 0, m_mundo_video_nv12_uv_texture_state, m_mundo_video_nv12_uv_upload_pbos, used_uv_plane_pbo);
@@ -1526,7 +1695,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 #ifdef USE_VULKAN_DMABUF_IMAGES
             auto should_log_external_memory_success = should_log_mundo_webgl_texture_diagnostic(attempt_count);
             if (!strcmp(hardware_backend, "vulkan")) {
-                auto import_real_dma_buf_texture = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, u32 drm_format, u32 pitch, bool nearest_filter, GLuint& texture, EGLImageKHR& egl_image) -> ErrorOr<void> {
+                auto import_real_dma_buf_texture = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, u32 drm_format, u32 fallback_pitch, bool nearest_filter, GLuint& texture, EGLImageKHR& egl_image) -> ErrorOr<void> {
                     auto* egl_create_image_khr = reinterpret_cast<PFNEGLCREATEIMAGEKHRPROC>(eglGetProcAddress("eglCreateImageKHR"));
                     auto* egl_query_dma_buf_formats_ext = reinterpret_cast<PFNEGLQUERYDMABUFFORMATSEXTPROC>(eglGetProcAddress("eglQueryDmaBufFormatsEXT"));
                     auto* gl_egl_image_target_texture_2d_oes = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(eglGetProcAddress("glEGLImageTargetTexture2DOES"));
@@ -1546,7 +1715,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                                 drm_format,
                                 egl_dma_buf_format_supported,
                                 egl_dma_buf_format_count,
-                                pitch,
+                                plane.pitch ? plane.pitch : fallback_pitch,
                                 plane.offset,
                                 plane.allocation_size,
                                 plane.width,
@@ -1578,6 +1747,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             }
                         }
                     }
+                    auto pitch = plane.pitch ? plane.pitch : fallback_pitch;
                     if (plane.dma_buf_fd < 0 || !plane.width || !plane.height || pitch == 0)
                         return log_failure("empty_dma_buf_plane");
                     if (plane.offset < 0 || plane.offset > NumericLimits<EGLint>::max())
@@ -1733,21 +1903,58 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     return {};
                 };
 
-                auto external_memory_or_error = media_frame->hardware_handle()->export_external_memory();
+                auto external_memory_or_error = ensure_cached_external_memory();
                 if (!external_memory_or_error.is_error()) {
-                    auto external_memory = external_memory_or_error.release_value();
-                    auto close_external_memory_fds = ScopeGuard([&] {
-                        for (auto& plane : external_memory.planes) {
-                            if (plane.fd >= 0) {
-                                close(plane.fd);
-                                plane.fd = -1;
+                    auto const& external_memory = cached_external_memory.value();
+
+                    auto rgba_target_or_error = context().get_or_create_imported_video_rgba_texture(static_cast<u32>(video_width), static_cast<u32>(video_height), attempt_count);
+                    if (!rgba_target_or_error.is_error()) {
+                        imported_rgba_texture = rgba_target_or_error.value();
+                        auto vulkan_rgba_render_result = context().render_vulkan_nv12_external_memory_to_imported_video_rgba_texture(external_memory, *imported_rgba_texture, attempt_count);
+                        if (!vulkan_rgba_render_result.is_error()) {
+                            auto rgba_blit_result = blit_imported_rgba_texture_to_target(imported_rgba_texture->texture, "vulkan_render_nv12_to_rgba_texture");
+                            if (!rgba_blit_result.is_error()) {
+                                hardware_gl_upload_microseconds = vulkan_rgba_render_result.value();
+                                hardware_gl_upload_direct_zero_copy = false;
+                                hardware_gl_upload_copied_on_gpu = true;
+                                hardware_gl_upload_copy_stage = "gpu_to_gpu_vulkan_ycbcr_rgba_render";
+                                hardware_gl_upload_mode = "vulkan_render_nv12_to_rgba_texture";
+                                if (should_log_external_memory_success || is_sub_image) {
+                                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_UPLOAD_OK attempt={} frame_id={} backend={} upload_us={} rgba_texture={} target_texture={} direct_zero_copy=false copy_stage=gpu_to_gpu_vulkan_ycbcr_rgba_render upload_mode=vulkan_render_nv12_to_rgba_texture sub_image={}",
+                                        attempt_count,
+                                        hardware_frame_id,
+                                        hardware_backend,
+                                        hardware_gl_upload_microseconds,
+                                        imported_rgba_texture->texture,
+                                        previous_texture_2d,
+                                        is_sub_image);
+                                }
+                                restore_state();
+                                return true;
                             }
-                            if (plane.dma_buf_fd >= 0) {
-                                close(plane.dma_buf_fd);
-                                plane.dma_buf_fd = -1;
-                            }
+                            hardware_gl_upload_failure_reason = rgba_blit_result.error().string_literal();
+                        } else {
+                            hardware_gl_upload_failure_reason = vulkan_rgba_render_result.error().string_literal();
                         }
-                    });
+                        if (should_log_external_memory_success || is_sub_image) {
+                            dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=vulkan_rgba_render_path_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=vulkan_render_nv12_to_rgba_texture fallback=vulkan_external_memory sub_image={}",
+                                attempt_count,
+                                hardware_frame_id,
+                                hardware_backend,
+                                hardware_gl_upload_failure_reason,
+                                has_hardware_handle,
+                                is_sub_image);
+                        }
+                    } else if (should_log_external_memory_success || is_sub_image) {
+                        dbgln("MUNDO_WEBGL_VIDEO_RGBA_TARGET_IMPORT count={} frame_id={} status=failed reason={} size={}x{} backend={} sub_image={}",
+                            attempt_count,
+                            hardware_frame_id,
+                            rgba_target_or_error.error().string_literal(),
+                            video_width,
+                            video_height,
+                            hardware_backend,
+                            is_sub_image);
+                    }
 
                     Optional<Media::HardwareVideoFrameExternalMemoryPlane> uv_plane;
                     if (external_memory.plane_count > 1) {
@@ -1839,6 +2046,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                         hardware_gl_upload_failure_reason = uv_plane.has_value()
                             ? "vulkan_dmabuf_requires_modifier_or_linear_tiling"sv
                             : "vulkan_external_memory_uv_plane_unavailable"sv;
+                        hardware_gl_direct_zero_copy_ready = false;
                         hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
                     }
                 } else {
@@ -1846,19 +2054,20 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
                 }
                 if (!used_hardware_gl_upload) {
-                    hardware_gl_upload_skipped_due_to_opaque_fd_failure = true;
                     if (should_log_external_memory_success) {
-                        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=vulkan_external_memory next_step=gpu_to_gpu_multiplanar_conversion",
+                        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=blocked reason={} has_hardware_handle={} gl_api=gles_angle_or_egl direct_zero_copy_ready={} upload_mode=vulkan_external_memory next_step=gpu_to_gpu_multiplanar_conversion",
                             attempt_count,
                             hardware_frame_id,
                             hardware_backend,
                             hardware_gl_upload_failure_reason,
-                            has_hardware_handle);
+                            has_hardware_handle,
+                            hardware_gl_direct_zero_copy_ready);
                     }
+                    hardware_gl_upload_skipped_due_to_opaque_fd_failure = false;
                 }
             }
             if (should_log_external_memory_success) {
-                dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DECISION attempt={} frame_id={} backend={} status=attempting size={}x{} uv_size={}x{} target_texture={} has_hardware_handle={} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} direct_texture_fallback_disabled={}",
+                dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_DECISION attempt={} frame_id={} backend={} status=attempting size={}x{} uv_size={}x{} target_texture={} has_hardware_handle={} zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} direct_zero_copy_ready={} direct_texture_fallback_disabled={}",
                     attempt_count,
                     hardware_frame_id,
                     hardware_backend,
@@ -1871,6 +2080,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     zero_copy_capable,
                     cpu_zero_copy_capable,
                     direct_zero_copy_capable,
+                    hardware_gl_direct_zero_copy_ready,
                     s_cuda_gl_direct_texture_upload_disabled);
             }
             if (!used_hardware_gl_upload && !hardware_gl_upload_skipped_due_to_opaque_fd_failure) {
@@ -1879,8 +2089,97 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     auto imported_texture_pair = imported_texture_pair_or_error.release_value();
                     imported_y_texture = imported_texture_pair.y;
                     imported_uv_texture = imported_texture_pair.uv;
-                    auto y_cuda_fd = imported_y_texture->image->get_opaque_fd();
-                    auto uv_cuda_fd = imported_uv_texture->image->get_opaque_fd();
+                    if (hardware_backend_kind == Media::HardwareVideoFrameBackend::Vulkan) {
+                        auto external_memory_or_error = ensure_cached_external_memory();
+                        if (!external_memory_or_error.is_error()) {
+                            auto const& external_memory = cached_external_memory.value();
+
+                            context().probe_skia_vulkan_ycbcr_texture_import(external_memory, attempt_count);
+                            auto rgba_target_or_error = context().get_or_create_imported_video_rgba_texture(static_cast<u32>(video_width), static_cast<u32>(video_height), attempt_count);
+                            if (rgba_target_or_error.is_error() && should_log_external_memory_success) {
+                                dbgln("MUNDO_WEBGL_VIDEO_RGBA_TARGET_IMPORT count={} frame_id={} status=failed reason={} size={}x{} backend={}",
+                                    attempt_count,
+                                    hardware_frame_id,
+                                    rgba_target_or_error.error().string_literal(),
+                                    video_width,
+                                    video_height,
+                                    hardware_backend);
+                            }
+                            if (!rgba_target_or_error.is_error()) {
+                                imported_rgba_texture = rgba_target_or_error.value();
+                                auto vulkan_rgba_render_result = context().render_vulkan_nv12_external_memory_to_imported_video_rgba_texture(external_memory, *imported_rgba_texture, attempt_count);
+                                if (!vulkan_rgba_render_result.is_error()) {
+                                    auto rgba_blit_result = blit_imported_rgba_texture_to_target(imported_rgba_texture->texture, "vulkan_render_nv12_to_rgba_texture");
+                                    if (!rgba_blit_result.is_error()) {
+                                        hardware_gl_upload_microseconds = vulkan_rgba_render_result.value();
+                                        hardware_gl_upload_direct_zero_copy = false;
+                                        hardware_gl_upload_copied_on_gpu = true;
+                                        hardware_gl_upload_copy_stage = "gpu_to_gpu_vulkan_ycbcr_rgba_render";
+                                        hardware_gl_upload_mode = "vulkan_render_nv12_to_rgba_texture";
+                                        if (should_log_external_memory_success) {
+                                            dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_UPLOAD_OK attempt={} frame_id={} backend={} upload_us={} rgba_texture={} target_texture={} direct_zero_copy=false copy_stage=gpu_to_gpu_vulkan_ycbcr_rgba_render upload_mode=vulkan_render_nv12_to_rgba_texture",
+                                                attempt_count,
+                                                hardware_frame_id,
+                                                hardware_backend,
+                                                hardware_gl_upload_microseconds,
+                                                imported_rgba_texture->texture,
+                                                previous_texture_2d);
+                                        }
+                                        restore_state();
+                                        return true;
+                                    }
+                                    hardware_gl_upload_failure_reason = rgba_blit_result.error().string_literal();
+                                } else {
+                                    hardware_gl_upload_failure_reason = vulkan_rgba_render_result.error().string_literal();
+                                }
+                                if (should_log_external_memory_success) {
+                                    dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=vulkan_rgba_render_path_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=vulkan_render_nv12_to_rgba_texture fallback=vulkan_copy_image_planes",
+                                        attempt_count,
+                                        hardware_frame_id,
+                                        hardware_backend,
+                                        hardware_gl_upload_failure_reason,
+                                        has_hardware_handle);
+                                }
+                            }
+
+                            auto vulkan_plane_copy_result = context().copy_vulkan_nv12_external_memory_to_imported_video_textures(external_memory, imported_texture_pair, attempt_count);
+                            if (!vulkan_plane_copy_result.is_error()) {
+                                used_hardware_gl_upload = true;
+                                hardware_gl_upload_microseconds = vulkan_plane_copy_result.value();
+                                hardware_gl_upload_direct_zero_copy = false;
+                                hardware_gl_upload_copied_on_gpu = true;
+                                hardware_gl_upload_copy_stage = "gpu_to_gpu_vulkan_plane_copy";
+                                hardware_gl_upload_mode = "vulkan_copy_image_planes";
+                                uv_texture_width = visible_uv_width;
+                                if (should_log_external_memory_success) {
+                                    dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_UPLOAD_OK attempt={} frame_id={} backend={} upload_us={} y_texture={} uv_texture={} direct_zero_copy=false copy_stage=gpu_to_gpu_vulkan_plane_copy upload_mode=vulkan_copy_image_planes",
+                                        attempt_count,
+                                        hardware_frame_id,
+                                        hardware_backend,
+                                        hardware_gl_upload_microseconds,
+                                        imported_y_texture->texture,
+                                        imported_uv_texture->texture);
+                                }
+                            } else if (should_log_external_memory_success) {
+                                dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=vulkan_plane_copy_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=vulkan_copy_image_planes fallback=cuda_bridge",
+                                    attempt_count,
+                                    hardware_frame_id,
+                                    hardware_backend,
+                                    vulkan_plane_copy_result.error().string_literal(),
+                                    has_hardware_handle);
+                            }
+                        } else if (should_log_external_memory_success) {
+                            dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status=vulkan_external_memory_export_failed reason={} has_hardware_handle={} gl_api=gles_angle_or_egl upload_mode=vulkan_copy_image_planes fallback=cuda_bridge",
+                                attempt_count,
+                                hardware_frame_id,
+                                hardware_backend,
+                                external_memory_or_error.error().string_literal(),
+                                has_hardware_handle);
+                        }
+                    }
+
+                    auto y_cuda_fd = used_hardware_gl_upload ? -1 : imported_y_texture->image->get_opaque_fd();
+                    auto uv_cuda_fd = used_hardware_gl_upload ? -1 : imported_uv_texture->image->get_opaque_fd();
                     if (should_log_external_memory_success) {
                         dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_FD_EXPORT attempt={} frame_id={} backend={} y_fd={} uv_fd={} y_allocation_size={} uv_allocation_size={} reused_y={} reused_uv={}",
                             attempt_count,
@@ -1893,7 +2192,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             imported_texture_pair.reused_y,
                             imported_texture_pair.reused_uv);
                     }
-                    if (y_cuda_fd >= 0 && uv_cuda_fd >= 0) {
+                    if (!used_hardware_gl_upload && y_cuda_fd >= 0 && uv_cuda_fd >= 0) {
                         auto upload_result = media_frame->hardware_handle()->upload_to_gl_textures(Media::HardwareVideoFrameGLTextureUploadRequest {
                             .texture_target = 0,
                             .y_texture = imported_y_texture->texture,
@@ -1937,7 +2236,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                                 hardware_gl_upload_failure_reason,
                                 has_hardware_handle);
                         }
-                    } else {
+                    } else if (!used_hardware_gl_upload) {
                         if (y_cuda_fd >= 0)
                             close(y_cuda_fd);
                         if (uv_cuda_fd >= 0)
@@ -2178,7 +2477,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
 
     if (zero_copy_capable && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
         probe_mundo_cuda_gl_interop(attempt_count);
-        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status={} reason={} has_hardware_handle={} gl_api=gles_angle_or_egl zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} y_bytes={} uv_bytes={} y_upload={} uv_upload={} gpu_upload_us={} direct_zero_copy={} copied_on_gpu={} copy_stage={} upload_mode={}",
+        dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_STATUS attempt={} frame_id={} backend={} status={} reason={} has_hardware_handle={} gl_api=gles_angle_or_egl zero_copy_capable={} cpu_zero_copy_capable={} direct_zero_copy_capable={} direct_zero_copy_ready={} zero_cpu_copy={} y_bytes={} uv_bytes={} y_upload={} uv_upload={} gpu_upload_us={} direct_zero_copy={} copied_on_gpu={} copy_stage={} upload_mode={}",
             attempt_count,
             hardware_frame_id,
             hardware_backend,
@@ -2188,6 +2487,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
             zero_copy_capable,
             cpu_zero_copy_capable,
             direct_zero_copy_capable,
+            hardware_gl_direct_zero_copy_ready,
+            used_hardware_gl_upload && !hardware_gl_upload_direct_zero_copy && hardware_gl_upload_copied_on_gpu,
             nv12_data ? nv12_data->y_plane_size() : 0,
             nv12_data ? nv12_data->uv_plane_size() : 0,
             used_hardware_gl_upload ? "gpu"sv : used_y_plane_pbo ? "pbo"sv

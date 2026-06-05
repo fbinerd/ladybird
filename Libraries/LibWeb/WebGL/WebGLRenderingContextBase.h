@@ -28,6 +28,8 @@
 
 namespace Web::WebGL {
 
+class WebGLTexture;
+
 static constexpr int COMPRESSED_TEXTURE_FORMATS = 0x86A3;
 static constexpr int UNPACK_FLIP_Y_WEBGL = 0x9240;
 static constexpr int UNPACK_PREMULTIPLY_ALPHA_WEBGL = 0x9241;
@@ -144,6 +146,7 @@ protected:
 
     Optional<Gfx::BitmapExportResult> read_and_pixel_convert_texture_image_source(TexImageSource const& source, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width = OptionalNone {}, Optional<int> destination_height = OptionalNone {});
     virtual Optional<GLuint> current_bound_texture_handle_for_target(WebIDL::UnsignedLong target) const;
+    virtual GC::Ptr<WebGLTexture> current_bound_texture_for_target(WebIDL::UnsignedLong target) const;
     bool texture_source_is_video_with_nv12_frame(TexImageSource const& source) const;
     bool upload_texture_source_with_video_pbo(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Gfx::BitmapExportResult const&, bool is_sub_image);
     bool upload_texture_source_with_video_bitmap_fast_path(TexImageSource const& source, WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, Optional<int> destination_width, Optional<int> destination_height, bool is_sub_image);
@@ -202,6 +205,8 @@ private:
     unsigned m_mundo_video_nv12_y_texture { 0 };
     unsigned m_mundo_video_nv12_uv_texture { 0 };
     unsigned m_mundo_video_nv12_framebuffer { 0 };
+    unsigned m_mundo_video_rgba_blit_read_framebuffer { 0 };
+    unsigned m_mundo_video_rgba_blit_draw_framebuffer { 0 };
     unsigned m_mundo_video_nv12_vertex_buffer { 0 };
     struct MundoVideoNV12PlaneTextureState {
         int width { 0 };
