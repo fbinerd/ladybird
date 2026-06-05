@@ -1586,6 +1586,15 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                                 video_height,
                                 hardware_backend);
                         }
+                    } else if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                        dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_SET_SKIPPED attempt={} frame_id={} target={} texture={} size={}x{} backend={} reason=no_current_bound_webgl_texture upload_mode=vulkan_render_nv12_to_webgl_texture_storage",
+                            attempt_count,
+                            hardware_frame_id,
+                            target,
+                            previous_texture_2d,
+                            video_width,
+                            video_height,
+                            hardware_backend);
                     }
                     restore_state();
                     return true;
