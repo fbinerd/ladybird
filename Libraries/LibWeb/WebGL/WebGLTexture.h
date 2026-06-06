@@ -31,6 +31,8 @@ public:
         char const* copy_stage { "none" };
         bool direct_zero_copy { false };
         bool copied_on_gpu { false };
+        char const* direct_sampling_route { "none" };
+        char const* direct_sampling_reason { "none" };
         u32 source_vulkan_format { 0 };
         u32 source_vulkan_layout { 0 };
         u64 source_allocation_size { 0 };

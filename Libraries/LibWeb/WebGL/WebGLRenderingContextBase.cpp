@@ -1540,11 +1540,21 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         if (!external_memory_or_error.is_error()) {
             auto const& external_memory = cached_external_memory.value();
             auto skia_ycbcr_probe = context().probe_skia_vulkan_ycbcr_texture_import(external_memory, attempt_count);
-            if (skia_ycbcr_probe.attempted && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-                dbgln("MUNDO_WEBGL_VIDEO_DIRECT_SAMPLING_ROUTE attempt={} frame_id={} backend={} preferred=skia_vulkan_ycbcr skia_supported={} skia_reason={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={} fallback=custom_gl_vulkan_interop current_path=vulkan_render_nv12_to_webgl_texture_storage direct_zero_copy=false",
+            auto direct_sampling_route = skia_ycbcr_probe.supported ? "skia_vulkan_ycbcr" : "custom_gl_vulkan_interop";
+            auto direct_sampling_reason = "skia_probe_not_attempted";
+            if (skia_ycbcr_probe.supported)
+                direct_sampling_reason = "skia_supported";
+            else if (skia_ycbcr_probe.reason == "skia_borrow_texture_failed"sv)
+                direct_sampling_reason = "skia_borrow_texture_failed";
+            else if (skia_ycbcr_probe.attempted)
+                direct_sampling_reason = "skia_probe_failed";
+            if (skia_ycbcr_probe.attempted) {
+                dbgln("MUNDO_WEBGL_VIDEO_DIRECT_SAMPLING_ROUTE attempt={} frame_id={} backend={} preferred=skia_vulkan_ycbcr selected={} selected_reason={} skia_supported={} skia_reason={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={} fallback=custom_gl_vulkan_interop current_path=vulkan_render_nv12_to_webgl_texture_storage direct_zero_copy=false",
                     attempt_count,
                     hardware_frame_id,
                     hardware_backend,
+                    direct_sampling_route,
+                    direct_sampling_reason,
                     skia_ycbcr_probe.supported,
                     skia_ycbcr_probe.reason,
                     skia_ycbcr_probe.backend_texture_valid,
@@ -1591,6 +1601,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                             .copy_stage = "gpu_to_gpu_vulkan_ycbcr_target_render",
                             .direct_zero_copy = false,
                             .copied_on_gpu = true,
+                            .direct_sampling_route = direct_sampling_route,
+                            .direct_sampling_reason = direct_sampling_reason,
                             .source_vulkan_format = source_plane.vulkan_format,
                             .source_vulkan_layout = source_plane.vulkan_image_layout,
                             .source_allocation_size = source_plane.allocation_size,
