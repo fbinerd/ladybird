@@ -1150,6 +1150,90 @@ OpenGLContext::GLExternalVideoImportProbeResult OpenGLContext::probe_video_exter
     return finish();
 }
 
+OpenGLContext::RetainedVulkanVideoSourceProbeResult OpenGLContext::probe_retained_vulkan_video_source_for_virtual_draw(int source_opaque_fd, u32 source_handle_type, u64 source_allocation_size, u32 width, u32 height, u32 source_format, u32 source_layout, u64 frame_id, size_t log_count)
+{
+    static size_t s_probe_count { 0 };
+    auto probe_count = ++s_probe_count;
+    auto should_log = probe_count <= 8 || probe_count % 120 == 0;
+
+    auto log_failure = [&](StringView reason) {
+        if (should_log) {
+            dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_IMPORT_PROBE draw_count={} probe_count={} frame_id={} status=failed reason={} source_fd_retained={} handle_type={} size={}x{} source_format={} source_layout={} allocation_size={} next_step=fix_retained_source_before_virtual_draw",
+                log_count,
+                probe_count,
+                frame_id,
+                reason,
+                source_opaque_fd >= 0,
+                source_handle_type,
+                width,
+                height,
+                source_format,
+                source_layout,
+                source_allocation_size);
+        }
+        return RetainedVulkanVideoSourceProbeResult {
+            .attempted = true,
+            .supported = false,
+            .direct_sample_ready = false,
+            .reason = reason,
+        };
+    };
+
+    if (source_opaque_fd < 0)
+        return log_failure("missing_retained_source_opaque_fd"sv);
+    if (source_handle_type != to_underlying(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT))
+        return log_failure("unsupported_source_handle_type"sv);
+    if (!source_allocation_size)
+        return log_failure("missing_source_allocation_size"sv);
+
+    auto import_fd = dup(source_opaque_fd);
+    if (import_fd < 0)
+        return log_failure("fd_dup_failed"sv);
+
+    auto& vulkan_context = m_skia_backend_context->vulkan_context();
+    auto imported_source_or_error = Gfx::import_vulkan_nv12_external_memory(
+        vulkan_context,
+        import_fd,
+        VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+        source_allocation_size,
+        width,
+        height,
+        static_cast<VkFormat>(source_format),
+        static_cast<VkImageLayout>(source_layout));
+    if (imported_source_or_error.is_error())
+        return log_failure(imported_source_or_error.error().string_literal());
+
+    auto imported_source = imported_source_or_error.release_value();
+    if (should_log) {
+        dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_IMPORT_PROBE draw_count={} probe_count={} frame_id={} status=ok direct_sample_ready={} source_fd_retained=true handle_type={} size={}x{} source_format={} source_layout={} allocation_size={} required_size={} image={} image_view={} sampler={} conversion={} next_step={}",
+            log_count,
+            probe_count,
+            frame_id,
+            imported_source->direct_sample_ready,
+            source_handle_type,
+            width,
+            height,
+            source_format,
+            source_layout,
+            source_allocation_size,
+            imported_source->required_size,
+            reinterpret_cast<uintptr_t>(imported_source->image),
+            reinterpret_cast<uintptr_t>(imported_source->ycbcr_image_view),
+            reinterpret_cast<uintptr_t>(imported_source->ycbcr_sampler),
+            reinterpret_cast<uintptr_t>(imported_source->ycbcr_conversion),
+            imported_source->direct_sample_ready ? "cache_imported_source_for_virtual_draw" : "fix_ycbcr_direct_sample_resources");
+    }
+
+    return RetainedVulkanVideoSourceProbeResult {
+        .attempted = true,
+        .supported = imported_source->direct_sample_ready,
+        .direct_sample_ready = imported_source->direct_sample_ready,
+        .reason = imported_source->direct_sample_ready ? "ok"sv : "direct_sample_not_ready"sv,
+        .required_size = imported_source->required_size,
+        .allocation_size = imported_source->allocation_size,
+    };
+}
+
 ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count)
 {
     auto log_failure = [&](StringView reason, u32 gl_error = 0) {

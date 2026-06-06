@@ -1187,6 +1187,11 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 uses_video_sampler ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
             if (uses_video_sampler)
                 log_mundo_webgl_video_virtualization_draw_state("drawArrays", log_count, backing, program_handle, texture_handle, mode, first, count, 0, 0);
+#ifdef USE_VULKAN_DMABUF_IMAGES
+            if (uses_video_sampler) {
+                m_context->probe_retained_vulkan_video_source_for_virtual_draw(backing.source_opaque_fd, backing.source_handle_type, backing.source_allocation_size, backing.width, backing.height, backing.source_vulkan_format, backing.source_vulkan_layout, backing.frame_id, log_count);
+            }
+#endif
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
@@ -1285,6 +1290,11 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 uses_video_sampler ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
             if (uses_video_sampler)
                 log_mundo_webgl_video_virtualization_draw_state("drawElements", log_count, backing, program_handle, texture_handle, mode, 0, count, type, static_cast<GLintptr>(offset));
+#ifdef USE_VULKAN_DMABUF_IMAGES
+            if (uses_video_sampler) {
+                m_context->probe_retained_vulkan_video_source_for_virtual_draw(backing.source_opaque_fd, backing.source_handle_type, backing.source_allocation_size, backing.width, backing.height, backing.source_vulkan_format, backing.source_vulkan_layout, backing.frame_id, log_count);
+            }
+#endif
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
