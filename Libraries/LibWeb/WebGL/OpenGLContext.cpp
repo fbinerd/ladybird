@@ -950,9 +950,10 @@ OpenGLContext::SkiaVulkanYcbcrProbeResult OpenGLContext::probe_skia_vulkan_ycbcr
 OpenGLContext::GLExternalVideoImportProbeResult OpenGLContext::probe_video_external_memory_gl_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const& external_memory, size_t log_count)
 {
     static size_t s_probe_count { 0 };
+    static GLExternalVideoImportProbeResult s_last_result;
     auto probe_count = ++s_probe_count;
     if (probe_count != 1 && probe_count % 120 != 0)
-        return {};
+        return s_last_result;
 
     auto* gl_create_memory_objects_ext = reinterpret_cast<PFNGLCREATEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glCreateMemoryObjectsEXT"));
     auto* gl_delete_memory_objects_ext = reinterpret_cast<PFNGLDELETEMEMORYOBJECTSEXTPROC>(eglGetProcAddress("glDeleteMemoryObjectsEXT"));
@@ -962,6 +963,10 @@ OpenGLContext::GLExternalVideoImportProbeResult OpenGLContext::probe_video_exter
 
     GLExternalVideoImportProbeResult result {
         .attempted = true,
+    };
+    auto finish = [&] {
+        s_last_result = result;
+        return result;
     };
 
     auto probe_plane = [&](char const* label, Media::HardwareVideoFrameExternalMemoryPlane const& plane, GLenum gl_internal_format) -> ErrorOr<void> {
@@ -1092,7 +1097,7 @@ OpenGLContext::GLExternalVideoImportProbeResult OpenGLContext::probe_video_exter
             Media::hardware_video_frame_backend_name(external_memory.backend));
         result.y_plane_reason = "not_vulkan"sv;
         result.uv_plane_reason = "not_vulkan"sv;
-        return result;
+        return finish();
     }
     if (external_memory.plane_count < 1) {
         dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} count={} frame_id={} backend={} label=all status=failed reason=no_planes",
@@ -1102,7 +1107,7 @@ OpenGLContext::GLExternalVideoImportProbeResult OpenGLContext::probe_video_exter
             Media::hardware_video_frame_backend_name(external_memory.backend));
         result.y_plane_reason = "no_planes"sv;
         result.uv_plane_reason = "no_planes"sv;
-        return result;
+        return finish();
     }
 
     auto y_result = probe_plane("plane0_r8", external_memory.planes[0], GL_R8_EXT);
@@ -1112,12 +1117,12 @@ OpenGLContext::GLExternalVideoImportProbeResult OpenGLContext::probe_video_exter
         auto uv_result = probe_plane("plane1_rg8", external_memory.planes[1], GL_RG8_EXT);
         result.uv_plane_supported = !uv_result.is_error();
         result.uv_plane_reason = uv_result.is_error() ? uv_result.error().string_literal() : "ok"sv;
-        return result;
+        return finish();
     }
 
     if (!external_memory.single_memory || external_memory.planes[0].fd < 0 || !external_memory.planes[0].width || !external_memory.planes[0].height) {
         result.uv_plane_reason = "cannot_infer_uv_plane"sv;
-        return result;
+        return finish();
     }
 
     auto inferred_uv_plane = external_memory.planes[0];
@@ -1142,7 +1147,7 @@ OpenGLContext::GLExternalVideoImportProbeResult OpenGLContext::probe_video_exter
             inferred_uv_plane.height);
     }
 
-    return result;
+    return finish();
 }
 
 ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count)
