@@ -385,6 +385,55 @@ static void log_mundo_webgl_video_virtualization_draw_state(char const* op, size
         backing.source_opaque_fd >= 0 ? "import_retained_source_fd_for_vulkan_virtual_draw" : "retain_decoder_surface_fd_before_virtual_draw");
 }
 
+#ifdef USE_VULKAN_DMABUF_IMAGES
+static void ensure_mundo_webgl_video_virtual_source_cached(OpenGLContext& context, WebGLTexture& texture, WebGLTexture::HardwareVideoBacking const& backing, char const* op, size_t draw_log_count, GLuint program_handle, GLuint texture_handle)
+{
+    auto const* cached_source = texture.cached_virtual_vulkan_video_source();
+    if (cached_source && cached_source->direct_sample_ready && cached_source->width == backing.width && cached_source->height == backing.height) {
+        dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_CACHE count={} op={} frame_id={} program={} texture={} status=hit image={} image_view={} sampler={} next_step=use_cached_source_for_virtual_draw",
+            draw_log_count,
+            op,
+            backing.frame_id,
+            program_handle,
+            texture_handle,
+            reinterpret_cast<uintptr_t>(cached_source->image),
+            reinterpret_cast<uintptr_t>(cached_source->ycbcr_image_view),
+            reinterpret_cast<uintptr_t>(cached_source->ycbcr_sampler));
+        return;
+    }
+
+    auto imported_source_or_error = context.import_retained_vulkan_video_source_for_virtual_draw(backing.source_opaque_fd, backing.source_handle_type, backing.source_allocation_size, backing.width, backing.height, backing.source_vulkan_format, backing.source_vulkan_layout);
+    if (imported_source_or_error.is_error()) {
+        dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_CACHE count={} op={} frame_id={} program={} texture={} status=failed reason={} next_step=fix_source_import_before_virtual_draw",
+            draw_log_count,
+            op,
+            backing.frame_id,
+            program_handle,
+            texture_handle,
+            imported_source_or_error.error().string_literal());
+        return;
+    }
+
+    auto imported_source = imported_source_or_error.release_value();
+    auto direct_sample_ready = imported_source->direct_sample_ready;
+    auto image = reinterpret_cast<uintptr_t>(imported_source->image);
+    auto image_view = reinterpret_cast<uintptr_t>(imported_source->ycbcr_image_view);
+    auto sampler = reinterpret_cast<uintptr_t>(imported_source->ycbcr_sampler);
+    texture.set_cached_virtual_vulkan_video_source(move(imported_source));
+    dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_CACHE count={} op={} frame_id={} program={} texture={} status=filled direct_sample_ready={} image={} image_view={} sampler={} next_step={}",
+        draw_log_count,
+        op,
+        backing.frame_id,
+        program_handle,
+        texture_handle,
+        direct_sample_ready,
+        image,
+        image_view,
+        sampler,
+        direct_sample_ready ? "bind_cached_source_to_virtual_draw" : "fix_direct_sample_resources_before_virtual_draw");
+}
+#endif
+
 static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint video_texture_handle, Optional<WebGLTexture::HardwareVideoBacking> const& video_backing, size_t draw_log_count)
 {
     if (!program_handle)
@@ -1190,6 +1239,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
 #ifdef USE_VULKAN_DMABUF_IMAGES
             if (uses_video_sampler) {
                 m_context->probe_retained_vulkan_video_source_for_virtual_draw(backing.source_opaque_fd, backing.source_handle_type, backing.source_allocation_size, backing.width, backing.height, backing.source_vulkan_format, backing.source_vulkan_layout, backing.frame_id, log_count);
+                ensure_mundo_webgl_video_virtual_source_cached(*m_context, *m_texture_binding_2d, backing, "drawArrays", log_count, program_handle, texture_handle);
             }
 #endif
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
@@ -1293,6 +1343,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
 #ifdef USE_VULKAN_DMABUF_IMAGES
             if (uses_video_sampler) {
                 m_context->probe_retained_vulkan_video_source_for_virtual_draw(backing.source_opaque_fd, backing.source_handle_type, backing.source_allocation_size, backing.width, backing.height, backing.source_vulkan_format, backing.source_vulkan_layout, backing.frame_id, log_count);
+                ensure_mundo_webgl_video_virtual_source_cached(*m_context, *m_texture_binding_2d, backing, "drawElements", log_count, program_handle, texture_handle);
             }
 #endif
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);

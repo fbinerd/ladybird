@@ -1150,6 +1150,30 @@ OpenGLContext::GLExternalVideoImportProbeResult OpenGLContext::probe_video_exter
     return finish();
 }
 
+ErrorOr<NonnullOwnPtr<Gfx::ImportedVulkanNV12Image>> OpenGLContext::import_retained_vulkan_video_source_for_virtual_draw(int source_opaque_fd, u32 source_handle_type, u64 source_allocation_size, u32 width, u32 height, u32 source_format, u32 source_layout)
+{
+    if (source_opaque_fd < 0)
+        return Error::from_string_literal("missing_retained_source_opaque_fd");
+    if (source_handle_type != to_underlying(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT))
+        return Error::from_string_literal("unsupported_source_handle_type");
+    if (!source_allocation_size)
+        return Error::from_string_literal("missing_source_allocation_size");
+
+    auto import_fd = dup(source_opaque_fd);
+    if (import_fd < 0)
+        return Error::from_string_literal("fd_dup_failed");
+
+    return Gfx::import_vulkan_nv12_external_memory(
+        m_skia_backend_context->vulkan_context(),
+        import_fd,
+        VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+        source_allocation_size,
+        width,
+        height,
+        static_cast<VkFormat>(source_format),
+        static_cast<VkImageLayout>(source_layout));
+}
+
 OpenGLContext::RetainedVulkanVideoSourceProbeResult OpenGLContext::probe_retained_vulkan_video_source_for_virtual_draw(int source_opaque_fd, u32 source_handle_type, u64 source_allocation_size, u32 width, u32 height, u32 source_format, u32 source_layout, u64 frame_id, size_t log_count)
 {
     static size_t s_probe_count { 0 };
@@ -1179,27 +1203,7 @@ OpenGLContext::RetainedVulkanVideoSourceProbeResult OpenGLContext::probe_retaine
         };
     };
 
-    if (source_opaque_fd < 0)
-        return log_failure("missing_retained_source_opaque_fd"sv);
-    if (source_handle_type != to_underlying(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT))
-        return log_failure("unsupported_source_handle_type"sv);
-    if (!source_allocation_size)
-        return log_failure("missing_source_allocation_size"sv);
-
-    auto import_fd = dup(source_opaque_fd);
-    if (import_fd < 0)
-        return log_failure("fd_dup_failed"sv);
-
-    auto& vulkan_context = m_skia_backend_context->vulkan_context();
-    auto imported_source_or_error = Gfx::import_vulkan_nv12_external_memory(
-        vulkan_context,
-        import_fd,
-        VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
-        source_allocation_size,
-        width,
-        height,
-        static_cast<VkFormat>(source_format),
-        static_cast<VkImageLayout>(source_layout));
+    auto imported_source_or_error = import_retained_vulkan_video_source_for_virtual_draw(source_opaque_fd, source_handle_type, source_allocation_size, width, height, source_format, source_layout);
     if (imported_source_or_error.is_error())
         return log_failure(imported_source_or_error.error().string_literal());
 

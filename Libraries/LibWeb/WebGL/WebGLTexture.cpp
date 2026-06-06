@@ -47,7 +47,17 @@ void WebGLTexture::clear_hardware_video_backing()
         close(m_hardware_video_backing->source_opaque_fd);
 #endif
     m_hardware_video_backing.clear();
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    m_cached_virtual_vulkan_video_source = nullptr;
+#endif
 }
+
+#ifdef USE_VULKAN_DMABUF_IMAGES
+void WebGLTexture::set_cached_virtual_vulkan_video_source(NonnullOwnPtr<Gfx::ImportedVulkanNV12Image> source)
+{
+    m_cached_virtual_vulkan_video_source = move(source);
+}
+#endif
 
 void WebGLTexture::initialize(JS::Realm& realm)
 {

@@ -8,8 +8,13 @@
 
 #pragma once
 
+#include <AK/NonnullOwnPtr.h>
 #include <LibWeb/WebGL/Types.h>
 #include <LibWeb/WebGL/WebGLObject.h>
+
+#ifdef USE_VULKAN_DMABUF_IMAGES
+#    include <LibGfx/VulkanImage.h>
+#endif
 
 namespace Web::WebGL {
 
@@ -45,6 +50,10 @@ public:
     void clear_hardware_video_backing();
     bool has_hardware_video_backing() const { return m_hardware_video_backing.has_value(); }
     Optional<HardwareVideoBacking> const& hardware_video_backing() const { return m_hardware_video_backing; }
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    void set_cached_virtual_vulkan_video_source(NonnullOwnPtr<Gfx::ImportedVulkanNV12Image>);
+    Gfx::ImportedVulkanNV12Image const* cached_virtual_vulkan_video_source() const { return m_cached_virtual_vulkan_video_source.ptr(); }
+#endif
 
 protected:
     explicit WebGLTexture(JS::Realm&, GC::Ref<WebGLRenderingContextBase>, GLuint handle);
@@ -53,6 +62,9 @@ protected:
 
 private:
     Optional<HardwareVideoBacking> m_hardware_video_backing;
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    OwnPtr<Gfx::ImportedVulkanNV12Image> m_cached_virtual_vulkan_video_source;
+#endif
 };
 
 }
