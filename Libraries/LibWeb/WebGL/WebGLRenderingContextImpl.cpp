@@ -511,13 +511,17 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(char const* op, size_t
     GLint framebuffer = 0;
     GLint vertex_array = 0;
     GLint element_array_buffer = 0;
+    GLint active_attrib_count = 0;
+    GLint attached_shader_count = 0;
     GLint viewport[4] {};
     glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &framebuffer);
     glGetIntegervRobustANGLE(GL_VERTEX_ARRAY_BINDING, 1, nullptr, &vertex_array);
     glGetIntegervRobustANGLE(GL_ELEMENT_ARRAY_BUFFER_BINDING, 1, nullptr, &element_array_buffer);
     glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
+    glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_ATTRIBUTES, 1, nullptr, &active_attrib_count);
+    glGetProgramivRobustANGLE(program_handle, GL_ATTACHED_SHADERS, 1, nullptr, &attached_shader_count);
 
-    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_PLAN count={} op={} frame_id={} cached_frame_id={} program={} texture={} ready={} reason={} route={} sampler_unit={} sampler_location={} sampler_bound_texture={} source_image={} source_image_view={} source_sampler={} source_format={} source_layout={} source_allocation_size={} source_single_optimal_multiplanar={} draw_mode={} draw_first={} draw_count={} draw_type={} draw_offset={} framebuffer={} vertex_array={} element_array_buffer={} viewport={}x{}+{}+{} blocker={} next_step={}",
+    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_PLAN count={} op={} frame_id={} cached_frame_id={} program={} texture={} ready={} reason={} route={} sampler_unit={} sampler_location={} sampler_bound_texture={} source_image={} source_image_view={} source_sampler={} source_format={} source_layout={} source_allocation_size={} source_single_optimal_multiplanar={} draw_mode={} draw_first={} draw_count={} draw_type={} draw_offset={} framebuffer={} vertex_array={} element_array_buffer={} active_attribs={} attached_shaders={} viewport={}x{}+{}+{} blocker={} next_step={}",
         draw_log_count,
         op,
         backing.frame_id,
@@ -545,12 +549,78 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(char const* op, size_t
         framebuffer,
         vertex_array,
         element_array_buffer,
+        active_attrib_count,
+        attached_shader_count,
         viewport[2],
         viewport[3],
         viewport[0],
         viewport[1],
         ready ? "webgl_backend_cannot_consume_vulkan_ycbcr_sampler_directly_yet"sv : reason,
         ready ? "implement_vulkan_geometry_or_backend_interop_for_this_draw" : "complete_direct_draw_prerequisites");
+
+    auto attribs_to_log = active_attrib_count < 8 ? active_attrib_count : 8;
+    for (GLint index = 0; index < attribs_to_log; ++index) {
+        GLint size = 0;
+        GLenum type = 0;
+        GLsizei length = 0;
+        GLchar name[256];
+        glGetActiveAttrib(program_handle, static_cast<GLuint>(index), sizeof(name), &length, &size, &type, name);
+        if (!length)
+            continue;
+
+        auto location = glGetAttribLocation(program_handle, name);
+        GLint enabled = 0;
+        GLint array_size = 0;
+        GLint array_type = 0;
+        GLint normalized = 0;
+        GLint stride = 0;
+        GLint buffer = 0;
+        if (location >= 0) {
+            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_ENABLED, 1, nullptr, &enabled);
+            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_SIZE, 1, nullptr, &array_size);
+            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_TYPE, 1, nullptr, &array_type);
+            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, 1, nullptr, &normalized);
+            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_STRIDE, 1, nullptr, &stride);
+            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, 1, nullptr, &buffer);
+        }
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_ATTRIB count={} frame_id={} program={} active_index={} name={} location={} declared_size={} declared_type={} enabled={} array_size={} array_type={} normalized={} stride={} buffer={} next_step=map_webgl_vertex_input_to_vulkan_pipeline",
+            draw_log_count,
+            backing.frame_id,
+            program_handle,
+            index,
+            StringView { name, static_cast<size_t>(length) },
+            location,
+            size,
+            type,
+            enabled,
+            array_size,
+            array_type,
+            normalized,
+            stride,
+            buffer);
+    }
+
+    if (attached_shader_count > 0) {
+        GLuint shaders[8] {};
+        GLsizei shader_count = 0;
+        glGetAttachedShaders(program_handle, min(attached_shader_count, 8), &shader_count, shaders);
+        for (GLsizei index = 0; index < shader_count; ++index) {
+            GLint shader_type = 0;
+            GLint source_length = 0;
+            GLint compile_status = 0;
+            glGetShaderiv(shaders[index], GL_SHADER_TYPE, &shader_type);
+            glGetShaderiv(shaders[index], GL_SHADER_SOURCE_LENGTH, &source_length);
+            glGetShaderiv(shaders[index], GL_COMPILE_STATUS, &compile_status);
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_SHADER count={} frame_id={} program={} shader={} shader_type={} source_length={} compile_status={} next_step=translate_or_reuse_shader_for_vulkan_video_sampler",
+                draw_log_count,
+                backing.frame_id,
+                program_handle,
+                shaders[index],
+                shader_type,
+                source_length,
+                compile_status);
+        }
+    }
 }
 #endif
 
