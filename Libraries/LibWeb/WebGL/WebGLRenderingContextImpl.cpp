@@ -236,6 +236,74 @@ static bool mundo_webgl_is_sampler_uniform_type(GLenum type)
     }
 }
 
+static Vector<GLchar> mundo_webgl_null_terminated_string(StringView string)
+{
+    Vector<GLchar> result;
+    result.ensure_capacity(string.length() + 1);
+    for (auto c : string.bytes())
+        result.append(c);
+    result.append('\0');
+    return result;
+}
+
+struct MundoWebGLVideoVirtualizationReadiness {
+    bool has_plan { false };
+    bool route_supported { false };
+    bool direct_texture_call { false };
+    bool sampler_matches_video_texture { false };
+    GLint sampler_location { -1 };
+    GLint sampler_unit { -1 };
+    GLint sampler_bound_texture { 0 };
+    StringView reason { "no_video_sampler_plan"sv };
+};
+
+static MundoWebGLVideoVirtualizationReadiness mundo_webgl_video_virtualization_readiness(GLuint program_handle, GLuint video_texture_handle, WebGLTexture::HardwareVideoBacking const& backing, Optional<WebGLProgram::VideoSamplerPlan> const& video_sampler_plan)
+{
+    MundoWebGLVideoVirtualizationReadiness readiness;
+    if (!program_handle || !video_texture_handle) {
+        readiness.reason = "missing_program_or_texture"sv;
+        return readiness;
+    }
+    if (!video_sampler_plan.has_value())
+        return readiness;
+
+    auto const& plan = video_sampler_plan.value();
+    readiness.has_plan = true;
+    readiness.direct_texture_call = plan.direct_texture_call;
+    readiness.route_supported = !strcmp(backing.direct_sampling_route, "vulkan_direct_sampling_virtualization");
+    if (!readiness.route_supported) {
+        readiness.reason = "route_not_vulkan_direct_sampling_virtualization"sv;
+        return readiness;
+    }
+    if (!plan.direct_texture_call) {
+        readiness.reason = "sampler_not_direct_texture_call"sv;
+        return readiness;
+    }
+
+    auto uniform_name = mundo_webgl_null_terminated_string(plan.uniform_name.bytes_as_string_view());
+    readiness.sampler_location = glGetUniformLocation(program_handle, uniform_name.data());
+    if (readiness.sampler_location < 0) {
+        readiness.reason = "sampler_uniform_location_missing"sv;
+        return readiness;
+    }
+
+    glGetUniformiv(program_handle, readiness.sampler_location, &readiness.sampler_unit);
+    if (readiness.sampler_unit < 0) {
+        readiness.reason = "sampler_unit_unset"sv;
+        return readiness;
+    }
+
+    GLint previous_active_texture = 0;
+    glGetIntegervRobustANGLE(GL_ACTIVE_TEXTURE, 1, nullptr, &previous_active_texture);
+    glActiveTexture(GL_TEXTURE0 + readiness.sampler_unit);
+    glGetIntegervRobustANGLE(GL_TEXTURE_BINDING_2D, 1, nullptr, &readiness.sampler_bound_texture);
+    glActiveTexture(previous_active_texture);
+
+    readiness.sampler_matches_video_texture = readiness.sampler_bound_texture == static_cast<GLint>(video_texture_handle);
+    readiness.reason = readiness.sampler_matches_video_texture ? "ready"sv : "sampler_bound_texture_mismatch"sv;
+    return readiness;
+}
+
 static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint video_texture_handle, Optional<WebGLTexture::HardwareVideoBacking> const& video_backing, size_t draw_log_count)
 {
     if (!program_handle)
@@ -971,6 +1039,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 video_sampler_uniform = plan.uniform_name.bytes_as_string_view();
                 video_sampler_direct_texture_call = plan.direct_texture_call;
             }
+            auto readiness = mundo_webgl_video_virtualization_readiness(program_handle, texture_handle, backing, m_current_program ? m_current_program->video_sampler_plan() : Optional<WebGLProgram::VideoSamplerPlan> {});
             dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawArrays frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} video_sampler_uniform={} video_sampler_direct_texture_call={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
@@ -986,6 +1055,22 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 backing.copied_on_gpu,
                 video_sampler_uniform,
                 video_sampler_direct_texture_call);
+            dbgln("MUNDO_WEBGL_VIDEO_VIRTUALIZATION_READY count={} op=drawArrays frame_id={} texture={} program={} route={} has_plan={} route_supported={} direct_texture_call={} sampler_location={} sampler_unit={} sampler_bound_texture={} sampler_matches_video_texture={} ready={} reason={} next_step={}",
+                log_count,
+                backing.frame_id,
+                texture_handle,
+                program_handle,
+                backing.direct_sampling_route,
+                readiness.has_plan,
+                readiness.route_supported,
+                readiness.direct_texture_call,
+                readiness.sampler_location,
+                readiness.sampler_unit,
+                readiness.sampler_bound_texture,
+                readiness.sampler_matches_video_texture,
+                readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture,
+                readiness.reason,
+                readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
@@ -1028,6 +1113,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 video_sampler_uniform = plan.uniform_name.bytes_as_string_view();
                 video_sampler_direct_texture_call = plan.direct_texture_call;
             }
+            auto readiness = mundo_webgl_video_virtualization_readiness(program_handle, texture_handle, backing, m_current_program ? m_current_program->video_sampler_plan() : Optional<WebGLProgram::VideoSamplerPlan> {});
             dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawElements frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} video_sampler_uniform={} video_sampler_direct_texture_call={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
@@ -1043,6 +1129,22 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 backing.copied_on_gpu,
                 video_sampler_uniform,
                 video_sampler_direct_texture_call);
+            dbgln("MUNDO_WEBGL_VIDEO_VIRTUALIZATION_READY count={} op=drawElements frame_id={} texture={} program={} route={} has_plan={} route_supported={} direct_texture_call={} sampler_location={} sampler_unit={} sampler_bound_texture={} sampler_matches_video_texture={} ready={} reason={} next_step={}",
+                log_count,
+                backing.frame_id,
+                texture_handle,
+                program_handle,
+                backing.direct_sampling_route,
+                readiness.has_plan,
+                readiness.route_supported,
+                readiness.direct_texture_call,
+                readiness.sampler_location,
+                readiness.sampler_unit,
+                readiness.sampler_bound_texture,
+                readiness.sampler_matches_video_texture,
+                readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture,
+                readiness.reason,
+                readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
