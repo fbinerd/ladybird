@@ -28,6 +28,11 @@ WebGLProgram::WebGLProgram(JS::Realm& realm, GC::Ref<WebGLRenderingContextBase> 
 
 WebGLProgram::~WebGLProgram() = default;
 
+void WebGLProgram::set_video_sampler_plan(VideoSamplerPlan plan)
+{
+    m_video_sampler_plan = move(plan);
+}
+
 void WebGLProgram::initialize(JS::Realm& realm)
 {
     WEB_SET_PROTOTYPE_FOR_INTERFACE(WebGLProgram);

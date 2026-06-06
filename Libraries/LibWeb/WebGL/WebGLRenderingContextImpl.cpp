@@ -964,7 +964,14 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
             auto texture_handle_or_error = m_texture_binding_2d->handle(this);
             if (!texture_handle_or_error.is_error())
                 texture_handle = texture_handle_or_error.release_value();
-            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawArrays frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} next_step=shader_or_texture_virtualization",
+            auto video_sampler_uniform = "none"sv;
+            auto video_sampler_direct_texture_call = false;
+            if (m_current_program && m_current_program->video_sampler_plan().has_value()) {
+                auto const& plan = m_current_program->video_sampler_plan().value();
+                video_sampler_uniform = plan.uniform_name.bytes_as_string_view();
+                video_sampler_direct_texture_call = plan.direct_texture_call;
+            }
+            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawArrays frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} video_sampler_uniform={} video_sampler_direct_texture_call={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
                 texture_handle,
@@ -976,7 +983,9 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 backing.upload_mode,
                 backing.copy_stage,
                 backing.direct_zero_copy,
-                backing.copied_on_gpu);
+                backing.copied_on_gpu,
+                video_sampler_uniform,
+                video_sampler_direct_texture_call);
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
@@ -1012,7 +1021,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             auto texture_handle_or_error = m_texture_binding_2d->handle(this);
             if (!texture_handle_or_error.is_error())
                 texture_handle = texture_handle_or_error.release_value();
-            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawElements frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} next_step=shader_or_texture_virtualization",
+            auto video_sampler_uniform = "none"sv;
+            auto video_sampler_direct_texture_call = false;
+            if (m_current_program && m_current_program->video_sampler_plan().has_value()) {
+                auto const& plan = m_current_program->video_sampler_plan().value();
+                video_sampler_uniform = plan.uniform_name.bytes_as_string_view();
+                video_sampler_direct_texture_call = plan.direct_texture_call;
+            }
+            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawElements frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} video_sampler_uniform={} video_sampler_direct_texture_call={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
                 texture_handle,
@@ -1024,7 +1040,9 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 backing.upload_mode,
                 backing.copy_stage,
                 backing.direct_zero_copy,
-                backing.copied_on_gpu);
+                backing.copied_on_gpu,
+                video_sampler_uniform,
+                video_sampler_direct_texture_call);
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
@@ -2492,6 +2510,7 @@ void WebGLRenderingContextImpl::link_program(GC::Root<WebGLProgram> program)
 
     if (!program)
         return;
+    program->clear_video_sampler_plan();
 
     auto fragment_shader = program->attached_fragment_shader();
     if (!fragment_shader)
@@ -2517,6 +2536,7 @@ void WebGLRenderingContextImpl::link_program(GC::Root<WebGLProgram> program)
     GLint active_uniform_count = 0;
     glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
     auto uniforms_to_scan = active_uniform_count < 32 ? active_uniform_count : 32;
+    Optional<WebGLProgram::VideoSamplerPlan> first_video_sampler_plan;
     for (GLint index = 0; index < uniforms_to_scan; ++index) {
         GLint size = 0;
         GLenum type = 0;
@@ -2530,6 +2550,15 @@ void WebGLRenderingContextImpl::link_program(GC::Root<WebGLProgram> program)
         auto texture2d_pattern = MUST(String::formatted("texture2D({}", uniform_name));
         auto texture_pattern = MUST(String::formatted("texture({}", uniform_name));
         auto direct_texture_call = fragment_source_view.contains(texture2d_pattern.bytes_as_string_view()) || fragment_source_view.contains(texture_pattern.bytes_as_string_view());
+        if (!first_video_sampler_plan.has_value() && direct_texture_call) {
+            first_video_sampler_plan = WebGLProgram::VideoSamplerPlan {
+                .uniform_name = uniform_name,
+                .uniform_type = type,
+                .direct_texture_call = direct_texture_call,
+                .fragment_mentions_sampler_2d = has_sampler_2d,
+                .fragment_mentions_external_sampler = has_external_sampler,
+            };
+        }
         dbgln("MUNDO_WEBGL_VIDEO_PROGRAM_SAMPLER_SOURCE program={} uniform={} type={} size={} direct_texture_call={} texture2D_pattern={} texture_pattern={} active_uniforms={} next_step=shader_rewrite_feasibility",
             program_handle,
             uniform_name,
@@ -2539,6 +2568,17 @@ void WebGLRenderingContextImpl::link_program(GC::Root<WebGLProgram> program)
             texture2d_pattern,
             texture_pattern,
             active_uniform_count);
+    }
+    if (first_video_sampler_plan.has_value()) {
+        auto const& plan = first_video_sampler_plan.value();
+        dbgln("MUNDO_WEBGL_VIDEO_PROGRAM_SAMPLER_PLAN program={} uniform={} type={} direct_texture_call={} sampler2D={} samplerExternalOES={} route_candidate=vulkan_direct_sampling_virtualization next_step=bind_or_virtualize_video_sampler",
+            program_handle,
+            plan.uniform_name,
+            plan.uniform_type,
+            plan.direct_texture_call,
+            plan.fragment_mentions_sampler_2d,
+            plan.fragment_mentions_external_sampler);
+        program->set_video_sampler_plan(first_video_sampler_plan.release_value());
     }
 }
 

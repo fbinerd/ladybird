@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <AK/Optional.h>
+#include <AK/String.h>
 #include <LibWeb/WebGL/Types.h>
 #include <LibWeb/WebGL/WebGLObject.h>
 
@@ -28,6 +30,18 @@ public:
     GC::Ptr<WebGLShader> attached_fragment_shader() const { return m_attached_fragment_shader; }
     void set_attached_fragment_shader(GC::Ptr<WebGLShader> shader) { m_attached_fragment_shader = shader; }
 
+    struct VideoSamplerPlan {
+        String uniform_name;
+        GLenum uniform_type { 0 };
+        bool direct_texture_call { false };
+        bool fragment_mentions_sampler_2d { false };
+        bool fragment_mentions_external_sampler { false };
+    };
+
+    void set_video_sampler_plan(VideoSamplerPlan);
+    void clear_video_sampler_plan() { m_video_sampler_plan.clear(); }
+    Optional<VideoSamplerPlan> const& video_sampler_plan() const { return m_video_sampler_plan; }
+
 protected:
     explicit WebGLProgram(JS::Realm&, GC::Ref<WebGLRenderingContextBase>, GLuint handle);
 
@@ -37,6 +51,7 @@ protected:
 private:
     GC::Ptr<WebGLShader> m_attached_vertex_shader;
     GC::Ptr<WebGLShader> m_attached_fragment_shader;
+    Optional<VideoSamplerPlan> m_video_sampler_plan;
 };
 
 }
