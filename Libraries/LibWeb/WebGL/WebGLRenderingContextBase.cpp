@@ -1555,6 +1555,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     direct_sampling_route = "vulkan_direct_sampling_virtualization";
                     if (!gl_external_import_probe.y_plane_supported)
                         direct_sampling_reason = "gl_y_plane_import_failed";
+                    else if (gl_external_import_probe.uv_plane_reason == "single_optimal_multiplanar_requires_vulkan_ycbcr_sampler"sv)
+                        direct_sampling_reason = "single_optimal_multiplanar_requires_vulkan_ycbcr_sampler";
                     else if (!gl_external_import_probe.uv_plane_supported)
                         direct_sampling_reason = "gl_uv_plane_import_failed";
                     else

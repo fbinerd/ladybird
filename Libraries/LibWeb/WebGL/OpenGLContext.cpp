@@ -1125,6 +1125,22 @@ OpenGLContext::GLExternalVideoImportProbeResult OpenGLContext::probe_video_exter
         return finish();
     }
 
+    constexpr u32 vulkan_image_tiling_linear = 1;
+    if (!external_memory.planes[0].has_vulkan_drm_format_modifier && external_memory.vulkan_tiling != vulkan_image_tiling_linear) {
+        result.uv_plane_reason = "single_optimal_multiplanar_requires_vulkan_ycbcr_sampler"sv;
+        dbgln("MUNDO_WEBGL_VIDEO_EXTERNAL_MEMORY_REAL_IMPORT_PROBE attempt={} count={} frame_id={} backend={} label=inferred_uv_rg8 status=skipped reason=single_optimal_multiplanar_requires_vulkan_ycbcr_sampler tiling={} has_modifier={} allocation_size={} size={}x{}",
+            log_count,
+            probe_count,
+            external_memory.frame_id,
+            Media::hardware_video_frame_backend_name(external_memory.backend),
+            external_memory.vulkan_tiling,
+            external_memory.planes[0].has_vulkan_drm_format_modifier,
+            external_memory.planes[0].allocation_size,
+            external_memory.planes[0].width,
+            external_memory.planes[0].height);
+        return finish();
+    }
+
     auto inferred_uv_plane = external_memory.planes[0];
     auto y_plane_byte_count = static_cast<u64>(external_memory.planes[0].width) * static_cast<u64>(external_memory.planes[0].height);
     inferred_uv_plane.offset = static_cast<i64>(static_cast<u64>(external_memory.planes[0].offset) + y_plane_byte_count);
