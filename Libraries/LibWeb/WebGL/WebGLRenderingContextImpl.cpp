@@ -351,6 +351,21 @@ static void log_mundo_webgl_video_virtualization_draw_state(char const* op, size
         glIsEnabled(GL_CULL_FACE) == GL_TRUE,
         glIsEnabled(GL_SCISSOR_TEST) == GL_TRUE,
         backing.direct_sampling_route);
+
+    dbgln("MUNDO_WEBGL_VIDEO_GPU_PIPELINE_STATUS count={} op={} frame_id={} program={} texture={} gpu_only={} direct_zero_copy={} copied_on_gpu={} upload_mode={} copy_stage={} route={} blocker={} next_step={}",
+        draw_log_count,
+        op,
+        backing.frame_id,
+        program_handle,
+        texture_handle,
+        backing.copied_on_gpu && !backing.direct_zero_copy,
+        backing.direct_zero_copy,
+        backing.copied_on_gpu,
+        backing.upload_mode,
+        backing.copy_stage,
+        backing.direct_sampling_route,
+        backing.direct_zero_copy ? "none" : "webgl_draw_still_samples_intermediate_rgba_texture",
+        backing.direct_zero_copy ? "verify_direct_decoder_surface_sampling" : "replace_this_draw_or_texture_binding_with_direct_nv12_vulkan_sampler");
 }
 
 static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint video_texture_handle, Optional<WebGLTexture::HardwareVideoBacking> const& video_backing, size_t draw_log_count)
