@@ -1539,6 +1539,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         auto external_memory_or_error = ensure_cached_external_memory();
         if (!external_memory_or_error.is_error()) {
             auto const& external_memory = cached_external_memory.value();
+            context().probe_skia_vulkan_ycbcr_texture_import(external_memory, attempt_count);
             auto target_rgba_or_error = context().get_or_create_imported_video_rgba_target_texture(static_cast<u32>(previous_texture_2d), static_cast<u32>(video_width), static_cast<u32>(video_height), attempt_count);
             if (!target_rgba_or_error.is_error()) {
                 auto* target_rgba_texture = target_rgba_or_error.value();
