@@ -416,6 +416,8 @@ void WebGLRenderingContextImpl::active_texture(WebIDL::UnsignedLong texture)
 {
     m_context->make_current();
     glActiveTexture(texture);
+    if (texture >= GL_TEXTURE0)
+        m_mundo_active_texture_unit_index = texture - GL_TEXTURE0;
 }
 
 void WebGLRenderingContextImpl::attach_shader(GC::Root<WebGLProgram> program, GC::Root<WebGLShader> shader)
@@ -613,6 +615,11 @@ void WebGLRenderingContextImpl::bind_texture(WebIDL::UnsignedLong target, GC::Ro
     switch (target) {
     case GL_TEXTURE_2D:
         m_texture_binding_2d = texture;
+        if (m_mundo_active_texture_unit_index < 128) {
+            if (m_mundo_texture_binding_2d_by_unit.size() <= m_mundo_active_texture_unit_index)
+                m_mundo_texture_binding_2d_by_unit.resize(m_mundo_active_texture_unit_index + 1);
+            m_mundo_texture_binding_2d_by_unit[m_mundo_active_texture_unit_index] = texture;
+        }
         break;
     case GL_TEXTURE_CUBE_MAP:
         m_texture_binding_cube_map = texture;
@@ -931,6 +938,10 @@ void WebGLRenderingContextImpl::delete_texture(GC::Root<WebGLTexture> texture)
 
     if (m_texture_binding_2d == texture)
         m_texture_binding_2d = nullptr;
+    for (auto& bound_texture : m_mundo_texture_binding_2d_by_unit) {
+        if (bound_texture == texture)
+            bound_texture = nullptr;
+    }
     if (m_texture_binding_cube_map == texture)
         m_texture_binding_cube_map = nullptr;
     if (m_texture_binding_2d_array == texture)
@@ -1040,6 +1051,16 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 video_sampler_direct_texture_call = plan.direct_texture_call;
             }
             auto readiness = mundo_webgl_video_virtualization_readiness(program_handle, texture_handle, backing, m_current_program ? m_current_program->video_sampler_plan() : Optional<WebGLProgram::VideoSamplerPlan> {});
+            GLuint tracked_sampler_texture_handle = 0;
+            bool tracked_sampler_texture_has_video_backing = false;
+            if (readiness.sampler_unit >= 0 && static_cast<size_t>(readiness.sampler_unit) < m_mundo_texture_binding_2d_by_unit.size()) {
+                if (auto tracked_texture = m_mundo_texture_binding_2d_by_unit[readiness.sampler_unit]) {
+                    auto tracked_handle_or_error = tracked_texture->handle(this);
+                    if (!tracked_handle_or_error.is_error())
+                        tracked_sampler_texture_handle = tracked_handle_or_error.release_value();
+                    tracked_sampler_texture_has_video_backing = tracked_texture->has_hardware_video_backing();
+                }
+            }
             dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawArrays frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} video_sampler_uniform={} video_sampler_direct_texture_call={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
@@ -1055,7 +1076,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 backing.copied_on_gpu,
                 video_sampler_uniform,
                 video_sampler_direct_texture_call);
-            dbgln("MUNDO_WEBGL_VIDEO_VIRTUALIZATION_READY count={} op=drawArrays frame_id={} texture={} program={} route={} has_plan={} route_supported={} direct_texture_call={} sampler_location={} sampler_unit={} sampler_bound_texture={} sampler_matches_video_texture={} ready={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_VIDEO_VIRTUALIZATION_READY count={} op=drawArrays frame_id={} texture={} program={} route={} has_plan={} route_supported={} direct_texture_call={} sampler_location={} sampler_unit={} sampler_bound_texture={} tracked_sampler_texture={} tracked_sampler_texture_has_video_backing={} sampler_matches_video_texture={} ready={} reason={} next_step={}",
                 log_count,
                 backing.frame_id,
                 texture_handle,
@@ -1067,6 +1088,8 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 readiness.sampler_location,
                 readiness.sampler_unit,
                 readiness.sampler_bound_texture,
+                tracked_sampler_texture_handle,
+                tracked_sampler_texture_has_video_backing,
                 readiness.sampler_matches_video_texture,
                 readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture,
                 readiness.reason,
@@ -1114,6 +1137,16 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 video_sampler_direct_texture_call = plan.direct_texture_call;
             }
             auto readiness = mundo_webgl_video_virtualization_readiness(program_handle, texture_handle, backing, m_current_program ? m_current_program->video_sampler_plan() : Optional<WebGLProgram::VideoSamplerPlan> {});
+            GLuint tracked_sampler_texture_handle = 0;
+            bool tracked_sampler_texture_has_video_backing = false;
+            if (readiness.sampler_unit >= 0 && static_cast<size_t>(readiness.sampler_unit) < m_mundo_texture_binding_2d_by_unit.size()) {
+                if (auto tracked_texture = m_mundo_texture_binding_2d_by_unit[readiness.sampler_unit]) {
+                    auto tracked_handle_or_error = tracked_texture->handle(this);
+                    if (!tracked_handle_or_error.is_error())
+                        tracked_sampler_texture_handle = tracked_handle_or_error.release_value();
+                    tracked_sampler_texture_has_video_backing = tracked_texture->has_hardware_video_backing();
+                }
+            }
             dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawElements frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} video_sampler_uniform={} video_sampler_direct_texture_call={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
@@ -1129,7 +1162,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 backing.copied_on_gpu,
                 video_sampler_uniform,
                 video_sampler_direct_texture_call);
-            dbgln("MUNDO_WEBGL_VIDEO_VIRTUALIZATION_READY count={} op=drawElements frame_id={} texture={} program={} route={} has_plan={} route_supported={} direct_texture_call={} sampler_location={} sampler_unit={} sampler_bound_texture={} sampler_matches_video_texture={} ready={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_VIDEO_VIRTUALIZATION_READY count={} op=drawElements frame_id={} texture={} program={} route={} has_plan={} route_supported={} direct_texture_call={} sampler_location={} sampler_unit={} sampler_bound_texture={} tracked_sampler_texture={} tracked_sampler_texture_has_video_backing={} sampler_matches_video_texture={} ready={} reason={} next_step={}",
                 log_count,
                 backing.frame_id,
                 texture_handle,
@@ -1141,6 +1174,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 readiness.sampler_location,
                 readiness.sampler_unit,
                 readiness.sampler_bound_texture,
+                tracked_sampler_texture_handle,
+                tracked_sampler_texture_has_video_backing,
                 readiness.sampler_matches_video_texture,
                 readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture,
                 readiness.reason,
@@ -3039,6 +3074,8 @@ void WebGLRenderingContextImpl::visit_edges(JS::Cell::Visitor& visitor)
     visitor.visit(m_any_samples_passed);
     visitor.visit(m_any_samples_passed_conservative);
     visitor.visit(m_transform_feedback_primitives_written);
+    for (auto& texture_binding : m_mundo_texture_binding_2d_by_unit)
+        visitor.visit(texture_binding);
 }
 
 }

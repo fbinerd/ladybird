@@ -8,6 +8,7 @@
 #pragma once
 
 #include <AK/NonnullOwnPtr.h>
+#include <AK/Vector.h>
 #include <LibGC/Ptr.h>
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Forward.h>
@@ -172,6 +173,9 @@ protected:
     GC::Ptr<WebGLQuery> m_any_samples_passed;
     GC::Ptr<WebGLQuery> m_any_samples_passed_conservative;
     GC::Ptr<WebGLQuery> m_transform_feedback_primitives_written;
+
+    size_t m_mundo_active_texture_unit_index { 0 };
+    Vector<GC::Ptr<WebGLTexture>> m_mundo_texture_binding_2d_by_unit;
 
     NonnullOwnPtr<OpenGLContext> m_context;
 };
