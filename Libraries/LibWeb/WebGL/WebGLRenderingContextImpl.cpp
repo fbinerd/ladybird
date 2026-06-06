@@ -244,6 +244,7 @@ static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, size_t
     GLint active_uniform_count = 0;
     glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
     auto uniforms_to_scan = active_uniform_count < 32 ? active_uniform_count : 32;
+    bool found_sampler_uniform = false;
     for (GLint index = 0; index < uniforms_to_scan; ++index) {
         GLint size = 0;
         GLenum type = 0;
@@ -253,6 +254,7 @@ static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, size_t
         if (!length || !mundo_webgl_is_sampler_uniform_type(type))
             continue;
 
+        found_sampler_uniform = true;
         auto location = glGetUniformLocation(program_handle, name);
         GLint unit = -1;
         if (location >= 0)
@@ -267,6 +269,34 @@ static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, size_t
             location,
             unit,
             active_uniform_count);
+    }
+
+    if (found_sampler_uniform)
+        return;
+
+    dbgln("MUNDO_WEBGL_VIDEO_SAMPLER_UNIFORM_MISSING draw_count={} program={} active_uniforms={} scanned_uniforms={} reason=no_active_sampler_uniform_for_video_draw next_step=inspect_uniform_types",
+        draw_log_count,
+        program_handle,
+        active_uniform_count,
+        uniforms_to_scan);
+
+    auto uniforms_to_log = uniforms_to_scan < 8 ? uniforms_to_scan : 8;
+    for (GLint index = 0; index < uniforms_to_log; ++index) {
+        GLint size = 0;
+        GLenum type = 0;
+        GLsizei length = 0;
+        GLchar name[256];
+        glGetActiveUniform(program_handle, static_cast<GLuint>(index), sizeof(name), &length, &size, &type, name);
+        if (!length)
+            continue;
+        auto uniform_name = String::from_utf8_without_validation(ReadonlyBytes { name, static_cast<size_t>(length) });
+        dbgln("MUNDO_WEBGL_VIDEO_UNIFORM_SAMPLE draw_count={} program={} index={} uniform={} type={} size={}",
+            draw_log_count,
+            program_handle,
+            index,
+            uniform_name,
+            type,
+            size);
     }
 }
 
