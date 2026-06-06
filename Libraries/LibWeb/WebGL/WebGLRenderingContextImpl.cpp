@@ -257,6 +257,16 @@ struct MundoWebGLVideoVirtualizationReadiness {
     StringView reason { "no_video_sampler_plan"sv };
 };
 
+#ifdef USE_VULKAN_DMABUF_IMAGES
+struct MundoWebGLVirtualVideoDrawGeometry {
+    GLenum mode { 0 };
+    GLint first { 0 };
+    GLsizei count { 0 };
+    GLenum type { 0 };
+    GLintptr offset { 0 };
+};
+#endif
+
 static MundoWebGLVideoVirtualizationReadiness mundo_webgl_video_virtualization_readiness(GLuint program_handle, GLuint video_texture_handle, WebGLTexture::HardwareVideoBacking const& backing, Optional<WebGLProgram::VideoSamplerPlan> const& video_sampler_plan)
 {
     MundoWebGLVideoVirtualizationReadiness readiness;
@@ -476,6 +486,71 @@ static void log_mundo_webgl_video_virtual_draw_ready(char const* op, size_t draw
         cached_source != nullptr,
         cached_source ? cached_source->direct_sample_ready : false,
         ready ? "replace_rgba_sampler_with_cached_nv12_vulkan_source" : "keep_rgba_intermediate_until_virtual_draw_is_ready");
+}
+
+static void log_mundo_webgl_video_vulkan_direct_draw_plan(char const* op, size_t draw_log_count, WebGLTexture& texture, WebGLTexture::HardwareVideoBacking const& backing, GLuint program_handle, GLuint texture_handle, MundoWebGLVideoVirtualizationReadiness const& readiness, MundoWebGLVirtualVideoSourceCacheState const& cache_state, MundoWebGLVirtualVideoDrawGeometry geometry)
+{
+    auto const* cached_source = texture.cached_virtual_vulkan_video_source();
+    auto cached_frame_id = texture.cached_virtual_vulkan_video_source_frame_id();
+    auto cache_matches_frame = cached_source && cached_frame_id == backing.frame_id;
+    auto ready = readiness.route_supported
+        && readiness.direct_texture_call
+        && readiness.sampler_matches_video_texture
+        && cache_state.ready
+        && cache_matches_frame
+        && cached_source
+        && cached_source->direct_sample_ready;
+    auto reason = ready ? "ready_for_vulkan_draw_replay"sv
+        : !readiness.route_supported ? "unsupported_route"sv
+        : !readiness.direct_texture_call ? "sampler_not_direct_texture_call"sv
+        : !readiness.sampler_matches_video_texture ? readiness.reason
+        : !cache_state.ready ? cache_state.reason
+        : !cache_matches_frame ? "cached_source_frame_mismatch"sv
+        : "direct_sample_resources_not_ready"sv;
+
+    GLint framebuffer = 0;
+    GLint vertex_array = 0;
+    GLint element_array_buffer = 0;
+    GLint viewport[4] {};
+    glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &framebuffer);
+    glGetIntegervRobustANGLE(GL_VERTEX_ARRAY_BINDING, 1, nullptr, &vertex_array);
+    glGetIntegervRobustANGLE(GL_ELEMENT_ARRAY_BUFFER_BINDING, 1, nullptr, &element_array_buffer);
+    glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
+
+    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_PLAN count={} op={} frame_id={} cached_frame_id={} program={} texture={} ready={} reason={} route={} sampler_unit={} sampler_location={} sampler_bound_texture={} source_image={} source_image_view={} source_sampler={} source_format={} source_layout={} source_allocation_size={} source_single_optimal_multiplanar={} draw_mode={} draw_first={} draw_count={} draw_type={} draw_offset={} framebuffer={} vertex_array={} element_array_buffer={} viewport={}x{}+{}+{} blocker={} next_step={}",
+        draw_log_count,
+        op,
+        backing.frame_id,
+        cached_frame_id,
+        program_handle,
+        texture_handle,
+        ready,
+        reason,
+        backing.direct_sampling_route,
+        readiness.sampler_unit,
+        readiness.sampler_location,
+        readiness.sampler_bound_texture,
+        cached_source ? reinterpret_cast<uintptr_t>(cached_source->image) : 0,
+        cached_source ? reinterpret_cast<uintptr_t>(cached_source->ycbcr_image_view) : 0,
+        cached_source ? reinterpret_cast<uintptr_t>(cached_source->ycbcr_sampler) : 0,
+        backing.source_vulkan_format,
+        backing.source_vulkan_layout,
+        backing.source_allocation_size,
+        backing.source_single_optimal_multiplanar,
+        geometry.mode,
+        geometry.first,
+        geometry.count,
+        geometry.type,
+        geometry.offset,
+        framebuffer,
+        vertex_array,
+        element_array_buffer,
+        viewport[2],
+        viewport[3],
+        viewport[0],
+        viewport[1],
+        ready ? "webgl_backend_cannot_consume_vulkan_ycbcr_sampler_directly_yet"sv : reason,
+        ready ? "implement_vulkan_geometry_or_backend_interop_for_this_draw" : "complete_direct_draw_prerequisites");
 }
 #endif
 
@@ -1286,6 +1361,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 m_context->probe_retained_vulkan_video_source_for_virtual_draw(backing.source_opaque_fd, backing.source_handle_type, backing.source_allocation_size, backing.width, backing.height, backing.source_vulkan_format, backing.source_vulkan_layout, backing.frame_id, log_count);
                 auto cache_state = ensure_mundo_webgl_video_virtual_source_cached(*m_context, *m_texture_binding_2d, backing, "drawArrays", log_count, program_handle, texture_handle, true);
                 log_mundo_webgl_video_virtual_draw_ready("drawArrays", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, cache_state);
+                log_mundo_webgl_video_vulkan_direct_draw_plan("drawArrays", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, cache_state, { mode, first, count, 0, 0 });
             }
 #endif
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
@@ -1395,8 +1471,10 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
 #ifdef USE_VULKAN_DMABUF_IMAGES
             if (uses_video_sampler) {
                 m_context->probe_retained_vulkan_video_source_for_virtual_draw(backing.source_opaque_fd, backing.source_handle_type, backing.source_allocation_size, backing.width, backing.height, backing.source_vulkan_format, backing.source_vulkan_layout, backing.frame_id, log_count);
-                if (virtual_source_cache_state.has_value())
+                if (virtual_source_cache_state.has_value()) {
                     log_mundo_webgl_video_virtual_draw_ready("drawElements", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, virtual_source_cache_state.value());
+                    log_mundo_webgl_video_vulkan_direct_draw_plan("drawElements", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, virtual_source_cache_state.value(), { mode, 0, count, type, static_cast<GLintptr>(offset) });
+                }
             }
 #endif
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
