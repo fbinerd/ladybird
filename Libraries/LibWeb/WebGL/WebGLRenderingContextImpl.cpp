@@ -825,9 +825,24 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
         auto log_count = ++s_hardware_video_draw_arrays_count;
         if (log_count <= 8 || log_count % 120 == 0) {
             auto const& backing = m_texture_binding_2d->hardware_video_backing().value();
-            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawArrays frame_id={} texture_target=2d size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={}",
+            GLint active_texture = 0;
+            glGetIntegervRobustANGLE(GL_ACTIVE_TEXTURE, 1, nullptr, &active_texture);
+            GLuint program_handle = 0;
+            if (m_current_program) {
+                auto handle_or_error = m_current_program->handle(this);
+                if (!handle_or_error.is_error())
+                    program_handle = handle_or_error.release_value();
+            }
+            GLuint texture_handle = 0;
+            auto texture_handle_or_error = m_texture_binding_2d->handle(this);
+            if (!texture_handle_or_error.is_error())
+                texture_handle = texture_handle_or_error.release_value();
+            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawArrays frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
+                texture_handle,
+                active_texture,
+                program_handle,
                 backing.width,
                 backing.height,
                 backing.backend,
@@ -857,9 +872,24 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
         auto log_count = ++s_hardware_video_draw_elements_count;
         if (log_count <= 8 || log_count % 120 == 0) {
             auto const& backing = m_texture_binding_2d->hardware_video_backing().value();
-            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawElements frame_id={} texture_target=2d size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={}",
+            GLint active_texture = 0;
+            glGetIntegervRobustANGLE(GL_ACTIVE_TEXTURE, 1, nullptr, &active_texture);
+            GLuint program_handle = 0;
+            if (m_current_program) {
+                auto handle_or_error = m_current_program->handle(this);
+                if (!handle_or_error.is_error())
+                    program_handle = handle_or_error.release_value();
+            }
+            GLuint texture_handle = 0;
+            auto texture_handle_or_error = m_texture_binding_2d->handle(this);
+            if (!texture_handle_or_error.is_error())
+                texture_handle = texture_handle_or_error.release_value();
+            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawElements frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
+                texture_handle,
+                active_texture,
+                program_handle,
                 backing.width,
                 backing.height,
                 backing.backend,
