@@ -1540,6 +1540,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         if (!external_memory_or_error.is_error()) {
             auto const& external_memory = cached_external_memory.value();
             auto skia_ycbcr_probe = context().probe_skia_vulkan_ycbcr_texture_import(external_memory, attempt_count);
+            OpenGLContext::GLExternalVideoImportProbeResult gl_external_import_probe;
             auto direct_sampling_route = skia_ycbcr_probe.supported ? "skia_vulkan_ycbcr" : "custom_gl_vulkan_interop";
             auto direct_sampling_reason = "skia_probe_not_attempted";
             if (skia_ycbcr_probe.supported)
@@ -1548,10 +1549,23 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 direct_sampling_reason = "skia_borrow_texture_failed";
             else if (skia_ycbcr_probe.attempted)
                 direct_sampling_reason = "skia_probe_failed";
-            if (!strcmp(direct_sampling_route, "custom_gl_vulkan_interop"))
-                context().probe_video_external_memory_gl_texture_import(external_memory, attempt_count);
+            if (!strcmp(direct_sampling_route, "custom_gl_vulkan_interop")) {
+                gl_external_import_probe = context().probe_video_external_memory_gl_texture_import(external_memory, attempt_count);
+                if (gl_external_import_probe.attempted && (!gl_external_import_probe.y_plane_supported || !gl_external_import_probe.uv_plane_supported)) {
+                    direct_sampling_route = "vulkan_direct_sampling_virtualization";
+                    if (!gl_external_import_probe.y_plane_supported)
+                        direct_sampling_reason = "gl_y_plane_import_failed";
+                    else if (!gl_external_import_probe.uv_plane_supported)
+                        direct_sampling_reason = "gl_uv_plane_import_failed";
+                    else
+                        direct_sampling_reason = "gl_plane_import_failed";
+                } else if (gl_external_import_probe.attempted && gl_external_import_probe.y_plane_supported && gl_external_import_probe.uv_plane_supported) {
+                    direct_sampling_route = "custom_gl_plane_textures";
+                    direct_sampling_reason = "gl_y_uv_plane_import_supported";
+                }
+            }
             if (skia_ycbcr_probe.attempted) {
-                dbgln("MUNDO_WEBGL_VIDEO_DIRECT_SAMPLING_ROUTE attempt={} frame_id={} backend={} preferred=skia_vulkan_ycbcr selected={} selected_reason={} skia_supported={} skia_reason={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={} fallback=custom_gl_vulkan_interop current_path=vulkan_render_nv12_to_webgl_texture_storage direct_zero_copy=false",
+                dbgln("MUNDO_WEBGL_VIDEO_DIRECT_SAMPLING_ROUTE attempt={} frame_id={} backend={} preferred=skia_vulkan_ycbcr selected={} selected_reason={} skia_supported={} skia_reason={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={} gl_probe_attempted={} gl_y_plane_supported={} gl_y_plane_reason={} gl_uv_plane_supported={} gl_uv_plane_reason={} gl_uv_plane_gl_error={} fallback={} current_path=vulkan_render_nv12_to_webgl_texture_storage direct_zero_copy=false",
                     attempt_count,
                     hardware_frame_id,
                     hardware_backend,
@@ -1563,7 +1577,14 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     skia_ycbcr_probe.backend_format_valid,
                     skia_ycbcr_probe.backend_format_has_ycbcr,
                     skia_ycbcr_probe.promise_format_valid,
-                    skia_ycbcr_probe.promise_image_created);
+                    skia_ycbcr_probe.promise_image_created,
+                    gl_external_import_probe.attempted,
+                    gl_external_import_probe.y_plane_supported,
+                    gl_external_import_probe.y_plane_reason,
+                    gl_external_import_probe.uv_plane_supported,
+                    gl_external_import_probe.uv_plane_reason,
+                    gl_external_import_probe.uv_plane_gl_error,
+                    direct_sampling_route);
             }
             auto target_rgba_or_error = context().get_or_create_imported_video_rgba_target_texture(static_cast<u32>(previous_texture_2d), static_cast<u32>(video_width), static_cast<u32>(video_height), attempt_count);
             if (!target_rgba_or_error.is_error()) {

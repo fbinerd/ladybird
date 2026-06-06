@@ -89,6 +89,14 @@ public:
         bool promise_format_valid { false };
         bool promise_image_created { false };
     };
+    struct GLExternalVideoImportProbeResult {
+        bool attempted { false };
+        bool y_plane_supported { false };
+        bool uv_plane_supported { false };
+        StringView y_plane_reason { "not_attempted"sv };
+        StringView uv_plane_reason { "not_attempted"sv };
+        u32 uv_plane_gl_error { 0 };
+    };
 
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture> create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count);
@@ -98,7 +106,7 @@ public:
     ErrorOr<u64> copy_vulkan_nv12_external_memory_to_imported_video_textures(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexturePair const&, size_t log_count);
     ErrorOr<u64> render_vulkan_nv12_external_memory_to_imported_video_rgba_texture(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexture const&, size_t log_count, bool flip_y = false);
     SkiaVulkanYcbcrProbeResult probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const&, size_t log_count);
-    void probe_video_external_memory_gl_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const&, size_t log_count);
+    GLExternalVideoImportProbeResult probe_video_external_memory_gl_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const&, size_t log_count);
     void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif
 
