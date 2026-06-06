@@ -211,6 +211,65 @@ static size_t mundo_webgl_next_timing_count()
     return ++s_count;
 }
 
+static bool mundo_webgl_is_sampler_uniform_type(GLenum type)
+{
+    switch (type) {
+    case GL_SAMPLER_2D:
+    case GL_SAMPLER_CUBE:
+    case GL_SAMPLER_2D_SHADOW:
+    case GL_SAMPLER_2D_ARRAY:
+    case GL_SAMPLER_2D_ARRAY_SHADOW:
+    case GL_INT_SAMPLER_2D:
+    case GL_INT_SAMPLER_3D:
+    case GL_INT_SAMPLER_CUBE:
+    case GL_INT_SAMPLER_2D_ARRAY:
+    case GL_UNSIGNED_INT_SAMPLER_2D:
+    case GL_UNSIGNED_INT_SAMPLER_3D:
+    case GL_UNSIGNED_INT_SAMPLER_CUBE:
+    case GL_UNSIGNED_INT_SAMPLER_2D_ARRAY:
+#ifdef GL_SAMPLER_EXTERNAL_OES
+    case GL_SAMPLER_EXTERNAL_OES:
+#endif
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, size_t draw_log_count)
+{
+    if (!program_handle)
+        return;
+
+    GLint active_uniform_count = 0;
+    glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
+    auto uniforms_to_scan = active_uniform_count < 32 ? active_uniform_count : 32;
+    for (GLint index = 0; index < uniforms_to_scan; ++index) {
+        GLint size = 0;
+        GLenum type = 0;
+        GLsizei length = 0;
+        GLchar name[256];
+        glGetActiveUniform(program_handle, static_cast<GLuint>(index), sizeof(name), &length, &size, &type, name);
+        if (!length || !mundo_webgl_is_sampler_uniform_type(type))
+            continue;
+
+        auto location = glGetUniformLocation(program_handle, name);
+        GLint unit = -1;
+        if (location >= 0)
+            glGetUniformiv(program_handle, location, &unit);
+        auto uniform_name = String::from_utf8_without_validation(ReadonlyBytes { name, static_cast<size_t>(length) });
+        dbgln("MUNDO_WEBGL_VIDEO_SAMPLER_UNIFORM draw_count={} program={} uniform={} type={} size={} location={} unit={} active_uniforms={} next_step=bind_nv12_planes_for_sampler_unit",
+            draw_log_count,
+            program_handle,
+            uniform_name,
+            type,
+            size,
+            location,
+            unit,
+            active_uniform_count);
+    }
+}
+
 WebGLRenderingContextImpl::WebGLRenderingContextImpl(JS::Realm& realm, NonnullOwnPtr<OpenGLContext> context)
     : WebGLRenderingContextBase(realm)
     , m_context(move(context))
@@ -850,6 +909,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 backing.copy_stage,
                 backing.direct_zero_copy,
                 backing.copied_on_gpu);
+            log_mundo_webgl_video_sampler_uniforms(program_handle, log_count);
         }
     }
 }
@@ -897,6 +957,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 backing.copy_stage,
                 backing.direct_zero_copy,
                 backing.copied_on_gpu);
+            log_mundo_webgl_video_sampler_uniforms(program_handle, log_count);
         }
     }
     needs_to_present();
