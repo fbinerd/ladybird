@@ -1110,6 +1110,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                     tracked_sampler_texture_has_video_backing = tracked_texture->has_hardware_video_backing();
                 }
             }
+            auto uses_video_sampler = readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture;
             dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawArrays frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} video_sampler_uniform={} video_sampler_direct_texture_call={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
@@ -1125,6 +1126,15 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 backing.copied_on_gpu,
                 video_sampler_uniform,
                 video_sampler_direct_texture_call);
+            dbgln("MUNDO_WEBGL_VIDEO_DRAW_CLASSIFICATION count={} op=drawArrays frame_id={} texture={} program={} bound_video_texture=true uses_video_sampler={} reason={} route={} next_step={}",
+                log_count,
+                backing.frame_id,
+                texture_handle,
+                program_handle,
+                uses_video_sampler,
+                readiness.reason,
+                backing.direct_sampling_route,
+                uses_video_sampler ? "virtualize_this_draw" : "ignore_as_non_sampler_or_wait_for_sampler_draw");
             dbgln("MUNDO_WEBGL_VIDEO_VIRTUALIZATION_READY count={} op=drawArrays frame_id={} texture={} program={} route={} has_plan={} route_supported={} direct_texture_call={} sampler_location={} sampler_unit={} sampler_bound_texture={} tracked_sampler_texture={} tracked_sampler_texture_has_video_backing={} sampler_matches_video_texture={} ready={} reason={} next_step={}",
                 log_count,
                 backing.frame_id,
@@ -1140,10 +1150,10 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 tracked_sampler_texture_handle,
                 tracked_sampler_texture_has_video_backing,
                 readiness.sampler_matches_video_texture,
-                readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture,
+                uses_video_sampler,
                 readiness.reason,
-                readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
-            if (readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture)
+                uses_video_sampler ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
+            if (uses_video_sampler)
                 log_mundo_webgl_video_virtualization_draw_state("drawArrays", log_count, backing, program_handle, texture_handle, mode, first, count, 0, 0);
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
@@ -1198,6 +1208,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     tracked_sampler_texture_has_video_backing = tracked_texture->has_hardware_video_backing();
                 }
             }
+            auto uses_video_sampler = readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture;
             dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_DRAW count={} op=drawElements frame_id={} texture_target=2d texture={} active_texture={} program={} size={}x{} backend={} upload_mode={} copy_stage={} direct_zero_copy={} copied_on_gpu={} video_sampler_uniform={} video_sampler_direct_texture_call={} next_step=shader_or_texture_virtualization",
                 log_count,
                 backing.frame_id,
@@ -1213,6 +1224,15 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 backing.copied_on_gpu,
                 video_sampler_uniform,
                 video_sampler_direct_texture_call);
+            dbgln("MUNDO_WEBGL_VIDEO_DRAW_CLASSIFICATION count={} op=drawElements frame_id={} texture={} program={} bound_video_texture=true uses_video_sampler={} reason={} route={} next_step={}",
+                log_count,
+                backing.frame_id,
+                texture_handle,
+                program_handle,
+                uses_video_sampler,
+                readiness.reason,
+                backing.direct_sampling_route,
+                uses_video_sampler ? "virtualize_this_draw" : "ignore_as_non_sampler_or_wait_for_sampler_draw");
             dbgln("MUNDO_WEBGL_VIDEO_VIRTUALIZATION_READY count={} op=drawElements frame_id={} texture={} program={} route={} has_plan={} route_supported={} direct_texture_call={} sampler_location={} sampler_unit={} sampler_bound_texture={} tracked_sampler_texture={} tracked_sampler_texture_has_video_backing={} sampler_matches_video_texture={} ready={} reason={} next_step={}",
                 log_count,
                 backing.frame_id,
@@ -1228,10 +1248,10 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 tracked_sampler_texture_handle,
                 tracked_sampler_texture_has_video_backing,
                 readiness.sampler_matches_video_texture,
-                readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture,
+                uses_video_sampler,
                 readiness.reason,
-                readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
-            if (readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture)
+                uses_video_sampler ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
+            if (uses_video_sampler)
                 log_mundo_webgl_video_virtualization_draw_state("drawElements", log_count, backing, program_handle, texture_handle, mode, 0, count, type, static_cast<GLintptr>(offset));
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
