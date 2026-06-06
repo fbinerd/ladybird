@@ -1539,7 +1539,20 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
         auto external_memory_or_error = ensure_cached_external_memory();
         if (!external_memory_or_error.is_error()) {
             auto const& external_memory = cached_external_memory.value();
-            context().probe_skia_vulkan_ycbcr_texture_import(external_memory, attempt_count);
+            auto skia_ycbcr_probe = context().probe_skia_vulkan_ycbcr_texture_import(external_memory, attempt_count);
+            if (skia_ycbcr_probe.attempted && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                dbgln("MUNDO_WEBGL_VIDEO_DIRECT_SAMPLING_ROUTE attempt={} frame_id={} backend={} preferred=skia_vulkan_ycbcr skia_supported={} skia_reason={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={} fallback=custom_gl_vulkan_interop current_path=vulkan_render_nv12_to_webgl_texture_storage direct_zero_copy=false",
+                    attempt_count,
+                    hardware_frame_id,
+                    hardware_backend,
+                    skia_ycbcr_probe.supported,
+                    skia_ycbcr_probe.reason,
+                    skia_ycbcr_probe.backend_texture_valid,
+                    skia_ycbcr_probe.backend_format_valid,
+                    skia_ycbcr_probe.backend_format_has_ycbcr,
+                    skia_ycbcr_probe.promise_format_valid,
+                    skia_ycbcr_probe.promise_image_created);
+            }
             auto target_rgba_or_error = context().get_or_create_imported_video_rgba_target_texture(static_cast<u32>(previous_texture_2d), static_cast<u32>(video_width), static_cast<u32>(video_height), attempt_count);
             if (!target_rgba_or_error.is_error()) {
                 auto* target_rgba_texture = target_rgba_or_error.value();

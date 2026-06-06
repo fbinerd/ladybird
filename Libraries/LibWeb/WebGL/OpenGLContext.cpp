@@ -752,12 +752,12 @@ void OpenGLContext::probe_video_opaque_fd_texture_import(u32 width, u32 height, 
     probe_gl_memory_object_fd_for_vulkan_opaque_fd(vulkan_context, "video_uv_rg8", uv_width, uv_height, VK_FORMAT_R8G8_UNORM, GL_RG8_EXT, log_count, true);
 }
 
-void OpenGLContext::probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const& external_memory, size_t log_count)
+OpenGLContext::SkiaVulkanYcbcrProbeResult OpenGLContext::probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const& external_memory, size_t log_count)
 {
     static size_t s_probe_count { 0 };
     auto probe_count = ++s_probe_count;
     if (probe_count != 1 && probe_count % 120 != 0)
-        return;
+        return {};
 
     auto log_failure = [&](StringView reason) {
         dbgln("MUNDO_WEBGL_VIDEO_SKIA_YCBCR_IMPORT_PROBE attempt={} count={} frame_id={} status=failed reason={} backend={} size={}x{} planes={} single_image={} single_memory={}",
@@ -771,27 +771,28 @@ void OpenGLContext::probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoF
             external_memory.plane_count,
             external_memory.single_image,
             external_memory.single_memory);
+        return SkiaVulkanYcbcrProbeResult {
+            .attempted = true,
+            .supported = false,
+            .reason = reason,
+        };
     };
 
     if (external_memory.backend != Media::HardwareVideoFrameBackend::Vulkan) {
-        log_failure("not_vulkan"sv);
-        return;
+        return log_failure("not_vulkan"sv);
     }
     if (!external_memory.single_image || !external_memory.single_memory || external_memory.plane_count != 1) {
-        log_failure("not_single_nv12_image"sv);
-        return;
+        return log_failure("not_single_nv12_image"sv);
     }
 
     auto const& plane = external_memory.planes[0];
     if (plane.fd < 0 || !plane.allocation_size) {
-        log_failure("missing_opaque_fd"sv);
-        return;
+        return log_failure("missing_opaque_fd"sv);
     }
 
     auto source_fd = dup(plane.fd);
     if (source_fd < 0) {
-        log_failure("fd_dup_failed"sv);
-        return;
+        return log_failure("fd_dup_failed"sv);
     }
 
     auto& vulkan_context = m_skia_backend_context->vulkan_context();
@@ -805,13 +806,11 @@ void OpenGLContext::probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoF
         static_cast<VkFormat>(plane.vulkan_format),
         static_cast<VkImageLayout>(plane.vulkan_image_layout));
     if (imported_source_or_error.is_error()) {
-        log_failure(imported_source_or_error.error().string_literal());
-        return;
+        return log_failure(imported_source_or_error.error().string_literal());
     }
     auto imported_source = imported_source_or_error.release_value();
     if (!imported_source->direct_sample_ready) {
-        log_failure("vulkan_ycbcr_direct_sample_not_ready"sv);
-        return;
+        return log_failure("vulkan_ycbcr_direct_sample_not_ready"sv);
     }
 
     VkFormatProperties format_properties {};
@@ -853,8 +852,7 @@ void OpenGLContext::probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoF
 
     auto backend_texture = GrBackendTextures::MakeVk(external_memory.size.width(), external_memory.size.height(), image_info, "mundo-video-nv12-ycbcr-probe");
     if (!backend_texture.isValid()) {
-        log_failure("skia_backend_texture_invalid"sv);
-        return;
+        return log_failure("skia_backend_texture_invalid"sv);
     }
 
     m_skia_backend_context->lock();
@@ -903,7 +901,16 @@ void OpenGLContext::probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoF
             backend_format_ycbcr_info != nullptr,
             ycbcr_backend_format.isValid(),
             promise_image != nullptr);
-        return;
+        return SkiaVulkanYcbcrProbeResult {
+            .attempted = true,
+            .supported = false,
+            .reason = "skia_borrow_texture_failed"sv,
+            .backend_texture_valid = backend_texture.isValid(),
+            .backend_format_valid = backend_format.isValid(),
+            .backend_format_has_ycbcr = backend_format_ycbcr_info != nullptr,
+            .promise_format_valid = ycbcr_backend_format.isValid(),
+            .promise_image_created = promise_image != nullptr,
+        };
     }
 
     dbgln("MUNDO_WEBGL_VIDEO_SKIA_YCBCR_IMPORT_PROBE attempt={} count={} frame_id={} status=ok size={}x{} format={} image={} required_size={} allocation_size={} optimal_features={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={}",
@@ -920,6 +927,15 @@ void OpenGLContext::probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoF
         backend_texture.isValid(),
         backend_format.isValid(),
         backend_format_ycbcr_info != nullptr);
+
+    return SkiaVulkanYcbcrProbeResult {
+        .attempted = true,
+        .supported = true,
+        .reason = "ok"sv,
+        .backend_texture_valid = backend_texture.isValid(),
+        .backend_format_valid = backend_format.isValid(),
+        .backend_format_has_ycbcr = backend_format_ycbcr_info != nullptr,
+    };
 }
 
 ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count)

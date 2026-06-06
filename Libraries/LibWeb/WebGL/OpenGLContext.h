@@ -10,6 +10,7 @@
 #include <AK/NonnullOwnPtr.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/RefPtr.h>
+#include <AK/StringView.h>
 #include <AK/Vector.h>
 #include <LibGfx/Forward.h>
 #include <LibGfx/Size.h>
@@ -78,6 +79,16 @@ public:
         bool reused_y { false };
         bool reused_uv { false };
     };
+    struct SkiaVulkanYcbcrProbeResult {
+        bool attempted { false };
+        bool supported { false };
+        StringView reason { "not_attempted"sv };
+        bool backend_texture_valid { false };
+        bool backend_format_valid { false };
+        bool backend_format_has_ycbcr { false };
+        bool promise_format_valid { false };
+        bool promise_image_created { false };
+    };
 
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture> create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count);
@@ -86,7 +97,7 @@ public:
     ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_imported_video_rgba_target_texture(u32 target_texture, u32 width, u32 height, size_t log_count);
     ErrorOr<u64> copy_vulkan_nv12_external_memory_to_imported_video_textures(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexturePair const&, size_t log_count);
     ErrorOr<u64> render_vulkan_nv12_external_memory_to_imported_video_rgba_texture(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexture const&, size_t log_count, bool flip_y = false);
-    void probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const&, size_t log_count);
+    SkiaVulkanYcbcrProbeResult probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const&, size_t log_count);
     void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif
 
