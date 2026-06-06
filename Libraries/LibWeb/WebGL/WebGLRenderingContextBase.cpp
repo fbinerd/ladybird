@@ -1548,6 +1548,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                 direct_sampling_reason = "skia_borrow_texture_failed";
             else if (skia_ycbcr_probe.attempted)
                 direct_sampling_reason = "skia_probe_failed";
+            if (!strcmp(direct_sampling_route, "custom_gl_vulkan_interop"))
+                context().probe_video_external_memory_gl_texture_import(external_memory, attempt_count);
             if (skia_ycbcr_probe.attempted) {
                 dbgln("MUNDO_WEBGL_VIDEO_DIRECT_SAMPLING_ROUTE attempt={} frame_id={} backend={} preferred=skia_vulkan_ycbcr selected={} selected_reason={} skia_supported={} skia_reason={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={} fallback=custom_gl_vulkan_interop current_path=vulkan_render_nv12_to_webgl_texture_storage direct_zero_copy=false",
                     attempt_count,
