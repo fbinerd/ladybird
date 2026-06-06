@@ -21,9 +21,11 @@
 #ifdef USE_VULKAN_DMABUF_IMAGES
 #    include <core/SkColorSpace.h>
 #    include <core/SkImage.h>
+#    include <core/SkYUVAInfo.h>
 #    include <gpu/ganesh/GrBackendSurface.h>
 #    include <gpu/ganesh/GrContextThreadSafeProxy.h>
 #    include <gpu/ganesh/GrDirectContext.h>
+#    include <gpu/ganesh/GrYUVABackendTextures.h>
 #    include <gpu/ganesh/SkImageGanesh.h>
 #    include <gpu/ganesh/vk/GrVkBackendSurface.h>
 #    include <gpu/ganesh/vk/GrVkTypes.h>
@@ -895,7 +897,40 @@ OpenGLContext::SkiaVulkanYcbcrProbeResult OpenGLContext::probe_skia_vulkan_ycbcr
             },
             &promise_context);
 
-        dbgln("MUNDO_WEBGL_VIDEO_SKIA_YCBCR_IMPORT_PROBE attempt={} count={} frame_id={} status=failed reason=skia_borrow_texture_failed backend={} size={}x{} planes={} single_image={} single_memory={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={}",
+        GrBackendFormat yuva_backend_formats[SkYUVAInfo::kMaxPlanes] {};
+        yuva_backend_formats[0] = ycbcr_backend_format;
+        SkYUVAInfo yuva_info {
+            SkISize::Make(external_memory.size.width(), external_memory.size.height()),
+            SkYUVAInfo::PlaneConfig::kYUVA,
+            SkYUVAInfo::Subsampling::k444,
+            kRec709_Limited_SkYUVColorSpace,
+        };
+        GrYUVABackendTextureInfo yuva_backend_texture_info {
+            yuva_info,
+            yuva_backend_formats,
+            skgpu::Mipmapped::kNo,
+            kTopLeft_GrSurfaceOrigin,
+        };
+        SkiaVulkanYcbcrPromiseContext yuva_promise_context {
+            .backend_texture = &backend_texture,
+        };
+        SkImages::PromiseImageTextureContext yuva_texture_contexts[SkYUVAInfo::kMaxPlanes] {};
+        yuva_texture_contexts[0] = &yuva_promise_context;
+        auto yuva_promise_image = SkImages::PromiseTextureFromYUVA(
+            m_skia_backend_context->sk_context()->threadSafeProxy(),
+            yuva_backend_texture_info,
+            SkColorSpace::MakeSRGB(),
+            [](SkImages::PromiseImageTextureContext context) -> sk_sp<GrPromiseImageTexture> {
+                auto* promise_context = static_cast<SkiaVulkanYcbcrPromiseContext*>(context);
+                if (!promise_context || !promise_context->backend_texture)
+                    return nullptr;
+                return GrPromiseImageTexture::Make(*promise_context->backend_texture);
+            },
+            [](SkImages::PromiseImageTextureContext) {
+            },
+            yuva_texture_contexts);
+
+        dbgln("MUNDO_WEBGL_VIDEO_SKIA_YCBCR_IMPORT_PROBE attempt={} count={} frame_id={} status=failed reason=skia_borrow_texture_failed backend={} size={}x{} planes={} single_image={} single_memory={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={} yuva_info_valid={} yuva_backend_info_valid={} yuva_promise_image_created={}",
             log_count,
             probe_count,
             external_memory.frame_id,
@@ -909,7 +944,10 @@ OpenGLContext::SkiaVulkanYcbcrProbeResult OpenGLContext::probe_skia_vulkan_ycbcr
             backend_format.isValid(),
             backend_format_ycbcr_info != nullptr,
             ycbcr_backend_format.isValid(),
-            promise_image != nullptr);
+            promise_image != nullptr,
+            yuva_info.isValid(),
+            yuva_backend_texture_info.isValid(),
+            yuva_promise_image != nullptr);
         return SkiaVulkanYcbcrProbeResult {
             .attempted = true,
             .supported = false,
