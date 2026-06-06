@@ -236,7 +236,7 @@ static bool mundo_webgl_is_sampler_uniform_type(GLenum type)
     }
 }
 
-static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, size_t draw_log_count)
+static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint video_texture_handle, size_t draw_log_count)
 {
     if (!program_handle)
         return;
@@ -260,7 +260,16 @@ static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, size_t
         if (location >= 0)
             glGetUniformiv(program_handle, location, &unit);
         auto uniform_name = String::from_utf8_without_validation(ReadonlyBytes { name, static_cast<size_t>(length) });
-        dbgln("MUNDO_WEBGL_VIDEO_SAMPLER_UNIFORM draw_count={} program={} uniform={} type={} size={} location={} unit={} active_uniforms={} next_step=bind_nv12_planes_for_sampler_unit",
+        GLint previous_active_texture = 0;
+        GLint bound_texture_for_unit = 0;
+        if (unit >= 0) {
+            glGetIntegervRobustANGLE(GL_ACTIVE_TEXTURE, 1, nullptr, &previous_active_texture);
+            glActiveTexture(GL_TEXTURE0 + unit);
+            glGetIntegervRobustANGLE(GL_TEXTURE_BINDING_2D, 1, nullptr, &bound_texture_for_unit);
+            glActiveTexture(previous_active_texture);
+        }
+        auto sampler_matches_video_texture = video_texture_handle != 0 && bound_texture_for_unit == static_cast<GLint>(video_texture_handle);
+        dbgln("MUNDO_WEBGL_VIDEO_SAMPLER_UNIFORM draw_count={} program={} uniform={} type={} size={} location={} unit={} bound_texture={} video_texture={} sampler_matches_video_texture={} active_uniforms={} next_step=bind_nv12_planes_for_sampler_unit",
             draw_log_count,
             program_handle,
             uniform_name,
@@ -268,6 +277,9 @@ static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, size_t
             size,
             location,
             unit,
+            bound_texture_for_unit,
+            video_texture_handle,
+            sampler_matches_video_texture,
             active_uniform_count);
     }
 
@@ -939,7 +951,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 backing.copy_stage,
                 backing.direct_zero_copy,
                 backing.copied_on_gpu);
-            log_mundo_webgl_video_sampler_uniforms(program_handle, log_count);
+            log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, log_count);
         }
     }
 }
@@ -987,7 +999,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 backing.copy_stage,
                 backing.direct_zero_copy,
                 backing.copied_on_gpu);
-            log_mundo_webgl_video_sampler_uniforms(program_handle, log_count);
+            log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, log_count);
         }
     }
     needs_to_present();
