@@ -304,6 +304,55 @@ static MundoWebGLVideoVirtualizationReadiness mundo_webgl_video_virtualization_r
     return readiness;
 }
 
+static void log_mundo_webgl_video_virtualization_draw_state(char const* op, size_t draw_log_count, WebGLTexture::HardwareVideoBacking const& backing, GLuint program_handle, GLuint texture_handle, GLenum mode, GLint first, GLsizei count, GLenum type, GLintptr offset)
+{
+    GLint framebuffer = 0;
+    GLint vertex_array = 0;
+    GLint array_buffer = 0;
+    GLint element_array_buffer = 0;
+    GLint active_texture = 0;
+    GLint viewport[4] {};
+    GLint scissor_box[4] {};
+
+    glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &framebuffer);
+    glGetIntegervRobustANGLE(GL_VERTEX_ARRAY_BINDING, 1, nullptr, &vertex_array);
+    glGetIntegervRobustANGLE(GL_ARRAY_BUFFER_BINDING, 1, nullptr, &array_buffer);
+    glGetIntegervRobustANGLE(GL_ELEMENT_ARRAY_BUFFER_BINDING, 1, nullptr, &element_array_buffer);
+    glGetIntegervRobustANGLE(GL_ACTIVE_TEXTURE, 1, nullptr, &active_texture);
+    glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
+    glGetIntegervRobustANGLE(GL_SCISSOR_BOX, 4, nullptr, scissor_box);
+
+    dbgln("MUNDO_WEBGL_VIDEO_VIRTUALIZATION_DRAW_STATE count={} op={} frame_id={} program={} texture={} mode={} first={} draw_count={} type={} offset={} framebuffer={} vertex_array={} array_buffer={} element_array_buffer={} active_texture={} viewport={}x{}+{}+{} scissor={}x{}+{}+{} blend={} depth_test={} cull_face={} scissor_test={} route={} next_step=replay_or_replace_this_draw_with_vulkan_video_sampler",
+        draw_log_count,
+        op,
+        backing.frame_id,
+        program_handle,
+        texture_handle,
+        mode,
+        first,
+        count,
+        type,
+        offset,
+        framebuffer,
+        vertex_array,
+        array_buffer,
+        element_array_buffer,
+        active_texture,
+        viewport[2],
+        viewport[3],
+        viewport[0],
+        viewport[1],
+        scissor_box[2],
+        scissor_box[3],
+        scissor_box[0],
+        scissor_box[1],
+        glIsEnabled(GL_BLEND) == GL_TRUE,
+        glIsEnabled(GL_DEPTH_TEST) == GL_TRUE,
+        glIsEnabled(GL_CULL_FACE) == GL_TRUE,
+        glIsEnabled(GL_SCISSOR_TEST) == GL_TRUE,
+        backing.direct_sampling_route);
+}
+
 static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint video_texture_handle, Optional<WebGLTexture::HardwareVideoBacking> const& video_backing, size_t draw_log_count)
 {
     if (!program_handle)
@@ -1094,6 +1143,8 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture,
                 readiness.reason,
                 readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
+            if (readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture)
+                log_mundo_webgl_video_virtualization_draw_state("drawArrays", log_count, backing, program_handle, texture_handle, mode, first, count, 0, 0);
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
@@ -1180,6 +1231,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture,
                 readiness.reason,
                 readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
+            if (readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture)
+                log_mundo_webgl_video_virtualization_draw_state("drawElements", log_count, backing, program_handle, texture_handle, mode, 0, count, type, static_cast<GLintptr>(offset));
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
