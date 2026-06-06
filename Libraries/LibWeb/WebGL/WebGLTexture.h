@@ -51,8 +51,9 @@ public:
     bool has_hardware_video_backing() const { return m_hardware_video_backing.has_value(); }
     Optional<HardwareVideoBacking> const& hardware_video_backing() const { return m_hardware_video_backing; }
 #ifdef USE_VULKAN_DMABUF_IMAGES
-    void set_cached_virtual_vulkan_video_source(NonnullOwnPtr<Gfx::ImportedVulkanNV12Image>);
+    void set_cached_virtual_vulkan_video_source(u64 frame_id, NonnullOwnPtr<Gfx::ImportedVulkanNV12Image>);
     Gfx::ImportedVulkanNV12Image const* cached_virtual_vulkan_video_source() const { return m_cached_virtual_vulkan_video_source.ptr(); }
+    u64 cached_virtual_vulkan_video_source_frame_id() const { return m_cached_virtual_vulkan_video_source_frame_id; }
 #endif
 
 protected:
@@ -64,6 +65,7 @@ private:
     Optional<HardwareVideoBacking> m_hardware_video_backing;
 #ifdef USE_VULKAN_DMABUF_IMAGES
     OwnPtr<Gfx::ImportedVulkanNV12Image> m_cached_virtual_vulkan_video_source;
+    u64 m_cached_virtual_vulkan_video_source_frame_id { 0 };
 #endif
 };
 

@@ -49,13 +49,15 @@ void WebGLTexture::clear_hardware_video_backing()
     m_hardware_video_backing.clear();
 #ifdef USE_VULKAN_DMABUF_IMAGES
     m_cached_virtual_vulkan_video_source = nullptr;
+    m_cached_virtual_vulkan_video_source_frame_id = 0;
 #endif
 }
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
-void WebGLTexture::set_cached_virtual_vulkan_video_source(NonnullOwnPtr<Gfx::ImportedVulkanNV12Image> source)
+void WebGLTexture::set_cached_virtual_vulkan_video_source(u64 frame_id, NonnullOwnPtr<Gfx::ImportedVulkanNV12Image> source)
 {
     m_cached_virtual_vulkan_video_source = move(source);
+    m_cached_virtual_vulkan_video_source_frame_id = frame_id;
 }
 #endif
 

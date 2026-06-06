@@ -389,12 +389,13 @@ static void log_mundo_webgl_video_virtualization_draw_state(char const* op, size
 static void ensure_mundo_webgl_video_virtual_source_cached(OpenGLContext& context, WebGLTexture& texture, WebGLTexture::HardwareVideoBacking const& backing, char const* op, size_t draw_log_count, GLuint program_handle, GLuint texture_handle, bool should_log)
 {
     auto const* cached_source = texture.cached_virtual_vulkan_video_source();
-    if (cached_source && cached_source->direct_sample_ready && cached_source->width == backing.width && cached_source->height == backing.height) {
+    if (cached_source && texture.cached_virtual_vulkan_video_source_frame_id() == backing.frame_id && cached_source->direct_sample_ready && cached_source->width == backing.width && cached_source->height == backing.height) {
         if (should_log) {
-            dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_CACHE count={} op={} frame_id={} program={} texture={} status=hit image={} image_view={} sampler={} next_step=use_cached_source_for_virtual_draw",
+            dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_CACHE count={} op={} frame_id={} cached_frame_id={} program={} texture={} status=hit image={} image_view={} sampler={} next_step=use_cached_source_for_virtual_draw",
                 draw_log_count,
                 op,
                 backing.frame_id,
+                texture.cached_virtual_vulkan_video_source_frame_id(),
                 program_handle,
                 texture_handle,
                 reinterpret_cast<uintptr_t>(cached_source->image),
@@ -423,12 +424,13 @@ static void ensure_mundo_webgl_video_virtual_source_cached(OpenGLContext& contex
     auto image = reinterpret_cast<uintptr_t>(imported_source->image);
     auto image_view = reinterpret_cast<uintptr_t>(imported_source->ycbcr_image_view);
     auto sampler = reinterpret_cast<uintptr_t>(imported_source->ycbcr_sampler);
-    texture.set_cached_virtual_vulkan_video_source(move(imported_source));
+    texture.set_cached_virtual_vulkan_video_source(backing.frame_id, move(imported_source));
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_CACHE count={} op={} frame_id={} program={} texture={} status=filled direct_sample_ready={} image={} image_view={} sampler={} next_step={}",
+        dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_CACHE count={} op={} frame_id={} cached_frame_id={} program={} texture={} status=filled direct_sample_ready={} image={} image_view={} sampler={} next_step={}",
             draw_log_count,
             op,
             backing.frame_id,
+            texture.cached_virtual_vulkan_video_source_frame_id(),
             program_handle,
             texture_handle,
             direct_sample_ready,
