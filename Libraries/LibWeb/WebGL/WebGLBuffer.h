@@ -30,6 +30,7 @@ public:
     void update_shadow_data(size_t offset, ReadonlyBytes data);
     size_t shadow_byte_length() const { return m_shadow_byte_length; }
     bool has_complete_shadow_data() const { return m_has_complete_shadow_data; }
+    ReadonlyBytes shadow_data() const { return m_shadow_data.bytes(); }
     Optional<GLenum> shadow_target() const { return m_target; }
 
 protected:

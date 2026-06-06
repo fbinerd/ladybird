@@ -575,6 +575,7 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
         GLint normalized = 0;
         GLint stride = 0;
         GLint buffer = 0;
+        void* pointer = nullptr;
         bool buffer_shadow_complete = false;
         size_t buffer_shadow_bytes = 0;
         if (location >= 0) {
@@ -584,12 +585,13 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
             glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, 1, nullptr, &normalized);
             glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_STRIDE, 1, nullptr, &stride);
             glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, 1, nullptr, &buffer);
+            glGetVertexAttribPointervRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_POINTER, 1, nullptr, &pointer);
             if (auto webgl_buffer = webgl_context.mundo_buffer_for_handle(static_cast<GLuint>(buffer))) {
                 buffer_shadow_complete = webgl_buffer->has_complete_shadow_data();
                 buffer_shadow_bytes = webgl_buffer->shadow_byte_length();
             }
         }
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_ATTRIB count={} frame_id={} program={} active_index={} name={} location={} declared_size={} declared_type={} enabled={} array_size={} array_type={} normalized={} stride={} buffer={} buffer_shadow_complete={} buffer_shadow_bytes={} next_step={}",
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_ATTRIB count={} frame_id={} program={} active_index={} name={} location={} declared_size={} declared_type={} enabled={} array_size={} array_type={} normalized={} stride={} pointer_offset={} buffer={} buffer_shadow_complete={} buffer_shadow_bytes={} next_step={}",
             draw_log_count,
             backing.frame_id,
             program_handle,
@@ -603,6 +605,7 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
             array_type,
             normalized,
             stride,
+            reinterpret_cast<uintptr_t>(pointer),
             buffer,
             buffer_shadow_complete,
             buffer_shadow_bytes,
