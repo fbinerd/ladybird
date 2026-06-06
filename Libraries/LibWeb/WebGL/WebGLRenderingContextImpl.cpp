@@ -2360,6 +2360,30 @@ void WebGLRenderingContextImpl::link_program(GC::Root<WebGLProgram> program)
         program_handle = handle_or_error.release_value();
     }
     glLinkProgram(program_handle);
+
+    if (!program)
+        return;
+
+    auto fragment_shader = program->attached_fragment_shader();
+    if (!fragment_shader)
+        return;
+
+    auto fragment_source = get_shader_source(fragment_shader);
+    if (!fragment_source.has_value())
+        return;
+
+    auto fragment_source_view = fragment_source->bytes_as_string_view();
+    auto has_sampler_2d = fragment_source_view.contains("sampler2D"sv);
+    auto has_texture_2d = fragment_source_view.contains("texture2D"sv) || fragment_source_view.contains("texture("sv);
+    auto has_external_sampler = fragment_source_view.contains("samplerExternalOES"sv);
+    if (has_sampler_2d || has_external_sampler) {
+        dbgln("MUNDO_WEBGL_VIDEO_PROGRAM_LINK program={} fragment_shader_video_candidate=true sampler2D={} samplerExternalOES={} texture_call={} source_bytes={} next_step=match_with_TEXTURE_BACKING_DRAW_program",
+            program_handle,
+            has_sampler_2d,
+            has_external_sampler,
+            has_texture_2d,
+            fragment_source->bytes().size());
+    }
 }
 
 void WebGLRenderingContextImpl::pixel_storei(WebIDL::UnsignedLong pname, WebIDL::Long param)
