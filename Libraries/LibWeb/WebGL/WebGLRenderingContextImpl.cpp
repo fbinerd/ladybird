@@ -2475,6 +2475,33 @@ void WebGLRenderingContextImpl::link_program(GC::Root<WebGLProgram> program)
             has_texture_2d,
             fragment_source->bytes().size());
     }
+
+    GLint active_uniform_count = 0;
+    glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
+    auto uniforms_to_scan = active_uniform_count < 32 ? active_uniform_count : 32;
+    for (GLint index = 0; index < uniforms_to_scan; ++index) {
+        GLint size = 0;
+        GLenum type = 0;
+        GLsizei length = 0;
+        GLchar name[256];
+        glGetActiveUniform(program_handle, static_cast<GLuint>(index), sizeof(name), &length, &size, &type, name);
+        if (!length || !mundo_webgl_is_sampler_uniform_type(type))
+            continue;
+
+        auto uniform_name = String::from_utf8_without_validation(ReadonlyBytes { name, static_cast<size_t>(length) });
+        auto texture2d_pattern = MUST(String::formatted("texture2D({}", uniform_name));
+        auto texture_pattern = MUST(String::formatted("texture({}", uniform_name));
+        auto direct_texture_call = fragment_source_view.contains(texture2d_pattern.bytes_as_string_view()) || fragment_source_view.contains(texture_pattern.bytes_as_string_view());
+        dbgln("MUNDO_WEBGL_VIDEO_PROGRAM_SAMPLER_SOURCE program={} uniform={} type={} size={} direct_texture_call={} texture2D_pattern={} texture_pattern={} active_uniforms={} next_step=shader_rewrite_feasibility",
+            program_handle,
+            uniform_name,
+            type,
+            size,
+            direct_texture_call,
+            texture2d_pattern,
+            texture_pattern,
+            active_uniform_count);
+    }
 }
 
 void WebGLRenderingContextImpl::pixel_storei(WebIDL::UnsignedLong pname, WebIDL::Long param)
