@@ -870,6 +870,12 @@ OpenGLContext::SkiaVulkanYcbcrProbeResult OpenGLContext::probe_skia_vulkan_ycbcr
 
     if (!image) {
         auto ycbcr_backend_format = GrBackendFormats::MakeVk(ycbcr_info, false);
+        struct SkiaVulkanYcbcrPromiseContext {
+            GrBackendTexture const* backend_texture { nullptr };
+        };
+        SkiaVulkanYcbcrPromiseContext promise_context {
+            .backend_texture = &backend_texture,
+        };
         auto promise_image = SkImages::PromiseTextureFrom(
             m_skia_backend_context->sk_context()->threadSafeProxy(),
             ycbcr_backend_format,
@@ -879,12 +885,15 @@ OpenGLContext::SkiaVulkanYcbcrProbeResult OpenGLContext::probe_skia_vulkan_ycbcr
             kRGBA_8888_SkColorType,
             kOpaque_SkAlphaType,
             SkColorSpace::MakeSRGB(),
-            [](SkImages::PromiseImageTextureContext) -> sk_sp<GrPromiseImageTexture> {
-                return nullptr;
+            [](SkImages::PromiseImageTextureContext context) -> sk_sp<GrPromiseImageTexture> {
+                auto* promise_context = static_cast<SkiaVulkanYcbcrPromiseContext*>(context);
+                if (!promise_context || !promise_context->backend_texture)
+                    return nullptr;
+                return GrPromiseImageTexture::Make(*promise_context->backend_texture);
             },
             [](SkImages::PromiseImageTextureContext) {
             },
-            nullptr);
+            &promise_context);
 
         dbgln("MUNDO_WEBGL_VIDEO_SKIA_YCBCR_IMPORT_PROBE attempt={} count={} frame_id={} status=failed reason=skia_borrow_texture_failed backend={} size={}x{} planes={} single_image={} single_memory={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={}",
             log_count,
