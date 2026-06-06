@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <AK/ByteBuffer.h>
 #include <LibWeb/WebGL/Types.h>
 #include <LibWeb/WebGL/WebGLObject.h>
 
@@ -24,6 +25,12 @@ public:
     virtual ~WebGLBuffer();
 
     bool is_compatible_with(GLenum target);
+    void set_shadow_data(GLenum target, size_t byte_length, ReadonlyBytes data);
+    void set_shadow_size(GLenum target, size_t byte_length);
+    void update_shadow_data(size_t offset, ReadonlyBytes data);
+    size_t shadow_byte_length() const { return m_shadow_byte_length; }
+    bool has_complete_shadow_data() const { return m_has_complete_shadow_data; }
+    Optional<GLenum> shadow_target() const { return m_target; }
 
 protected:
     explicit WebGLBuffer(JS::Realm&, GC::Ref<WebGLRenderingContextBase>, GLuint handle);
@@ -32,6 +39,9 @@ protected:
 
 private:
     Optional<GLenum> m_target;
+    ByteBuffer m_shadow_data;
+    size_t m_shadow_byte_length { 0 };
+    bool m_has_complete_shadow_data { false };
 };
 
 }

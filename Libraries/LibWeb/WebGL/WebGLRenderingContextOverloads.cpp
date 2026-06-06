@@ -18,6 +18,7 @@ extern "C" {
 #include <LibJS/Runtime/DataView.h>
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/WebGL/OpenGLContext.h>
+#include <LibWeb/WebGL/WebGLBuffer.h>
 #include <LibWeb/WebGL/WebGLRenderingContextOverloads.h>
 #include <LibWeb/WebGL/WebGLTexture.h>
 #include <LibWeb/WebGL/WebGLUniformLocation.h>
@@ -177,6 +178,10 @@ void WebGLRenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, We
 
     auto start = MonotonicTime::now();
     glBufferData(target, size, 0, usage);
+    if (size >= 0) {
+        if (auto buffer = current_bound_buffer_for_target(target))
+            buffer->set_shadow_size(target, static_cast<size_t>(size));
+    }
     record_mundo_webgl_timing_summary("bufferData(size)", (MonotonicTime::now() - start).to_microseconds());
     if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
         dbgln("MUNDO_WEBGL_TIMING count={} op=bufferData(size) duration={}ms threshold={}ms target={} size={} usage={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, size, usage);
@@ -196,6 +201,8 @@ void WebGLRenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, Op
     auto span = MUST(get_offset_span<u8 const>(*data.value(), /* src_offset= */ 0));
     auto start = MonotonicTime::now();
     glBufferData(target, static_cast<GLsizeiptr>(span.size()), span.data(), usage);
+    if (auto buffer = current_bound_buffer_for_target(target))
+        buffer->set_shadow_data(target, span.size(), span);
     record_mundo_webgl_timing_summary("bufferData(data)", (MonotonicTime::now() - start).to_microseconds());
     if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
         dbgln("MUNDO_WEBGL_TIMING count={} op=bufferData(data) duration={}ms threshold={}ms target={} bytes={} usage={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, span.size(), usage);
@@ -208,6 +215,10 @@ void WebGLRenderingContextOverloads::buffer_sub_data(WebIDL::UnsignedLong target
     auto span = MUST(get_offset_span<u8 const>(*data, /* src_offset= */ 0));
     auto start = MonotonicTime::now();
     glBufferSubData(target, offset, span.size(), span.data());
+    if (offset >= 0) {
+        if (auto buffer = current_bound_buffer_for_target(target))
+            buffer->update_shadow_data(static_cast<size_t>(offset), span);
+    }
     record_mundo_webgl_timing_summary("bufferSubData", (MonotonicTime::now() - start).to_microseconds());
     if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
         dbgln("MUNDO_WEBGL_TIMING count={} op=bufferSubData duration={}ms threshold={}ms target={} offset={} bytes={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), target, offset, span.size());

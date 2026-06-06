@@ -20,6 +20,7 @@ extern "C" {
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibWeb/WebGL/OpenGLContext.h>
 #include <LibWeb/WebGL/WebGL2RenderingContextOverloads.h>
+#include <LibWeb/WebGL/WebGLBuffer.h>
 #include <LibWeb/WebGL/WebGLUniformLocation.h>
 #include <LibWeb/WebIDL/Buffers.h>
 #include <stdlib.h>
@@ -46,6 +47,10 @@ void WebGL2RenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, W
     m_context->make_current();
 
     glBufferData(target, size, 0, usage);
+    if (size >= 0) {
+        if (auto buffer = current_bound_buffer_for_target(target))
+            buffer->set_shadow_size(target, static_cast<size_t>(size));
+    }
 }
 
 void WebGL2RenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, Optional<GC::Root<WebIDL::BufferSource>> src_data, WebIDL::UnsignedLong usage)
@@ -61,6 +66,8 @@ void WebGL2RenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, O
 
     auto data = MUST(get_offset_span<u8 const>(*src_data.value(), /* src_offset= */ 0));
     glBufferData(target, static_cast<GLsizeiptr>(data.size()), data.data(), usage);
+    if (auto buffer = current_bound_buffer_for_target(target))
+        buffer->set_shadow_data(target, data.size(), data);
 }
 
 void WebGL2RenderingContextOverloads::buffer_sub_data(WebIDL::UnsignedLong target, WebIDL::LongLong dst_byte_offset, GC::Root<WebIDL::BufferSource> src_data)
@@ -69,6 +76,10 @@ void WebGL2RenderingContextOverloads::buffer_sub_data(WebIDL::UnsignedLong targe
 
     auto data = MUST(get_offset_span<u8 const>(*src_data, /* src_offset= */ 0));
     glBufferSubData(target, dst_byte_offset, data.size(), data.data());
+    if (dst_byte_offset >= 0) {
+        if (auto buffer = current_bound_buffer_for_target(target))
+            buffer->update_shadow_data(static_cast<size_t>(dst_byte_offset), data);
+    }
 }
 
 void WebGL2RenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, GC::Root<WebIDL::ArrayBufferView> src_data, WebIDL::UnsignedLong usage, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong length)
@@ -77,6 +88,8 @@ void WebGL2RenderingContextOverloads::buffer_data(WebIDL::UnsignedLong target, G
 
     auto span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(*src_data, src_offset, length), GL_INVALID_VALUE);
     glBufferData(target, span.size(), span.data(), usage);
+    if (auto buffer = current_bound_buffer_for_target(target))
+        buffer->set_shadow_data(target, span.size(), span);
 }
 
 void WebGL2RenderingContextOverloads::buffer_sub_data(WebIDL::UnsignedLong target, WebIDL::LongLong dst_byte_offset, GC::Root<WebIDL::ArrayBufferView> src_data, WebIDL::UnsignedLongLong src_offset, WebIDL::UnsignedLong length)
@@ -85,6 +98,10 @@ void WebGL2RenderingContextOverloads::buffer_sub_data(WebIDL::UnsignedLong targe
 
     auto span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(*src_data, src_offset, length), GL_INVALID_VALUE);
     glBufferSubData(target, dst_byte_offset, span.size(), span.data());
+    if (dst_byte_offset >= 0) {
+        if (auto buffer = current_bound_buffer_for_target(target))
+            buffer->update_shadow_data(static_cast<size_t>(dst_byte_offset), span);
+    }
 }
 
 void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long internalformat, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border, WebIDL::UnsignedLong format, WebIDL::UnsignedLong type, GC::Root<WebIDL::ArrayBufferView> pixels)

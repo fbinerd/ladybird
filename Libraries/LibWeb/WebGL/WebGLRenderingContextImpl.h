@@ -28,6 +28,8 @@ public:
     WebGLRenderingContextImpl(JS::Realm&, NonnullOwnPtr<OpenGLContext>);
 
     virtual OpenGLContext& context() override { return *m_context; }
+    GC::Ptr<WebGLBuffer> current_bound_buffer_for_target(WebIDL::UnsignedLong target) const;
+    GC::Ptr<WebGLBuffer> mundo_buffer_for_handle(GLuint handle) const;
 
     virtual void present() = 0;
     virtual void needs_to_present() = 0;
@@ -176,6 +178,7 @@ protected:
 
     size_t m_mundo_active_texture_unit_index { 0 };
     Vector<GC::Ptr<WebGLTexture>> m_mundo_texture_binding_2d_by_unit;
+    Vector<GC::Ptr<WebGLBuffer>> m_mundo_buffer_by_handle;
 
     NonnullOwnPtr<OpenGLContext> m_context;
 };
