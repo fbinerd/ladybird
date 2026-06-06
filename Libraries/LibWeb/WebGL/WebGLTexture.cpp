@@ -11,6 +11,10 @@
 #include <LibWeb/Bindings/WebGLTexture.h>
 #include <LibWeb/WebGL/WebGLTexture.h>
 
+#if defined(__linux__)
+#    include <unistd.h>
+#endif
+
 namespace Web::WebGL {
 
 GC_DEFINE_ALLOCATOR(WebGLTexture);
@@ -25,15 +29,23 @@ WebGLTexture::WebGLTexture(JS::Realm& realm, GC::Ref<WebGLRenderingContextBase> 
 {
 }
 
-WebGLTexture::~WebGLTexture() = default;
+WebGLTexture::~WebGLTexture()
+{
+    clear_hardware_video_backing();
+}
 
 void WebGLTexture::set_hardware_video_backing(HardwareVideoBacking backing)
 {
+    clear_hardware_video_backing();
     m_hardware_video_backing = backing;
 }
 
 void WebGLTexture::clear_hardware_video_backing()
 {
+#if defined(__linux__)
+    if (m_hardware_video_backing.has_value() && m_hardware_video_backing->source_opaque_fd >= 0)
+        close(m_hardware_video_backing->source_opaque_fd);
+#endif
     m_hardware_video_backing.clear();
 }
 

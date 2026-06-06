@@ -37,6 +37,7 @@ public:
         u32 source_vulkan_layout { 0 };
         u64 source_allocation_size { 0 };
         u32 source_handle_type { 0 };
+        int source_opaque_fd { -1 };
         bool source_single_optimal_multiplanar { false };
     };
 

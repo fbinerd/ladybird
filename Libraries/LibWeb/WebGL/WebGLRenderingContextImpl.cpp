@@ -366,6 +366,23 @@ static void log_mundo_webgl_video_virtualization_draw_state(char const* op, size
         backing.direct_sampling_route,
         backing.direct_zero_copy ? "none" : "webgl_draw_still_samples_intermediate_rgba_texture",
         backing.direct_zero_copy ? "verify_direct_decoder_surface_sampling" : "replace_this_draw_or_texture_binding_with_direct_nv12_vulkan_sampler");
+
+    dbgln("MUNDO_WEBGL_VIDEO_VIRTUAL_SOURCE_READY count={} op={} frame_id={} program={} texture={} source_opaque_fd_retained={} source_handle_type={} source_format={} source_layout={} source_allocation_size={} source_single_optimal_multiplanar={} route={} ready={} blocker={} next_step={}",
+        draw_log_count,
+        op,
+        backing.frame_id,
+        program_handle,
+        texture_handle,
+        backing.source_opaque_fd >= 0,
+        backing.source_handle_type,
+        backing.source_vulkan_format,
+        backing.source_vulkan_layout,
+        backing.source_allocation_size,
+        backing.source_single_optimal_multiplanar,
+        backing.direct_sampling_route,
+        backing.source_opaque_fd >= 0 && backing.source_single_optimal_multiplanar && !strcmp(backing.direct_sampling_route, "vulkan_direct_sampling_virtualization"),
+        backing.source_opaque_fd >= 0 ? "none" : "missing_retained_source_opaque_fd",
+        backing.source_opaque_fd >= 0 ? "import_retained_source_fd_for_vulkan_virtual_draw" : "retain_decoder_surface_fd_before_virtual_draw");
 }
 
 static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint video_texture_handle, Optional<WebGLTexture::HardwareVideoBacking> const& video_backing, size_t draw_log_count)
