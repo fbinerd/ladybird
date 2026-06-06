@@ -236,7 +236,7 @@ static bool mundo_webgl_is_sampler_uniform_type(GLenum type)
     }
 }
 
-static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint video_texture_handle, size_t draw_log_count)
+static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint video_texture_handle, Optional<WebGLTexture::HardwareVideoBacking> const& video_backing, size_t draw_log_count)
 {
     if (!program_handle)
         return;
@@ -281,6 +281,25 @@ static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint
             video_texture_handle,
             sampler_matches_video_texture,
             active_uniform_count);
+        if (sampler_matches_video_texture && video_backing.has_value()) {
+            auto const& backing = video_backing.value();
+            dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_CANDIDATE_READY draw_count={} program={} uniform={} unit={} texture={} frame_id={} size={}x{} backend={} upload_mode={} copy_stage={} gpu_only={} direct_zero_copy={} blocker={} next_step={}",
+                draw_log_count,
+                program_handle,
+                uniform_name,
+                unit,
+                video_texture_handle,
+                backing.frame_id,
+                backing.width,
+                backing.height,
+                backing.backend,
+                backing.upload_mode,
+                backing.copy_stage,
+                backing.copied_on_gpu,
+                backing.direct_zero_copy,
+                backing.direct_zero_copy ? "none" : "webgl_sampler_consumes_rgba_texture_not_decoder_nv12_surface",
+                backing.direct_zero_copy ? "verify_no_cpu_or_gpu_copy" : "replace_rgba_texture_backing_with_importable_decoder_surface_or_vulkan_sampler_path");
+        }
     }
 
     if (found_sampler_uniform)
@@ -951,7 +970,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 backing.copy_stage,
                 backing.direct_zero_copy,
                 backing.copied_on_gpu);
-            log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, log_count);
+            log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
 }
@@ -999,7 +1018,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 backing.copy_stage,
                 backing.direct_zero_copy,
                 backing.copied_on_gpu);
-            log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, log_count);
+            log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
     needs_to_present();
