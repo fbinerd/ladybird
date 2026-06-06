@@ -31,6 +31,11 @@ public:
         char const* copy_stage { "none" };
         bool direct_zero_copy { false };
         bool copied_on_gpu { false };
+        u32 source_vulkan_format { 0 };
+        u32 source_vulkan_layout { 0 };
+        u64 source_allocation_size { 0 };
+        u32 source_handle_type { 0 };
+        bool source_single_optimal_multiplanar { false };
     };
 
     void set_hardware_video_backing(HardwareVideoBacking);

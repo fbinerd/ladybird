@@ -283,7 +283,7 @@ static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint
             active_uniform_count);
         if (sampler_matches_video_texture && video_backing.has_value()) {
             auto const& backing = video_backing.value();
-            dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_CANDIDATE_READY draw_count={} program={} uniform={} unit={} texture={} frame_id={} size={}x{} backend={} upload_mode={} copy_stage={} gpu_only={} direct_zero_copy={} blocker={} next_step={}",
+            dbgln("MUNDO_WEBGL_VIDEO_ZERO_COPY_CANDIDATE_READY draw_count={} program={} uniform={} unit={} texture={} frame_id={} size={}x{} backend={} upload_mode={} copy_stage={} gpu_only={} direct_zero_copy={} source_format={} source_layout={} source_allocation_size={} source_handle_type={} source_single_optimal_multiplanar={} blocker={} next_step={}",
                 draw_log_count,
                 program_handle,
                 uniform_name,
@@ -297,6 +297,11 @@ static void log_mundo_webgl_video_sampler_uniforms(GLuint program_handle, GLuint
                 backing.copy_stage,
                 backing.copied_on_gpu,
                 backing.direct_zero_copy,
+                backing.source_vulkan_format,
+                backing.source_vulkan_layout,
+                backing.source_allocation_size,
+                backing.source_handle_type,
+                backing.source_single_optimal_multiplanar,
                 backing.direct_zero_copy ? "none" : "webgl_sampler_consumes_rgba_texture_not_decoder_nv12_surface",
                 backing.direct_zero_copy ? "verify_no_cpu_or_gpu_copy" : "replace_rgba_texture_backing_with_importable_decoder_surface_or_vulkan_sampler_path");
         }
