@@ -1587,6 +1587,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         float stereo_eye { 0.0f };
         float stereo_eye_left { 1.0f };
     };
+    constexpr size_t mesh_ring_slot_count = 3;
     struct MeshPipelineResources {
         VkDevice device { VK_NULL_HANDLE };
         VkFormat destination_format { VK_FORMAT_UNDEFINED };
@@ -1600,6 +1601,11 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         VkPipeline pipeline { VK_NULL_HANDLE };
         VkDescriptorPool descriptor_pool { VK_NULL_HANDLE };
         VkDescriptorSet descriptor_set { VK_NULL_HANDLE };
+        Array<VkDescriptorSet, mesh_ring_slot_count> ring_descriptor_sets {};
+        VkCommandPool ring_command_pool { VK_NULL_HANDLE };
+        Array<VkCommandBuffer, mesh_ring_slot_count> ring_command_buffers {};
+        Array<VkFence, mesh_ring_slot_count> ring_fences {};
+        size_t ring_cursor { 0 };
     };
     static MeshPipelineResources s_resources;
     static size_t s_probe_count { 0 };
@@ -1641,6 +1647,19 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         if (!matches)
             return log_failure("multiple_mesh_pipeline_configurations_not_supported_yet"sv);
         pipeline_cache_status = "hit"sv;
+    }
+
+    auto queue_sync_mode = "idle"sv;
+    if (auto const* queue_sync_mode_value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_QUEUE_SYNC_MODE")) {
+        auto value = StringView { queue_sync_mode_value, strlen(queue_sync_mode_value) };
+        if (value == "fence"sv)
+            queue_sync_mode = "fence"sv;
+        else if (value == "none"sv)
+            queue_sync_mode = "none"sv;
+        else if (value == "ring"sv)
+            queue_sync_mode = "ring"sv;
+        else if (value == "idle"sv)
+            queue_sync_mode = "idle"sv;
     }
 
     if (s_resources.pipeline == VK_NULL_HANDLE) {
@@ -1880,13 +1899,13 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
 
     VkDescriptorPoolSize pool_size {
         .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = 1,
+        .descriptorCount = 1 + mesh_ring_slot_count,
     };
     VkDescriptorPoolCreateInfo descriptor_pool_info {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .maxSets = 1,
+        .maxSets = 1 + mesh_ring_slot_count,
         .poolSizeCount = 1,
         .pPoolSizes = &pool_size,
     };
@@ -1894,21 +1913,83 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     if (result != VK_SUCCESS)
         return log_failure("create_descriptor_pool_failed"sv, result);
 
+    VkDescriptorSetLayout descriptor_set_layouts[1 + mesh_ring_slot_count];
+    for (size_t i = 0; i < 1 + mesh_ring_slot_count; ++i)
+        descriptor_set_layouts[i] = s_resources.descriptor_set_layout;
+    VkDescriptorSet descriptor_sets[1 + mesh_ring_slot_count];
     VkDescriptorSetAllocateInfo descriptor_set_allocate_info {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .pNext = nullptr,
         .descriptorPool = s_resources.descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &s_resources.descriptor_set_layout,
+        .descriptorSetCount = 1 + mesh_ring_slot_count,
+        .pSetLayouts = descriptor_set_layouts,
     };
-    result = vkAllocateDescriptorSets(context.logical_device, &descriptor_set_allocate_info, &s_resources.descriptor_set);
+    result = vkAllocateDescriptorSets(context.logical_device, &descriptor_set_allocate_info, descriptor_sets);
     if (result != VK_SUCCESS) {
         return log_failure("allocate_descriptor_set_failed"sv, result);
     }
+    s_resources.descriptor_set = descriptor_sets[0];
+    for (size_t i = 0; i < mesh_ring_slot_count; ++i)
+        s_resources.ring_descriptor_sets[i] = descriptor_sets[i + 1];
 
-        s_resources.device = context.logical_device;
-        s_resources.destination_format = format;
-        s_resources.immutable_sampler = immutable_sampler;
+    s_resources.device = context.logical_device;
+    s_resources.destination_format = format;
+    s_resources.immutable_sampler = immutable_sampler;
+    }
+
+    i64 queue_submit_us = 0;
+    i64 queue_wait_us = 0;
+    auto descriptor_set_for_draw = s_resources.descriptor_set;
+    VkCommandBuffer command_buffer_for_draw = context.command_buffer;
+    VkFence submit_fence = VK_NULL_HANDLE;
+    size_t queue_ring_slot = NumericLimits<size_t>::max();
+    if (queue_sync_mode == "ring"sv) {
+        if (s_resources.ring_command_pool == VK_NULL_HANDLE) {
+            VkCommandPoolCreateInfo command_pool_info {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                .queueFamilyIndex = context.graphics_queue_family,
+            };
+            result = vkCreateCommandPool(context.logical_device, &command_pool_info, nullptr, &s_resources.ring_command_pool);
+            if (result != VK_SUCCESS)
+                return log_failure("create_mesh_ring_command_pool_failed"sv, result);
+
+            VkCommandBufferAllocateInfo command_buffer_alloc_info {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .pNext = nullptr,
+                .commandPool = s_resources.ring_command_pool,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = mesh_ring_slot_count,
+            };
+            result = vkAllocateCommandBuffers(context.logical_device, &command_buffer_alloc_info, s_resources.ring_command_buffers.data());
+            if (result != VK_SUCCESS)
+                return log_failure("allocate_mesh_ring_command_buffers_failed"sv, result);
+
+            VkFenceCreateInfo fence_info {
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+            };
+            for (size_t i = 0; i < mesh_ring_slot_count; ++i) {
+                result = vkCreateFence(context.logical_device, &fence_info, nullptr, &s_resources.ring_fences[i]);
+                if (result != VK_SUCCESS)
+                    return log_failure("create_mesh_ring_fence_failed"sv, result);
+            }
+        }
+
+        queue_ring_slot = s_resources.ring_cursor++ % mesh_ring_slot_count;
+        auto wait_started_at = MonotonicTime::now();
+        result = vkWaitForFences(context.logical_device, 1, &s_resources.ring_fences[queue_ring_slot], VK_TRUE, UINT64_MAX);
+        queue_wait_us = (MonotonicTime::now() - wait_started_at).to_microseconds();
+        if (result != VK_SUCCESS)
+            return log_failure("wait_mesh_ring_fence_failed"sv, result);
+        result = vkResetFences(context.logical_device, 1, &s_resources.ring_fences[queue_ring_slot]);
+        if (result != VK_SUCCESS)
+            return log_failure("reset_mesh_ring_fence_failed"sv, result);
+        command_buffer_for_draw = s_resources.ring_command_buffers[queue_ring_slot];
+        descriptor_set_for_draw = s_resources.ring_descriptor_sets[queue_ring_slot];
+        submit_fence = s_resources.ring_fences[queue_ring_slot];
     }
 
     VkDescriptorImageInfo descriptor_image_info {
@@ -1919,7 +2000,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     VkWriteDescriptorSet descriptor_write {
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
         .pNext = nullptr,
-        .dstSet = s_resources.descriptor_set,
+        .dstSet = descriptor_set_for_draw,
         .dstBinding = 0,
         .dstArrayElement = 0,
         .descriptorCount = 1,
@@ -2000,18 +2081,6 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     }();
     auto draw_status = "disabled"sv;
     auto draw_reason = "set_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_1_to_execute"sv;
-    auto queue_sync_mode = "idle"sv;
-    i64 queue_submit_us = 0;
-    i64 queue_wait_us = 0;
-    if (auto const* queue_sync_mode_value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_QUEUE_SYNC_MODE")) {
-        auto value = StringView { queue_sync_mode_value, strlen(queue_sync_mode_value) };
-        if (value == "fence"sv)
-            queue_sync_mode = "fence"sv;
-        else if (value == "none"sv)
-            queue_sync_mode = "none"sv;
-        else if (value == "idle"sv)
-            queue_sync_mode = "idle"sv;
-    }
     bool mesh_draw_executed = false;
     auto flip_mesh_viewport_y = [direct_vulkan_mesh_mode] {
         if (direct_vulkan_mesh_mode)
@@ -2044,14 +2113,14 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             return log_failure("missing_cached_replay_buffers_for_draw"sv);
         auto const& replay_buffers = *m_impl->cached_vulkan_video_replay_buffers;
 
-        vkResetCommandBuffer(context.command_buffer, 0);
+        vkResetCommandBuffer(command_buffer_for_draw, 0);
         VkCommandBufferBeginInfo begin_info {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .pNext = nullptr,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
             .pInheritanceInfo = nullptr,
         };
-        result = vkBeginCommandBuffer(context.command_buffer, &begin_info);
+        result = vkBeginCommandBuffer(command_buffer_for_draw, &begin_info);
         if (result != VK_SUCCESS)
             return log_failure("begin_mesh_draw_command_buffer_failed"sv, result);
 
@@ -2081,7 +2150,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
                 .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
             },
         };
-        vkCmdPipelineBarrier(context.command_buffer,
+        vkCmdPipelineBarrier(command_buffer_for_draw,
             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             0,
@@ -2101,7 +2170,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             .clearValueCount = 0,
             .pClearValues = nullptr,
         };
-        vkCmdBeginRenderPass(context.command_buffer, &render_pass_begin, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBeginRenderPass(command_buffer_for_draw, &render_pass_begin, VK_SUBPASS_CONTENTS_INLINE);
         VkViewport viewport {
             .x = static_cast<float>(viewport_x),
             .y = flip_mesh_viewport_y ? static_cast<float>(viewport_y + viewport_height) : static_cast<float>(viewport_y),
@@ -2114,10 +2183,10 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             .offset = { viewport_x, viewport_y },
             .extent = { static_cast<u32>(viewport_width), static_cast<u32>(viewport_height) },
         };
-        vkCmdSetViewport(context.command_buffer, 0, 1, &viewport);
-        vkCmdSetScissor(context.command_buffer, 0, 1, &scissor);
-        vkCmdBindPipeline(context.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline);
-        vkCmdBindDescriptorSets(context.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline_layout, 0, 1, &s_resources.descriptor_set, 0, nullptr);
+        vkCmdSetViewport(command_buffer_for_draw, 0, 1, &viewport);
+        vkCmdSetScissor(command_buffer_for_draw, 0, 1, &scissor);
+        vkCmdBindPipeline(command_buffer_for_draw, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline);
+        vkCmdBindDescriptorSets(command_buffer_for_draw, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline_layout, 0, 1, &descriptor_set_for_draw, 0, nullptr);
         MeshPushConstants push_constants {
             .model_view_matrix = uniform_snapshot.model_view_matrix,
             .projection_matrix = uniform_snapshot.projection_matrix,
@@ -2127,15 +2196,15 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             .stereo_eye = uniform_snapshot.stereo_eye,
             .stereo_eye_left = uniform_snapshot.stereo_eye_left,
         };
-        vkCmdPushConstants(context.command_buffer, s_resources.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
+        vkCmdPushConstants(command_buffer_for_draw, s_resources.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
         if (!replay_buffers.uv_right_buffer)
             return log_failure("missing_uv_right_buffer_for_stereo_mesh_draw"sv);
         VkBuffer vertex_buffers[] { replay_buffers.position_buffer->buffer, replay_buffers.uv_buffer->buffer, replay_buffers.uv_right_buffer->buffer };
         VkDeviceSize vertex_offsets[] { 0, 0, 0 };
-        vkCmdBindVertexBuffers(context.command_buffer, 0, 3, vertex_buffers, vertex_offsets);
-        vkCmdBindIndexBuffer(context.command_buffer, replay_buffers.index_buffer->buffer, draw_offset, index_type);
-        vkCmdDrawIndexed(context.command_buffer, draw_count, 1, 0, 0, 0);
-        vkCmdEndRenderPass(context.command_buffer);
+        vkCmdBindVertexBuffers(command_buffer_for_draw, 0, 3, vertex_buffers, vertex_offsets);
+        vkCmdBindIndexBuffer(command_buffer_for_draw, replay_buffers.index_buffer->buffer, draw_offset, index_type);
+        vkCmdDrawIndexed(command_buffer_for_draw, draw_count, 1, 0, 0, 0);
+        vkCmdEndRenderPass(command_buffer_for_draw);
 
         VkImageMemoryBarrier post_render_barriers[] {
             {
@@ -2163,7 +2232,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
                 .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
             },
         };
-        vkCmdPipelineBarrier(context.command_buffer,
+        vkCmdPipelineBarrier(command_buffer_for_draw,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             0,
@@ -2171,7 +2240,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             0, nullptr,
             2, post_render_barriers);
 
-        result = vkEndCommandBuffer(context.command_buffer);
+        result = vkEndCommandBuffer(command_buffer_for_draw);
         if (result != VK_SUCCESS)
             return log_failure("end_mesh_draw_command_buffer_failed"sv, result);
 
@@ -2182,11 +2251,10 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             .pWaitSemaphores = nullptr,
             .pWaitDstStageMask = nullptr,
             .commandBufferCount = 1,
-            .pCommandBuffers = &context.command_buffer,
+            .pCommandBuffers = &command_buffer_for_draw,
             .signalSemaphoreCount = 0,
             .pSignalSemaphores = nullptr,
         };
-        VkFence submit_fence = VK_NULL_HANDLE;
         if (queue_sync_mode == "fence"sv) {
             VkFenceCreateInfo fence_info {
                 .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -2221,12 +2289,12 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
                 return log_failure("wait_mesh_draw_queue_idle_failed"sv, result);
         }
         draw_status = "executed"sv;
-        draw_reason = queue_sync_mode == "none"sv ? "vkCmdDrawIndexed_submitted_without_cpu_wait"sv : "vkCmdDrawIndexed_submitted"sv;
+        draw_reason = queue_sync_mode == "none"sv || queue_sync_mode == "ring"sv ? "vkCmdDrawIndexed_submitted_without_immediate_cpu_wait"sv : "vkCmdDrawIndexed_submitted"sv;
         mesh_draw_executed = true;
     }
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} queue_sync_mode={} queue_submit_us={} queue_wait_us={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} viewport_flip_y={} vertex_bindings=3 vertex_attributes=3 matrix_push_constants={} stereo_eye_left={} next_step={}",
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} queue_sync_mode={} queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} viewport_flip_y={} vertex_bindings=3 vertex_attributes=3 matrix_push_constants={} stereo_eye_left={} next_step={}",
             log_count,
             probe_count,
             frame_id,
@@ -2234,13 +2302,14 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             draw_status,
             draw_reason,
             mesh_draw_enabled ? queue_sync_mode : "not_submitted"sv,
+            queue_ring_slot == NumericLimits<size_t>::max() ? -1 : static_cast<int>(queue_ring_slot),
             queue_submit_us,
             queue_wait_us,
             destination_format,
             reinterpret_cast<uintptr_t>(source_image_view),
             reinterpret_cast<uintptr_t>(immutable_sampler),
             reinterpret_cast<uintptr_t>(s_resources.pipeline),
-            reinterpret_cast<uintptr_t>(s_resources.descriptor_set),
+            reinterpret_cast<uintptr_t>(descriptor_set_for_draw),
             reinterpret_cast<uintptr_t>(target_image->image),
             reinterpret_cast<uintptr_t>(target_image->cached_video_color_attachment_view),
             reinterpret_cast<uintptr_t>(target_image->cached_video_framebuffer),
