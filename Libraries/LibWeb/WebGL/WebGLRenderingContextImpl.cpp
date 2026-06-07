@@ -1736,8 +1736,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
         Optional<MundoWebGLVirtualVideoSourceCacheState> virtual_source_cache_state;
         if (uses_video_sampler)
             virtual_source_cache_state = ensure_mundo_webgl_video_virtual_source_cached(*m_context, *m_texture_binding_2d, backing, "drawElements", log_count, program_handle, texture_handle, should_log_video_draw);
-        if (uses_video_sampler && virtual_source_cache_state.has_value())
+        if (uses_video_sampler && virtual_source_cache_state.has_value()) {
+            if (mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SYNC_GL_BEFORE_DRAW")) {
+                glFinish();
+                if (should_log_video_draw)
+                    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SYNC_GL_BEFORE_DRAW count={} frame_id={} reason=diagnose_gl_vulkan_target_interop_before_mesh_draw", log_count, backing.frame_id);
+            }
             vulkan_video_draw_executed = log_mundo_webgl_video_vulkan_direct_draw_plan(*m_context, *this, "drawElements", log_count, should_log_video_draw, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, virtual_source_cache_state.value(), { mode, 0, count, type, static_cast<GLintptr>(offset) });
+        }
 #endif
         if (should_log_video_draw) {
             GLint active_texture = 0;
