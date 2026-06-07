@@ -1995,6 +1995,14 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     auto draw_status = "disabled"sv;
     auto draw_reason = "set_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_1_to_execute"sv;
     bool mesh_draw_executed = false;
+    auto flip_mesh_viewport_y = [] {
+        auto const* value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_FLIP_Y");
+        if (value && StringView { value, strlen(value) } == "1"sv)
+            return true;
+
+        auto const* force_replace = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_FORCE_TARGET_MISMATCH");
+        return force_replace && StringView { force_replace, strlen(force_replace) } == "1"sv;
+    }();
     if (mesh_draw_enabled) {
         auto index_type = VK_INDEX_TYPE_UINT16;
         if (draw_type == GL_UNSIGNED_SHORT)
@@ -2069,9 +2077,9 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         vkCmdBeginRenderPass(context.command_buffer, &render_pass_begin, VK_SUBPASS_CONTENTS_INLINE);
         VkViewport viewport {
             .x = static_cast<float>(viewport_x),
-            .y = static_cast<float>(viewport_y),
+            .y = flip_mesh_viewport_y ? static_cast<float>(viewport_y + viewport_height) : static_cast<float>(viewport_y),
             .width = static_cast<float>(viewport_width),
-            .height = static_cast<float>(viewport_height),
+            .height = flip_mesh_viewport_y ? -static_cast<float>(viewport_height) : static_cast<float>(viewport_height),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
         };
@@ -2163,7 +2171,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     }
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} vertex_bindings=3 vertex_attributes=3 matrix_push_constants={} stereo_eye_left={} next_step={}",
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} viewport_flip_y={} vertex_bindings=3 vertex_attributes=3 matrix_push_constants={} stereo_eye_left={} next_step={}",
             log_count,
             probe_count,
             frame_id,
@@ -2187,6 +2195,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             viewport_height,
             viewport_x,
             viewport_y,
+            flip_mesh_viewport_y,
             uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix,
             uniform_snapshot.stereo_eye_left,
             mesh_draw_enabled ? "verify_direct_vulkan_mesh_visual_output" : "enable_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_for_real_draw");
