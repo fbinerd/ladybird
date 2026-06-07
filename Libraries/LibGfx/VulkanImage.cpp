@@ -11,6 +11,7 @@
 #    include <AK/ScopeGuard.h>
 #    include <AK/Vector.h>
 #    include <LibGfx/VulkanImage.h>
+#    include <string.h>
 #    include <unistd.h>
 
 namespace Gfx {
@@ -66,6 +67,14 @@ ImportedVulkanNV12Image::~ImportedVulkanNV12Image()
         vkDestroySamplerYcbcrConversion(context.logical_device, ycbcr_conversion, nullptr);
     if (image != VK_NULL_HANDLE)
         vkDestroyImage(context.logical_device, image, nullptr);
+    if (memory != VK_NULL_HANDLE)
+        vkFreeMemory(context.logical_device, memory, nullptr);
+}
+
+VulkanBuffer::~VulkanBuffer()
+{
+    if (buffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(context.logical_device, buffer, nullptr);
     if (memory != VK_NULL_HANDLE)
         vkFreeMemory(context.logical_device, memory, nullptr);
 }
@@ -298,6 +307,63 @@ ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext con
         .modifier = image_format_mod_props.drmFormatModifier,
     };
     return image;
+}
+
+ErrorOr<NonnullOwnPtr<VulkanBuffer>> create_host_visible_vulkan_buffer_from_bytes(VulkanContext const& context, ReadonlyBytes bytes, VkBufferUsageFlags usage)
+{
+    if (bytes.is_empty())
+        return Error::from_string_literal("cannot create empty Vulkan buffer");
+
+    auto buffer = make<VulkanBuffer>(context);
+    buffer->size = bytes.size();
+    buffer->usage = usage;
+
+    VkBufferCreateInfo buffer_info {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = buffer->size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+    };
+    auto result = vkCreateBuffer(context.logical_device, &buffer_info, nullptr, &buffer->buffer);
+    if (result != VK_SUCCESS)
+        return Error::from_string_literal("failed to create Vulkan buffer");
+
+    VkMemoryRequirements memory_requirements;
+    vkGetBufferMemoryRequirements(context.logical_device, buffer->buffer, &memory_requirements);
+
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(context.physical_device, &memory_properties);
+    auto memory_type_index = find_memory_type_index(memory_properties, memory_requirements, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (memory_type_index == memory_properties.memoryTypeCount)
+        return Error::from_string_literal("failed to find host-visible Vulkan buffer memory");
+
+    VkMemoryAllocateInfo memory_allocate_info {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = memory_type_index,
+    };
+    result = vkAllocateMemory(context.logical_device, &memory_allocate_info, nullptr, &buffer->memory);
+    if (result != VK_SUCCESS)
+        return Error::from_string_literal("failed to allocate Vulkan buffer memory");
+
+    void* mapped_memory = nullptr;
+    result = vkMapMemory(context.logical_device, buffer->memory, 0, buffer->size, 0, &mapped_memory);
+    if (result != VK_SUCCESS)
+        return Error::from_string_literal("failed to map Vulkan buffer memory");
+
+    memcpy(mapped_memory, bytes.data(), bytes.size());
+    vkUnmapMemory(context.logical_device, buffer->memory);
+
+    result = vkBindBufferMemory(context.logical_device, buffer->buffer, buffer->memory, 0);
+    if (result != VK_SUCCESS)
+        return Error::from_string_literal("failed to bind Vulkan buffer memory");
+
+    return buffer;
 }
 
 struct SharedYcbcrSampleResources {

@@ -18,6 +18,20 @@
 
 namespace Gfx {
 
+struct VulkanBuffer {
+    VulkanContext const& context;
+    VkBuffer buffer { VK_NULL_HANDLE };
+    VkDeviceMemory memory { VK_NULL_HANDLE };
+    VkDeviceSize size { 0 };
+    VkBufferUsageFlags usage { 0 };
+
+    explicit VulkanBuffer(VulkanContext const& context)
+        : context(context)
+    {
+    }
+    ~VulkanBuffer();
+};
+
 struct VulkanImage : public RefCounted<VulkanImage> {
     VkImage image { VK_NULL_HANDLE };
     VkDeviceMemory memory { VK_NULL_HANDLE };
@@ -87,6 +101,7 @@ static inline uint32_t vk_format_to_drm_format(VkFormat format)
 
 ErrorOr<NonnullRefPtr<VulkanImage>> create_shared_vulkan_image(VulkanContext const& context, uint32_t width, uint32_t height, VkFormat format, ReadonlySpan<uint64_t> modifiers);
 ErrorOr<NonnullRefPtr<VulkanImage>> create_opaque_fd_vulkan_image(VulkanContext const& context, uint32_t width, uint32_t height, VkFormat format);
+ErrorOr<NonnullOwnPtr<VulkanBuffer>> create_host_visible_vulkan_buffer_from_bytes(VulkanContext const& context, ReadonlyBytes bytes, VkBufferUsageFlags usage);
 ErrorOr<NonnullOwnPtr<ImportedVulkanNV12Image>> import_vulkan_nv12_external_memory(VulkanContext const& context, int source_fd, VkExternalMemoryHandleTypeFlagBits source_handle_type, VkDeviceSize source_allocation_size, uint32_t width, uint32_t height, VkFormat source_format, VkImageLayout source_layout);
 ErrorOr<void> copy_vulkan_nv12_external_memory_planes_to_opaque_images(VulkanContext const& context, int source_fd, VkExternalMemoryHandleTypeFlagBits source_handle_type, VkDeviceSize source_allocation_size, uint32_t width, uint32_t height, VkFormat source_format, VkImageLayout source_layout, VulkanImage& y_destination, VulkanImage& uv_destination);
 ErrorOr<void> render_vulkan_nv12_external_memory_to_opaque_rgba_image(VulkanContext const& context, int source_fd, VkExternalMemoryHandleTypeFlagBits source_handle_type, VkDeviceSize source_allocation_size, uint32_t width, uint32_t height, VkFormat source_format, VkImageLayout source_layout, VulkanImage& rgba_destination, bool flip_y = false);
