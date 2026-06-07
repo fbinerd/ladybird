@@ -512,6 +512,7 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
     GLint vertex_array = 0;
     GLint element_array_buffer = 0;
     GLint active_attrib_count = 0;
+    GLint active_uniform_count = 0;
     GLint attached_shader_count = 0;
     GLint viewport[4] {};
     glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &framebuffer);
@@ -519,9 +520,10 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
     glGetIntegervRobustANGLE(GL_ELEMENT_ARRAY_BUFFER_BINDING, 1, nullptr, &element_array_buffer);
     glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
     glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_ATTRIBUTES, 1, nullptr, &active_attrib_count);
+    glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
     glGetProgramivRobustANGLE(program_handle, GL_ATTACHED_SHADERS, 1, nullptr, &attached_shader_count);
 
-    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_PLAN count={} op={} frame_id={} cached_frame_id={} program={} texture={} ready={} reason={} route={} sampler_unit={} sampler_location={} sampler_bound_texture={} source_image={} source_image_view={} source_sampler={} source_format={} source_layout={} source_allocation_size={} source_single_optimal_multiplanar={} draw_mode={} draw_first={} draw_count={} draw_type={} draw_offset={} framebuffer={} vertex_array={} element_array_buffer={} active_attribs={} attached_shaders={} viewport={}x{}+{}+{} blocker={} next_step={}",
+    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_PLAN count={} op={} frame_id={} cached_frame_id={} program={} texture={} ready={} reason={} route={} sampler_unit={} sampler_location={} sampler_bound_texture={} source_image={} source_image_view={} source_sampler={} source_format={} source_layout={} source_allocation_size={} source_single_optimal_multiplanar={} draw_mode={} draw_first={} draw_count={} draw_type={} draw_offset={} framebuffer={} vertex_array={} element_array_buffer={} active_attribs={} active_uniforms={} attached_shaders={} viewport={}x{}+{}+{} blocker={} next_step={}",
         draw_log_count,
         op,
         backing.frame_id,
@@ -550,6 +552,7 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
         vertex_array,
         element_array_buffer,
         active_attrib_count,
+        active_uniform_count,
         attached_shader_count,
         viewport[2],
         viewport[3],
@@ -557,6 +560,48 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
         viewport[1],
         ready ? "webgl_backend_cannot_consume_vulkan_ycbcr_sampler_directly_yet"sv : reason,
         ready ? "implement_vulkan_geometry_or_backend_interop_for_this_draw" : "complete_direct_draw_prerequisites");
+
+    auto uniforms_to_log = active_uniform_count < 12 ? active_uniform_count : 12;
+    bool has_matrix_uniform = false;
+    size_t sampler_uniform_count = 0;
+    size_t non_sampler_uniform_count = 0;
+    for (GLint index = 0; index < uniforms_to_log; ++index) {
+        GLint size = 0;
+        GLenum type = 0;
+        GLsizei length = 0;
+        GLchar name[256];
+        glGetActiveUniform(program_handle, static_cast<GLuint>(index), sizeof(name), &length, &size, &type, name);
+        if (!length)
+            continue;
+        auto uniform_name = StringView { name, static_cast<size_t>(length) };
+        auto is_sampler = mundo_webgl_is_sampler_uniform_type(type);
+        auto is_matrix = type == GL_FLOAT_MAT2 || type == GL_FLOAT_MAT3 || type == GL_FLOAT_MAT4;
+        sampler_uniform_count += is_sampler ? 1 : 0;
+        non_sampler_uniform_count += is_sampler ? 0 : 1;
+        has_matrix_uniform |= is_matrix;
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_UNIFORM count={} frame_id={} program={} index={} name={} type={} size={} sampler={} matrix={} next_step={}",
+            draw_log_count,
+            backing.frame_id,
+            program_handle,
+            index,
+            uniform_name,
+            type,
+            size,
+            is_sampler,
+            is_matrix,
+            is_sampler ? "map_video_sampler_to_vulkan_ycbcr_descriptor" : "preserve_uniform_for_shader_replay");
+    }
+    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_UNIFORM_SUMMARY count={} frame_id={} program={} scanned_uniforms={} active_uniforms={} sampler_uniforms_scanned={} non_sampler_uniforms_scanned={} has_matrix_uniform={} simple_fixed_shader_safe={} next_step={}",
+        draw_log_count,
+        backing.frame_id,
+        program_handle,
+        uniforms_to_log,
+        active_uniform_count,
+        sampler_uniform_count,
+        non_sampler_uniform_count,
+        has_matrix_uniform,
+        !has_matrix_uniform && non_sampler_uniform_count == 0,
+        has_matrix_uniform || non_sampler_uniform_count > 0 ? "preserve_or_translate_original_webgl_shader_state" : "fixed_video_mesh_shader_can_be_validated");
 
     auto attribs_to_log = active_attrib_count < 8 ? active_attrib_count : 8;
     bool all_enabled_attrib_buffers_shadowed = true;
