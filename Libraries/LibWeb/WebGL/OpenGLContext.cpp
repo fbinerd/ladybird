@@ -1900,8 +1900,65 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     s_resources.destination_format = format;
     s_resources.immutable_sampler = immutable_sampler;
     s_resources.last_source_image_view = source_image_view;
+
+    auto target_image = m_painting_surface ? m_painting_surface->vulkan_image() : nullptr;
+    if (!target_image)
+        return log_failure("missing_vulkan_painting_surface_target"sv);
+    if (target_image->info.format != format)
+        return log_failure("vulkan_painting_surface_format_mismatch"sv);
+    if (!(target_image->info.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
+        return log_failure("vulkan_painting_surface_not_color_attachment"sv);
+
+    if (target_image->cached_video_framebuffer != VK_NULL_HANDLE
+        && target_image->cached_video_framebuffer_render_pass != s_resources.render_pass) {
+        vkDestroyFramebuffer(context.logical_device, target_image->cached_video_framebuffer, nullptr);
+        target_image->cached_video_framebuffer = VK_NULL_HANDLE;
+    }
+    if (target_image->cached_video_color_attachment_view == VK_NULL_HANDLE) {
+        VkImageViewCreateInfo target_image_view_info {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = target_image->image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = target_image->info.format,
+            .components = {
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        result = vkCreateImageView(context.logical_device, &target_image_view_info, nullptr, &target_image->cached_video_color_attachment_view);
+        if (result != VK_SUCCESS)
+            return log_failure("create_target_image_view_failed"sv, result);
+    }
+    if (target_image->cached_video_framebuffer == VK_NULL_HANDLE
+        || target_image->cached_video_framebuffer_width != target_image->info.extent.width
+        || target_image->cached_video_framebuffer_height != target_image->info.extent.height) {
+        if (target_image->cached_video_framebuffer != VK_NULL_HANDLE)
+            vkDestroyFramebuffer(context.logical_device, target_image->cached_video_framebuffer, nullptr);
+        VkFramebufferCreateInfo framebuffer_info {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .renderPass = s_resources.render_pass,
+            .attachmentCount = 1,
+            .pAttachments = &target_image->cached_video_color_attachment_view,
+            .width = target_image->info.extent.width,
+            .height = target_image->info.extent.height,
+            .layers = 1,
+        };
+        result = vkCreateFramebuffer(context.logical_device, &framebuffer_info, nullptr, &target_image->cached_video_framebuffer);
+        if (result != VK_SUCCESS)
+            return log_failure("create_target_framebuffer_failed"sv, result);
+        target_image->cached_video_framebuffer_render_pass = s_resources.render_pass;
+        target_image->cached_video_framebuffer_width = target_image->info.extent.width;
+        target_image->cached_video_framebuffer_height = target_image->info.extent.height;
+    }
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=filled descriptor_status=updated destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} vertex_bindings=2 vertex_attributes=2 next_step=bind_replay_buffers_and_execute_vulkan_mesh_draw",
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=filled descriptor_status=updated target_status=ok destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} vertex_bindings=2 vertex_attributes=2 next_step=bind_replay_buffers_and_execute_vulkan_mesh_draw",
             log_count,
             probe_count,
             frame_id,
@@ -1909,7 +1966,12 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             reinterpret_cast<uintptr_t>(source_image_view),
             reinterpret_cast<uintptr_t>(immutable_sampler),
             reinterpret_cast<uintptr_t>(s_resources.pipeline),
-            reinterpret_cast<uintptr_t>(s_resources.descriptor_set));
+            reinterpret_cast<uintptr_t>(s_resources.descriptor_set),
+            reinterpret_cast<uintptr_t>(target_image->image),
+            reinterpret_cast<uintptr_t>(target_image->cached_video_color_attachment_view),
+            reinterpret_cast<uintptr_t>(target_image->cached_video_framebuffer),
+            target_image->info.extent.width,
+            target_image->info.extent.height);
     }
     return VulkanVideoMeshPipelineProbeResult {
         .attempted = true,
