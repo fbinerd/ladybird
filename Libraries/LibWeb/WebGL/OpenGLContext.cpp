@@ -65,6 +65,64 @@ extern "C" {
 
 namespace Web::WebGL {
 
+#ifdef USE_VULKAN_DMABUF_IMAGES
+static constexpr u32 s_mundo_video_nv12_mesh_vertex_shader_spirv[] {
+    0x07230203, 0x00010000, 0x0008000b, 0x00000021, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0009000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000d, 0x00000012, 0x0000001d,
+    0x0000001f, 0x00030003, 0x00000002, 0x000001c2, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000,
+    0x00060005, 0x0000000b, 0x505f6c67, 0x65567265, 0x78657472, 0x00000000, 0x00060006, 0x0000000b,
+    0x00000000, 0x505f6c67, 0x7469736f, 0x006e6f69, 0x00070006, 0x0000000b, 0x00000001, 0x505f6c67,
+    0x746e696f, 0x657a6953, 0x00000000, 0x00070006, 0x0000000b, 0x00000002, 0x435f6c67, 0x4470696c,
+    0x61747369, 0x0065636e, 0x00070006, 0x0000000b, 0x00000003, 0x435f6c67, 0x446c6c75, 0x61747369,
+    0x0065636e, 0x00030005, 0x0000000d, 0x00000000, 0x00050005, 0x00000012, 0x6f705f61, 0x69746973,
+    0x00006e6f, 0x00040005, 0x0000001d, 0x76755f76, 0x00000000, 0x00040005, 0x0000001f, 0x76755f61,
+    0x00000000, 0x00030047, 0x0000000b, 0x00000002, 0x00050048, 0x0000000b, 0x00000000, 0x0000000b,
+    0x00000000, 0x00050048, 0x0000000b, 0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x0000000b,
+    0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x0000000b, 0x00000003, 0x0000000b, 0x00000004,
+    0x00040047, 0x00000012, 0x0000001e, 0x00000000, 0x00040047, 0x0000001d, 0x0000001e, 0x00000000,
+    0x00040047, 0x0000001f, 0x0000001e, 0x00000001, 0x00020013, 0x00000002, 0x00030021, 0x00000003,
+    0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000004,
+    0x00040015, 0x00000008, 0x00000020, 0x00000000, 0x0004002b, 0x00000008, 0x00000009, 0x00000001,
+    0x0004001c, 0x0000000a, 0x00000006, 0x00000009, 0x0006001e, 0x0000000b, 0x00000007, 0x00000006,
+    0x0000000a, 0x0000000a, 0x00040020, 0x0000000c, 0x00000003, 0x0000000b, 0x0004003b, 0x0000000c,
+    0x0000000d, 0x00000003, 0x00040015, 0x0000000e, 0x00000020, 0x00000001, 0x0004002b, 0x0000000e,
+    0x0000000f, 0x00000000, 0x00040017, 0x00000010, 0x00000006, 0x00000003, 0x00040020, 0x00000011,
+    0x00000001, 0x00000010, 0x0004003b, 0x00000011, 0x00000012, 0x00000001, 0x0004002b, 0x00000006,
+    0x00000014, 0x3f800000, 0x00040020, 0x00000019, 0x00000003, 0x00000007, 0x00040017, 0x0000001b,
+    0x00000006, 0x00000002, 0x00040020, 0x0000001c, 0x00000003, 0x0000001b, 0x0004003b, 0x0000001c,
+    0x0000001d, 0x00000003, 0x00040020, 0x0000001e, 0x00000001, 0x0000001b, 0x0004003b, 0x0000001e,
+    0x0000001f, 0x00000001, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8,
+    0x00000005, 0x0004003d, 0x00000010, 0x00000013, 0x00000012, 0x00050051, 0x00000006, 0x00000015,
+    0x00000013, 0x00000000, 0x00050051, 0x00000006, 0x00000016, 0x00000013, 0x00000001, 0x00050051,
+    0x00000006, 0x00000017, 0x00000013, 0x00000002, 0x00070050, 0x00000007, 0x00000018, 0x00000015,
+    0x00000016, 0x00000017, 0x00000014, 0x00050041, 0x00000019, 0x0000001a, 0x0000000d, 0x0000000f,
+    0x0003003e, 0x0000001a, 0x00000018, 0x0004003d, 0x0000001b, 0x00000020, 0x0000001f, 0x0003003e,
+    0x0000001d, 0x00000020, 0x000100fd, 0x00010038
+};
+
+static constexpr u32 s_mundo_video_nv12_mesh_fragment_shader_spirv[] {
+    0x07230203, 0x00010000, 0x0008000b, 0x00000014, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0007000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000009, 0x00000011, 0x00030010,
+    0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001c2, 0x00040005, 0x00000004, 0x6e69616d,
+    0x00000000, 0x00050005, 0x00000009, 0x5f74756f, 0x6f6c6f63, 0x00000072, 0x00060005, 0x0000000d,
+    0x65646976, 0x65745f6f, 0x72757478, 0x00000065, 0x00040005, 0x00000011, 0x76755f76, 0x00000000,
+    0x00040047, 0x00000009, 0x0000001e, 0x00000000, 0x00040047, 0x0000000d, 0x00000021, 0x00000000,
+    0x00040047, 0x0000000d, 0x00000022, 0x00000000, 0x00040047, 0x00000011, 0x0000001e, 0x00000000,
+    0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020,
+    0x00040017, 0x00000007, 0x00000006, 0x00000004, 0x00040020, 0x00000008, 0x00000003, 0x00000007,
+    0x0004003b, 0x00000008, 0x00000009, 0x00000003, 0x00090019, 0x0000000a, 0x00000006, 0x00000001,
+    0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x0003001b, 0x0000000b, 0x0000000a,
+    0x00040020, 0x0000000c, 0x00000000, 0x0000000b, 0x0004003b, 0x0000000c, 0x0000000d, 0x00000000,
+    0x00040017, 0x0000000f, 0x00000006, 0x00000002, 0x00040020, 0x00000010, 0x00000001, 0x0000000f,
+    0x0004003b, 0x00000010, 0x00000011, 0x00000001, 0x00050036, 0x00000002, 0x00000004, 0x00000000,
+    0x00000003, 0x000200f8, 0x00000005, 0x0004003d, 0x0000000b, 0x0000000e, 0x0000000d, 0x0004003d,
+    0x0000000f, 0x00000012, 0x00000011, 0x00050057, 0x00000007, 0x00000013, 0x0000000e, 0x00000012,
+    0x0003003e, 0x00000009, 0x00000013, 0x000100fd, 0x00010038
+};
+#endif
+
 struct OpenGLContext::Impl {
     EGLDisplay display { EGL_NO_DISPLAY };
     EGLConfig config { EGL_NO_CONFIG_KHR };
@@ -1456,6 +1514,331 @@ OpenGLContext::VulkanVideoReplayBufferProbeResult OpenGLContext::probe_vulkan_vi
         .supported = true,
         .reason = "ok"sv,
         .total_bytes = total_bytes,
+    };
+}
+
+static ErrorOr<VkShaderModule> create_mundo_vulkan_video_shader_module(Gfx::VulkanContext const& context, ReadonlySpan<u32 const> spirv)
+{
+    VkShaderModuleCreateInfo create_info {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .codeSize = spirv.size() * sizeof(u32),
+        .pCode = spirv.data(),
+    };
+    VkShaderModule shader_module { VK_NULL_HANDLE };
+    auto result = vkCreateShaderModule(context.logical_device, &create_info, nullptr, &shader_module);
+    if (result != VK_SUCCESS)
+        return Error::from_string_literal("failed to create Vulkan video mesh shader module");
+    return shader_module;
+}
+
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkSampler immutable_sampler, size_t log_count)
+{
+    struct MeshPipelineResources {
+        VkDevice device { VK_NULL_HANDLE };
+        VkFormat destination_format { VK_FORMAT_UNDEFINED };
+        VkSampler immutable_sampler { VK_NULL_HANDLE };
+        VkShaderModule vertex_shader { VK_NULL_HANDLE };
+        VkShaderModule fragment_shader { VK_NULL_HANDLE };
+        VkRenderPass render_pass { VK_NULL_HANDLE };
+        VkDescriptorSetLayout descriptor_set_layout { VK_NULL_HANDLE };
+        VkPipelineLayout pipeline_layout { VK_NULL_HANDLE };
+        VkPipeline pipeline { VK_NULL_HANDLE };
+    };
+    static MeshPipelineResources s_resources;
+    static size_t s_probe_count { 0 };
+    auto probe_count = ++s_probe_count;
+    auto should_log = probe_count <= 8 || probe_count % 120 == 0;
+
+    auto log_failure = [&](StringView reason, VkResult result = VK_SUCCESS) {
+        if (should_log) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=failed reason={} vk_result={} destination_format={} sampler={} next_step=fix_vulkan_mesh_pipeline_before_draw",
+                log_count,
+                probe_count,
+                frame_id,
+                reason,
+                to_underlying(result),
+                destination_format,
+                reinterpret_cast<uintptr_t>(immutable_sampler));
+        }
+        return VulkanVideoMeshPipelineProbeResult {
+            .attempted = true,
+            .supported = false,
+            .reason = reason,
+        };
+    };
+
+    if (immutable_sampler == VK_NULL_HANDLE)
+        return log_failure("missing_ycbcr_sampler"sv);
+
+    auto const& context = m_skia_backend_context->vulkan_context();
+    auto format = static_cast<VkFormat>(destination_format);
+    if (s_resources.pipeline != VK_NULL_HANDLE) {
+        auto matches = s_resources.device == context.logical_device
+            && s_resources.destination_format == format
+            && s_resources.immutable_sampler == immutable_sampler;
+        if (!matches)
+            return log_failure("multiple_mesh_pipeline_configurations_not_supported_yet"sv);
+        if (should_log) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=hit destination_format={} sampler={} pipeline={} next_step=bind_replay_buffers_and_execute_vulkan_mesh_draw",
+                log_count,
+                probe_count,
+                frame_id,
+                destination_format,
+                reinterpret_cast<uintptr_t>(immutable_sampler),
+                reinterpret_cast<uintptr_t>(s_resources.pipeline));
+        }
+        return VulkanVideoMeshPipelineProbeResult {
+            .attempted = true,
+            .supported = true,
+            .reason = "ok"sv,
+        };
+    }
+
+    auto vertex_shader_or_error = create_mundo_vulkan_video_shader_module(context, s_mundo_video_nv12_mesh_vertex_shader_spirv);
+    if (vertex_shader_or_error.is_error())
+        return log_failure(vertex_shader_or_error.error().string_literal());
+    s_resources.vertex_shader = vertex_shader_or_error.release_value();
+
+    auto fragment_shader_or_error = create_mundo_vulkan_video_shader_module(context, s_mundo_video_nv12_mesh_fragment_shader_spirv);
+    if (fragment_shader_or_error.is_error())
+        return log_failure(fragment_shader_or_error.error().string_literal());
+    s_resources.fragment_shader = fragment_shader_or_error.release_value();
+
+    VkAttachmentDescription color_attachment {
+        .flags = 0,
+        .format = format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    VkAttachmentReference color_attachment_ref {
+        .attachment = 0,
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    VkSubpassDescription subpass {
+        .flags = 0,
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .inputAttachmentCount = 0,
+        .pInputAttachments = nullptr,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_attachment_ref,
+        .pResolveAttachments = nullptr,
+        .pDepthStencilAttachment = nullptr,
+        .preserveAttachmentCount = 0,
+        .pPreserveAttachments = nullptr,
+    };
+    VkRenderPassCreateInfo render_pass_info {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .attachmentCount = 1,
+        .pAttachments = &color_attachment,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 0,
+        .pDependencies = nullptr,
+    };
+    auto result = vkCreateRenderPass(context.logical_device, &render_pass_info, nullptr, &s_resources.render_pass);
+    if (result != VK_SUCCESS)
+        return log_failure("create_render_pass_failed"sv, result);
+
+    VkDescriptorSetLayoutBinding sampler_binding {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .pImmutableSamplers = &immutable_sampler,
+    };
+    VkDescriptorSetLayoutCreateInfo descriptor_set_layout_info {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .bindingCount = 1,
+        .pBindings = &sampler_binding,
+    };
+    result = vkCreateDescriptorSetLayout(context.logical_device, &descriptor_set_layout_info, nullptr, &s_resources.descriptor_set_layout);
+    if (result != VK_SUCCESS)
+        return log_failure("create_descriptor_set_layout_failed"sv, result);
+
+    VkPipelineLayoutCreateInfo pipeline_layout_info {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .setLayoutCount = 1,
+        .pSetLayouts = &s_resources.descriptor_set_layout,
+        .pushConstantRangeCount = 0,
+        .pPushConstantRanges = nullptr,
+    };
+    result = vkCreatePipelineLayout(context.logical_device, &pipeline_layout_info, nullptr, &s_resources.pipeline_layout);
+    if (result != VK_SUCCESS)
+        return log_failure("create_pipeline_layout_failed"sv, result);
+
+    VkPipelineShaderStageCreateInfo shader_stages[] {
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .module = s_resources.vertex_shader,
+            .pName = "main",
+            .pSpecializationInfo = nullptr,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = s_resources.fragment_shader,
+            .pName = "main",
+            .pSpecializationInfo = nullptr,
+        },
+    };
+    VkVertexInputBindingDescription vertex_bindings[] {
+        { .binding = 0, .stride = sizeof(float) * 3, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+        { .binding = 1, .stride = sizeof(float) * 2, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+    };
+    VkVertexInputAttributeDescription vertex_attributes[] {
+        { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 },
+        { .location = 1, .binding = 1, .format = VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
+    };
+    VkPipelineVertexInputStateCreateInfo vertex_input_info {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .vertexBindingDescriptionCount = 2,
+        .pVertexBindingDescriptions = vertex_bindings,
+        .vertexAttributeDescriptionCount = 2,
+        .pVertexAttributeDescriptions = vertex_attributes,
+    };
+    VkPipelineInputAssemblyStateCreateInfo input_assembly {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE,
+    };
+    VkViewport viewport {
+        .x = 0,
+        .y = 0,
+        .width = 1.0f,
+        .height = 1.0f,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+    VkRect2D scissor {
+        .offset = { 0, 0 },
+        .extent = { 1, 1 },
+    };
+    VkPipelineViewportStateCreateInfo viewport_state {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .viewportCount = 1,
+        .pViewports = &viewport,
+        .scissorCount = 1,
+        .pScissors = &scissor,
+    };
+    VkPipelineRasterizationStateCreateInfo rasterizer {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .depthBiasEnable = VK_FALSE,
+        .depthBiasConstantFactor = 0.0f,
+        .depthBiasClamp = 0.0f,
+        .depthBiasSlopeFactor = 0.0f,
+        .lineWidth = 1.0f,
+    };
+    VkPipelineMultisampleStateCreateInfo multisampling {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+        .sampleShadingEnable = VK_FALSE,
+        .minSampleShading = 1.0f,
+        .pSampleMask = nullptr,
+        .alphaToCoverageEnable = VK_FALSE,
+        .alphaToOneEnable = VK_FALSE,
+    };
+    VkPipelineColorBlendAttachmentState color_blend_attachment {
+        .blendEnable = VK_FALSE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    VkPipelineColorBlendStateCreateInfo color_blending {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .logicOpEnable = VK_FALSE,
+        .logicOp = VK_LOGIC_OP_COPY,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment,
+        .blendConstants = { 0, 0, 0, 0 },
+    };
+    VkDynamicState dynamic_states[] { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic_state {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .dynamicStateCount = 2,
+        .pDynamicStates = dynamic_states,
+    };
+    VkGraphicsPipelineCreateInfo pipeline_info {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .stageCount = 2,
+        .pStages = shader_stages,
+        .pVertexInputState = &vertex_input_info,
+        .pInputAssemblyState = &input_assembly,
+        .pTessellationState = nullptr,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &rasterizer,
+        .pMultisampleState = &multisampling,
+        .pDepthStencilState = nullptr,
+        .pColorBlendState = &color_blending,
+        .pDynamicState = &dynamic_state,
+        .layout = s_resources.pipeline_layout,
+        .renderPass = s_resources.render_pass,
+        .subpass = 0,
+        .basePipelineHandle = VK_NULL_HANDLE,
+        .basePipelineIndex = -1,
+    };
+    result = vkCreateGraphicsPipelines(context.logical_device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &s_resources.pipeline);
+    if (result != VK_SUCCESS)
+        return log_failure("create_graphics_pipeline_failed"sv, result);
+
+    s_resources.device = context.logical_device;
+    s_resources.destination_format = format;
+    s_resources.immutable_sampler = immutable_sampler;
+    if (should_log) {
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=filled destination_format={} sampler={} pipeline={} vertex_bindings=2 vertex_attributes=2 next_step=bind_replay_buffers_and_execute_vulkan_mesh_draw",
+            log_count,
+            probe_count,
+            frame_id,
+            destination_format,
+            reinterpret_cast<uintptr_t>(immutable_sampler),
+            reinterpret_cast<uintptr_t>(s_resources.pipeline));
+    }
+    return VulkanVideoMeshPipelineProbeResult {
+        .attempted = true,
+        .supported = true,
+        .reason = "ok"sv,
     };
 }
 

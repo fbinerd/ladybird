@@ -111,6 +111,11 @@ public:
         StringView reason { "not_attempted"sv };
         u64 total_bytes { 0 };
     };
+    struct VulkanVideoMeshPipelineProbeResult {
+        bool attempted { false };
+        bool supported { false };
+        StringView reason { "not_attempted"sv };
+    };
 
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture> create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count);
@@ -124,6 +129,7 @@ public:
     ErrorOr<NonnullOwnPtr<Gfx::ImportedVulkanNV12Image>> import_retained_vulkan_video_source_for_virtual_draw(int source_opaque_fd, u32 source_handle_type, u64 source_allocation_size, u32 width, u32 height, u32 source_format, u32 source_layout);
     RetainedVulkanVideoSourceProbeResult probe_retained_vulkan_video_source_for_virtual_draw(int source_opaque_fd, u32 source_handle_type, u64 source_allocation_size, u32 width, u32 height, u32 source_format, u32 source_layout, u64 frame_id, size_t log_count);
     VulkanVideoReplayBufferProbeResult probe_vulkan_video_replay_buffers(ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes uv_right_data, ReadonlyBytes index_data, u64 frame_id, size_t log_count);
+    VulkanVideoMeshPipelineProbeResult probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkSampler immutable_sampler, size_t log_count);
     void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif
 

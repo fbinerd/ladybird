@@ -726,9 +726,12 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
 
         auto simple_video_mesh_replay_possible = has_position_attrib && has_uv_attrib && all_enabled_attrib_buffers_shadowed && element_shadow_complete && cached_source && cached_source->direct_sample_ready;
         Optional<OpenGLContext::VulkanVideoReplayBufferProbeResult> replay_buffer_probe;
+        Optional<OpenGLContext::VulkanVideoMeshPipelineProbeResult> mesh_pipeline_probe;
         if (simple_video_mesh_replay_possible)
             replay_buffer_probe = opengl_context.probe_vulkan_video_replay_buffers(position_data, uv_data, uv_right_data, element_data, backing.frame_id, draw_log_count);
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_STRATEGY count={} frame_id={} program={} simple_video_mesh_replay_possible={} has_position={} has_uv={} has_uv_right={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} element_shadow_complete={} source_direct_sample_ready={} selected={} reason={} next_step={}",
+        if (simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && cached_source)
+            mesh_pipeline_probe = opengl_context.probe_vulkan_video_mesh_pipeline(backing.frame_id, VK_FORMAT_R8G8B8A8_UNORM, cached_source->ycbcr_sampler, draw_log_count);
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_STRATEGY count={} frame_id={} program={} simple_video_mesh_replay_possible={} has_position={} has_uv={} has_uv_right={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} element_shadow_complete={} source_direct_sample_ready={} replay_buffers_ready={} mesh_pipeline_ready={} selected={} reason={} next_step={}",
             draw_log_count,
             backing.frame_id,
             program_handle,
@@ -741,11 +744,14 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
             all_enabled_attrib_buffers_shadowed,
             element_shadow_complete,
             cached_source ? cached_source->direct_sample_ready : false,
+            replay_buffer_probe.has_value() && replay_buffer_probe->supported,
+            mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported,
             simple_video_mesh_replay_possible ? "fixed_vulkan_video_mesh_shader" : "full_webgl_shader_replay_or_interop",
             !simple_video_mesh_replay_possible ? "missing_simple_mesh_prerequisite"sv
-                : replay_buffer_probe.has_value() && replay_buffer_probe->supported ? "position_uv_mesh_with_vulkan_buffers"sv
-                : "vulkan_replay_buffer_probe_failed"sv,
-            simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported ? "persist_replay_buffers_and_build_vulkan_pipeline" : "capture_more_shader_or_buffer_state");
+                : !(replay_buffer_probe.has_value() && replay_buffer_probe->supported) ? "vulkan_replay_buffer_probe_failed"sv
+                : mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported ? "position_uv_mesh_with_vulkan_buffers_and_pipeline"sv
+                : "vulkan_mesh_pipeline_probe_failed"sv,
+            simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported ? "bind_replay_buffers_and_execute_vulkan_mesh_draw" : "capture_more_shader_or_buffer_state");
     }
 
     if (attached_shader_count > 0) {
