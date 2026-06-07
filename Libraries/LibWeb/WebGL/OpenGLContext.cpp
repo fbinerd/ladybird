@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/HashFunctions.h>
 #include <AK/HashMap.h>
 #include <AK/OwnPtr.h>
 #include <AK/ScopeGuard.h>
@@ -81,6 +82,31 @@ struct OpenGLContext::Impl {
     Optional<ImportedVideoOpaqueFDTexture> cached_video_uv_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_target_texture;
+    struct CachedVulkanVideoReplayBuffers {
+        unsigned signature { 0 };
+        size_t position_bytes { 0 };
+        size_t uv_bytes { 0 };
+        size_t uv_right_bytes { 0 };
+        size_t index_bytes { 0 };
+        NonnullOwnPtr<Gfx::VulkanBuffer> position_buffer;
+        NonnullOwnPtr<Gfx::VulkanBuffer> uv_buffer;
+        OwnPtr<Gfx::VulkanBuffer> uv_right_buffer;
+        NonnullOwnPtr<Gfx::VulkanBuffer> index_buffer;
+
+        CachedVulkanVideoReplayBuffers(unsigned signature, size_t position_bytes, size_t uv_bytes, size_t uv_right_bytes, size_t index_bytes, NonnullOwnPtr<Gfx::VulkanBuffer> position_buffer, NonnullOwnPtr<Gfx::VulkanBuffer> uv_buffer, OwnPtr<Gfx::VulkanBuffer> uv_right_buffer, NonnullOwnPtr<Gfx::VulkanBuffer> index_buffer)
+            : signature(signature)
+            , position_bytes(position_bytes)
+            , uv_bytes(uv_bytes)
+            , uv_right_bytes(uv_right_bytes)
+            , index_bytes(index_bytes)
+            , position_buffer(move(position_buffer))
+            , uv_buffer(move(uv_buffer))
+            , uv_right_buffer(move(uv_right_buffer))
+            , index_buffer(move(index_buffer))
+        {
+        }
+    };
+    OwnPtr<CachedVulkanVideoReplayBuffers> cached_vulkan_video_replay_buffers;
     struct {
         PFNEGLQUERYDMABUFFORMATSEXTPROC query_dma_buf_formats { nullptr };
         PFNEGLQUERYDMABUFMODIFIERSEXTPROC query_dma_buf_modifiers { nullptr };
@@ -90,7 +116,7 @@ struct OpenGLContext::Impl {
 
 OpenGLContext::OpenGLContext(NonnullRefPtr<Gfx::SkiaBackendContext> skia_backend_context, Impl impl, WebGLVersion webgl_version, DrawingBufferOptions drawing_buffer_options)
     : m_skia_backend_context(move(skia_backend_context))
-    , m_impl(make<Impl>(impl))
+    , m_impl(make<Impl>(move(impl)))
     , m_webgl_version(webgl_version)
     , m_drawing_buffer_options(drawing_buffer_options)
 {
@@ -138,6 +164,7 @@ void OpenGLContext::free_surface_resources()
     if (m_impl->cached_video_rgba_target_texture.has_value())
         delete_imported_video_opaque_fd_texture(m_impl->cached_video_rgba_target_texture.value());
     m_impl->cached_video_rgba_target_texture.clear();
+    m_impl->cached_vulkan_video_replay_buffers = nullptr;
 
     if (m_impl->egl_image != EGL_NO_IMAGE) {
         eglDestroyImage(m_impl->display, m_impl->egl_image);
@@ -268,6 +295,7 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
                                                          .cached_video_uv_texture = {},
                                                          .cached_video_rgba_texture = {},
                                                          .cached_video_rgba_target_texture = {},
+                                                         .cached_vulkan_video_replay_buffers = {},
                                                          .ext_procs = {
                                                              .query_dma_buf_formats = pfn_egl_query_dma_buf_formats_ext,
                                                              .query_dma_buf_modifiers = pfn_egl_query_dma_buf_modifiers_ext,
@@ -1298,14 +1326,20 @@ OpenGLContext::VulkanVideoReplayBufferProbeResult OpenGLContext::probe_vulkan_vi
     auto probe_count = ++s_probe_count;
     auto should_log = probe_count <= 8 || probe_count % 120 == 0;
     auto total_bytes = position_data.size() + uv_data.size() + uv_right_data.size() + index_data.size();
+    auto signature = pair_int_hash(
+        pair_int_hash(Traits<ReadonlyBytes>::hash(position_data), Traits<ReadonlyBytes>::hash(uv_data)),
+        pair_int_hash(Traits<ReadonlyBytes>::hash(uv_right_data), Traits<ReadonlyBytes>::hash(index_data)));
+    signature = pair_int_hash(signature, pair_int_hash(u32_hash(position_data.size()), u32_hash(uv_data.size())));
+    signature = pair_int_hash(signature, pair_int_hash(u32_hash(uv_right_data.size()), u32_hash(index_data.size())));
 
     auto log_failure = [&](StringView reason) {
         if (should_log) {
-            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_REPLAY_BUFFER_PROBE draw_count={} probe_count={} frame_id={} status=failed reason={} position_bytes={} uv_bytes={} uv_right_bytes={} index_bytes={} total_bytes={} next_step=fix_shadowed_buffers_before_vulkan_replay",
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_REPLAY_BUFFER_PROBE draw_count={} probe_count={} frame_id={} status=failed cache_status=miss reason={} signature={} position_bytes={} uv_bytes={} uv_right_bytes={} index_bytes={} total_bytes={} next_step=fix_shadowed_buffers_before_vulkan_replay",
                 log_count,
                 probe_count,
                 frame_id,
                 reason,
+                signature,
                 position_data.size(),
                 uv_data.size(),
                 uv_right_data.size(),
@@ -1326,6 +1360,43 @@ OpenGLContext::VulkanVideoReplayBufferProbeResult OpenGLContext::probe_vulkan_vi
         return log_failure("missing_uv_data"sv);
     if (index_data.is_empty())
         return log_failure("missing_index_data"sv);
+
+    auto cache_matches = [&] {
+        if (!m_impl->cached_vulkan_video_replay_buffers)
+            return false;
+        auto const& cached = *m_impl->cached_vulkan_video_replay_buffers;
+        return cached.signature == signature
+            && cached.position_bytes == position_data.size()
+            && cached.uv_bytes == uv_data.size()
+            && cached.uv_right_bytes == uv_right_data.size()
+            && cached.index_bytes == index_data.size();
+    };
+
+    if (cache_matches()) {
+        if (should_log) {
+            auto const& cached = *m_impl->cached_vulkan_video_replay_buffers;
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_REPLAY_BUFFER_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=hit signature={} position_buffer={} uv_buffer={} uv_right_buffer={} index_buffer={} position_bytes={} uv_bytes={} uv_right_bytes={} index_bytes={} total_bytes={} next_step=build_or_reuse_vulkan_video_mesh_pipeline",
+                log_count,
+                probe_count,
+                frame_id,
+                signature,
+                reinterpret_cast<uintptr_t>(cached.position_buffer->buffer),
+                reinterpret_cast<uintptr_t>(cached.uv_buffer->buffer),
+                cached.uv_right_buffer ? reinterpret_cast<uintptr_t>(cached.uv_right_buffer->buffer) : 0,
+                reinterpret_cast<uintptr_t>(cached.index_buffer->buffer),
+                position_data.size(),
+                uv_data.size(),
+                uv_right_data.size(),
+                index_data.size(),
+                total_bytes);
+        }
+        return VulkanVideoReplayBufferProbeResult {
+            .attempted = true,
+            .supported = true,
+            .reason = "ok"sv,
+            .total_bytes = total_bytes,
+        };
+    }
 
     auto const& vulkan_context = m_skia_backend_context->vulkan_context();
     auto position_buffer_or_error = Gfx::create_host_visible_vulkan_buffer_from_bytes(vulkan_context, position_data, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -1351,15 +1422,28 @@ OpenGLContext::VulkanVideoReplayBufferProbeResult OpenGLContext::probe_vulkan_vi
         return log_failure(index_buffer_or_error.error().string_literal());
     auto index_buffer = index_buffer_or_error.release_value();
 
+    m_impl->cached_vulkan_video_replay_buffers = make<Impl::CachedVulkanVideoReplayBuffers>(
+        signature,
+        position_data.size(),
+        uv_data.size(),
+        uv_right_data.size(),
+        index_data.size(),
+        move(position_buffer),
+        move(uv_buffer),
+        move(uv_right_buffer),
+        move(index_buffer));
+
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_REPLAY_BUFFER_PROBE draw_count={} probe_count={} frame_id={} status=ok position_buffer={} uv_buffer={} uv_right_buffer={} index_buffer={} position_bytes={} uv_bytes={} uv_right_bytes={} index_bytes={} total_bytes={} next_step=persist_replay_buffers_and_build_vulkan_pipeline",
+        auto const& cached = *m_impl->cached_vulkan_video_replay_buffers;
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_REPLAY_BUFFER_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=filled signature={} position_buffer={} uv_buffer={} uv_right_buffer={} index_buffer={} position_bytes={} uv_bytes={} uv_right_bytes={} index_bytes={} total_bytes={} next_step=build_or_reuse_vulkan_video_mesh_pipeline",
             log_count,
             probe_count,
             frame_id,
-            reinterpret_cast<uintptr_t>(position_buffer->buffer),
-            reinterpret_cast<uintptr_t>(uv_buffer->buffer),
-            uv_right_buffer ? reinterpret_cast<uintptr_t>(uv_right_buffer->buffer) : 0,
-            reinterpret_cast<uintptr_t>(index_buffer->buffer),
+            signature,
+            reinterpret_cast<uintptr_t>(cached.position_buffer->buffer),
+            reinterpret_cast<uintptr_t>(cached.uv_buffer->buffer),
+            cached.uv_right_buffer ? reinterpret_cast<uintptr_t>(cached.uv_right_buffer->buffer) : 0,
+            reinterpret_cast<uintptr_t>(cached.index_buffer->buffer),
             position_data.size(),
             uv_data.size(),
             uv_right_data.size(),
