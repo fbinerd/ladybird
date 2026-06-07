@@ -2987,8 +2987,30 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
 #    if defined(AK_OS_MACOS)
     eglWaitUntilWorkScheduledANGLE(m_impl->display);
 #    elif defined(USE_VULKAN_DMABUF_IMAGES)
-    // FIXME: CPU sync for now, but it would be better to export a fence and have Skia wait for it before reading from the surface
-    glFinish();
+    // FIXME: CPU sync for now, but it would be better to export a fence and have Skia wait for it before reading from the surface.
+    // MUNDO_WEBGL_PRESENT_SYNC_MODE lets the direct-video path validate lighter present synchronization without changing the default.
+    auto present_sync_mode = "finish"sv;
+    if (auto const* present_sync_mode_value = getenv("MUNDO_WEBGL_PRESENT_SYNC_MODE")) {
+        auto value = StringView { present_sync_mode_value, strlen(present_sync_mode_value) };
+        if (value == "flush"sv)
+            present_sync_mode = "flush"sv;
+        else if (value == "none"sv)
+            present_sync_mode = "none"sv;
+        else if (value == "finish"sv)
+            present_sync_mode = "finish"sv;
+    }
+
+    auto present_sync_started_at = MonotonicTime::now();
+    if (present_sync_mode == "flush"sv)
+        glFlush();
+    else if (present_sync_mode == "finish"sv)
+        glFinish();
+    auto present_sync_us = (MonotonicTime::now() - present_sync_started_at).to_microseconds();
+
+    static size_t s_present_sync_log_count = 0;
+    ++s_present_sync_log_count;
+    if (s_present_sync_log_count <= 8 || s_present_sync_log_count % 120 == 0)
+        dbgln("MUNDO_WEBGL_PRESENT_SYNC count={} mode={} sync_us={} preserve_drawing_buffer={} next_step={}", s_present_sync_log_count, present_sync_mode, present_sync_us, preserve_drawing_buffer, present_sync_mode == "finish"sv ? "test_flush_or_export_fence_for_gpu_only_present"sv : "verify_webgl_present_visual_integrity"sv);
 #    endif
 
     // "By default, after compositing the contents of the drawing buffer shall be cleared to their default values, as shown in the table above.
