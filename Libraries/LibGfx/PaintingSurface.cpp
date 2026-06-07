@@ -26,10 +26,21 @@
 namespace Gfx {
 
 struct PaintingSurface::Impl {
+    Impl(RefPtr<SkiaBackendContext> context, IntSize size, sk_sp<SkSurface> surface, RefPtr<Bitmap> bitmap)
+        : context(move(context))
+        , size(size)
+        , surface(move(surface))
+        , bitmap(move(bitmap))
+    {
+    }
+
     RefPtr<SkiaBackendContext> context;
     IntSize size;
     sk_sp<SkSurface> surface;
     RefPtr<Bitmap> bitmap;
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    RefPtr<VulkanImage> vulkan_image;
+#endif
 };
 
 #if defined(AK_OS_MACOS) || defined(USE_VULKAN_DMABUF_IMAGES)
@@ -92,7 +103,14 @@ NonnullRefPtr<PaintingSurface> PaintingSurface::create_from_vkimage(NonnullRefPt
     vulkan_image->ref();
     sk_sp<SkSurface> surface = SkSurfaces::WrapBackendRenderTarget(context->sk_context(), rt, origin_to_sk_origin(origin), vk_format_to_sk_color_type(vulkan_image->info.format),
         SkColorSpace::MakeSRGB(), nullptr, release_vulkan_image, vulkan_image.ptr());
-    return adopt_ref(*new PaintingSurface(make<Impl>(context, size, surface, nullptr)));
+    auto painting_surface = adopt_ref(*new PaintingSurface(make<Impl>(context, size, surface, nullptr)));
+    painting_surface->m_impl->vulkan_image = move(vulkan_image);
+    return painting_surface;
+}
+
+RefPtr<VulkanImage> PaintingSurface::vulkan_image() const
+{
+    return m_impl->vulkan_image;
 }
 #endif
 

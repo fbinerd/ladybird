@@ -1918,6 +1918,16 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     };
 }
 
+Optional<u32> OpenGLContext::vulkan_painting_surface_format() const
+{
+    if (!m_painting_surface)
+        return {};
+    auto vulkan_image = m_painting_surface->vulkan_image();
+    if (!vulkan_image)
+        return {};
+    return to_underlying(vulkan_image->info.format);
+}
+
 ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count)
 {
     auto log_failure = [&](StringView reason, u32 gl_error = 0) {

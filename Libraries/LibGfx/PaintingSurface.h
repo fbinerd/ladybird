@@ -49,6 +49,7 @@ public:
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
     static NonnullRefPtr<PaintingSurface> create_from_vkimage(NonnullRefPtr<SkiaBackendContext> context, NonnullRefPtr<VulkanImage> vulkan_image, Origin origin);
+    RefPtr<VulkanImage> vulkan_image() const;
 #endif
 
     void read_into_bitmap(Bitmap&);

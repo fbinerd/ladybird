@@ -729,9 +729,10 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
         Optional<OpenGLContext::VulkanVideoMeshPipelineProbeResult> mesh_pipeline_probe;
         if (simple_video_mesh_replay_possible)
             replay_buffer_probe = opengl_context.probe_vulkan_video_replay_buffers(position_data, uv_data, uv_right_data, element_data, backing.frame_id, draw_log_count);
-        if (simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && cached_source)
-            mesh_pipeline_probe = opengl_context.probe_vulkan_video_mesh_pipeline(backing.frame_id, VK_FORMAT_R8G8B8A8_UNORM, cached_source->ycbcr_image_view, cached_source->ycbcr_sampler, draw_log_count);
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_STRATEGY count={} frame_id={} program={} simple_video_mesh_replay_possible={} has_position={} has_uv={} has_uv_right={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} element_shadow_complete={} source_direct_sample_ready={} replay_buffers_ready={} mesh_pipeline_ready={} selected={} reason={} next_step={}",
+        auto destination_format = opengl_context.vulkan_painting_surface_format();
+        if (simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && cached_source && destination_format.has_value())
+            mesh_pipeline_probe = opengl_context.probe_vulkan_video_mesh_pipeline(backing.frame_id, destination_format.value(), cached_source->ycbcr_image_view, cached_source->ycbcr_sampler, draw_log_count);
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_STRATEGY count={} frame_id={} program={} simple_video_mesh_replay_possible={} has_position={} has_uv={} has_uv_right={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} element_shadow_complete={} source_direct_sample_ready={} replay_buffers_ready={} mesh_pipeline_ready={} destination_format={} selected={} reason={} next_step={}",
             draw_log_count,
             backing.frame_id,
             program_handle,
@@ -746,9 +747,11 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
             cached_source ? cached_source->direct_sample_ready : false,
             replay_buffer_probe.has_value() && replay_buffer_probe->supported,
             mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported,
+            destination_format.value_or(0),
             simple_video_mesh_replay_possible ? "fixed_vulkan_video_mesh_shader" : "full_webgl_shader_replay_or_interop",
             !simple_video_mesh_replay_possible ? "missing_simple_mesh_prerequisite"sv
                 : !(replay_buffer_probe.has_value() && replay_buffer_probe->supported) ? "vulkan_replay_buffer_probe_failed"sv
+                : !destination_format.has_value() ? "missing_vulkan_painting_surface_format"sv
                 : mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported ? "position_uv_mesh_with_vulkan_buffers_and_pipeline"sv
                 : "vulkan_mesh_pipeline_probe_failed"sv,
             simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported ? "bind_replay_buffers_and_execute_vulkan_mesh_draw" : "capture_more_shader_or_buffer_state");

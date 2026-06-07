@@ -130,6 +130,7 @@ public:
     RetainedVulkanVideoSourceProbeResult probe_retained_vulkan_video_source_for_virtual_draw(int source_opaque_fd, u32 source_handle_type, u64 source_allocation_size, u32 width, u32 height, u32 source_format, u32 source_layout, u64 frame_id, size_t log_count);
     VulkanVideoReplayBufferProbeResult probe_vulkan_video_replay_buffers(ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes uv_right_data, ReadonlyBytes index_data, u64 frame_id, size_t log_count);
     VulkanVideoMeshPipelineProbeResult probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImageView source_image_view, VkSampler immutable_sampler, size_t log_count);
+    Optional<u32> vulkan_painting_surface_format() const;
     void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif
 
