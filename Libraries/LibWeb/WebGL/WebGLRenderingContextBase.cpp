@@ -1594,7 +1594,8 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     gl_external_import_probe.uv_plane_gl_error,
                     direct_sampling_route);
             }
-            if (mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD_FOR_REPLACE")
+            if ((mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH")
+                    || mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD_FOR_REPLACE"))
                 && !strcmp(direct_sampling_route, "vulkan_direct_sampling_virtualization")) {
                 if (auto texture = current_bound_texture_for_target(target)) {
                     auto const& source_plane = external_memory.planes[0];

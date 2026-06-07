@@ -1741,10 +1741,11 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
         if (uses_video_sampler)
             virtual_source_cache_state = ensure_mundo_webgl_video_virtual_source_cached(*m_context, *m_texture_binding_2d, backing, "drawElements", log_count, program_handle, texture_handle, should_log_video_draw);
         if (uses_video_sampler && virtual_source_cache_state.has_value()) {
+            auto direct_vulkan_mesh_mode = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
             auto auto_sync_direct_zero_copy_replace = backing.direct_zero_copy
                 && !strcmp(backing.upload_mode, "vulkan_mesh_direct_nv12")
-                && mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL")
-                && mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD_FOR_REPLACE")
+                && (direct_vulkan_mesh_mode || mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL"))
+                && (direct_vulkan_mesh_mode || mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD_FOR_REPLACE"))
                 && !mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_DISABLE_AUTO_SYNC");
             auto explicit_sync = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SYNC_GL_BEFORE_DRAW");
             if (explicit_sync || auto_sync_direct_zero_copy_replace) {
@@ -1841,7 +1842,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
-    auto replace_gl_draw = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL");
+    auto direct_vulkan_mesh_mode = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
+    auto replace_gl_draw = direct_vulkan_mesh_mode || mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL");
     auto force_replace_gl_draw = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_FORCE_TARGET_MISMATCH");
     auto direct_zero_copy_replace_gl_draw = vulkan_video_draw_direct_zero_copy && vulkan_video_draw_used_sampler;
     auto can_replace_gl_draw = vulkan_video_draw_executed && replace_gl_draw && (force_replace_gl_draw || direct_zero_copy_replace_gl_draw);

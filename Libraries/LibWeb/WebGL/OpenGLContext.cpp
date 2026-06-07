@@ -1988,14 +1988,23 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         target_image->cached_video_framebuffer_height = target_image->info.extent.height;
     }
 
-    auto mesh_draw_enabled = [] {
+    auto direct_vulkan_mesh_mode = [] {
+        auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
+        return value && StringView { value, strlen(value) } == "1"sv;
+    }();
+    auto mesh_draw_enabled = [direct_vulkan_mesh_mode] {
+        if (direct_vulkan_mesh_mode)
+            return true;
         auto const* value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW");
         return value && StringView { value, strlen(value) } == "1"sv;
     }();
     auto draw_status = "disabled"sv;
     auto draw_reason = "set_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_1_to_execute"sv;
     bool mesh_draw_executed = false;
-    auto flip_mesh_viewport_y = [] {
+    auto flip_mesh_viewport_y = [direct_vulkan_mesh_mode] {
+        if (direct_vulkan_mesh_mode)
+            return true;
+
         auto const* value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_FLIP_Y");
         if (value && StringView { value, strlen(value) } == "1"sv)
             return true;
