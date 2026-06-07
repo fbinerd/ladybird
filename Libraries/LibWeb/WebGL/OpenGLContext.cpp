@@ -68,38 +68,66 @@ namespace Web::WebGL {
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
 static constexpr u32 s_mundo_video_nv12_mesh_vertex_shader_spirv[] {
-    0x07230203, 0x00010000, 0x0008000b, 0x00000021, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x07230203, 0x00010000, 0x0008000b, 0x0000003a, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
     0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
-    0x0009000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000d, 0x00000012, 0x0000001d,
-    0x0000001f, 0x00030003, 0x00000002, 0x000001c2, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000,
-    0x00060005, 0x0000000b, 0x505f6c67, 0x65567265, 0x78657472, 0x00000000, 0x00060006, 0x0000000b,
-    0x00000000, 0x505f6c67, 0x7469736f, 0x006e6f69, 0x00070006, 0x0000000b, 0x00000001, 0x505f6c67,
-    0x746e696f, 0x657a6953, 0x00000000, 0x00070006, 0x0000000b, 0x00000002, 0x435f6c67, 0x4470696c,
-    0x61747369, 0x0065636e, 0x00070006, 0x0000000b, 0x00000003, 0x435f6c67, 0x446c6c75, 0x61747369,
-    0x0065636e, 0x00030005, 0x0000000d, 0x00000000, 0x00050005, 0x00000012, 0x6f705f61, 0x69746973,
-    0x00006e6f, 0x00040005, 0x0000001d, 0x76755f76, 0x00000000, 0x00040005, 0x0000001f, 0x76755f61,
-    0x00000000, 0x00030047, 0x0000000b, 0x00000002, 0x00050048, 0x0000000b, 0x00000000, 0x0000000b,
-    0x00000000, 0x00050048, 0x0000000b, 0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x0000000b,
-    0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x0000000b, 0x00000003, 0x0000000b, 0x00000004,
-    0x00040047, 0x00000012, 0x0000001e, 0x00000000, 0x00040047, 0x0000001d, 0x0000001e, 0x00000000,
-    0x00040047, 0x0000001f, 0x0000001e, 0x00000001, 0x00020013, 0x00000002, 0x00030021, 0x00000003,
-    0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000004,
-    0x00040015, 0x00000008, 0x00000020, 0x00000000, 0x0004002b, 0x00000008, 0x00000009, 0x00000001,
-    0x0004001c, 0x0000000a, 0x00000006, 0x00000009, 0x0006001e, 0x0000000b, 0x00000007, 0x00000006,
-    0x0000000a, 0x0000000a, 0x00040020, 0x0000000c, 0x00000003, 0x0000000b, 0x0004003b, 0x0000000c,
-    0x0000000d, 0x00000003, 0x00040015, 0x0000000e, 0x00000020, 0x00000001, 0x0004002b, 0x0000000e,
-    0x0000000f, 0x00000000, 0x00040017, 0x00000010, 0x00000006, 0x00000003, 0x00040020, 0x00000011,
-    0x00000001, 0x00000010, 0x0004003b, 0x00000011, 0x00000012, 0x00000001, 0x0004002b, 0x00000006,
-    0x00000014, 0x3f800000, 0x00040020, 0x00000019, 0x00000003, 0x00000007, 0x00040017, 0x0000001b,
-    0x00000006, 0x00000002, 0x00040020, 0x0000001c, 0x00000003, 0x0000001b, 0x0004003b, 0x0000001c,
-    0x0000001d, 0x00000003, 0x00040020, 0x0000001e, 0x00000001, 0x0000001b, 0x0004003b, 0x0000001e,
-    0x0000001f, 0x00000001, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8,
-    0x00000005, 0x0004003d, 0x00000010, 0x00000013, 0x00000012, 0x00050051, 0x00000006, 0x00000015,
-    0x00000013, 0x00000000, 0x00050051, 0x00000006, 0x00000016, 0x00000013, 0x00000001, 0x00050051,
-    0x00000006, 0x00000017, 0x00000013, 0x00000002, 0x00070050, 0x00000007, 0x00000018, 0x00000015,
-    0x00000016, 0x00000017, 0x00000014, 0x00050041, 0x00000019, 0x0000001a, 0x0000000d, 0x0000000f,
-    0x0003003e, 0x0000001a, 0x00000018, 0x0004003d, 0x0000001b, 0x00000020, 0x0000001f, 0x0003003e,
-    0x0000001d, 0x00000020, 0x000100fd, 0x00010038
+    0x0009000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000c, 0x00000030, 0x00000036,
+    0x00000038, 0x00030003, 0x00000002, 0x000001c2, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000,
+    0x00050005, 0x00000009, 0x69736f70, 0x6e6f6974, 0x00000000, 0x00050005, 0x0000000c, 0x6f705f61,
+    0x69746973, 0x00006e6f, 0x00070005, 0x00000014, 0x65646956, 0x7375506f, 0x6e6f4368, 0x6e617473,
+    0x00007374, 0x00080006, 0x00000014, 0x00000000, 0x65646f6d, 0x69765f6c, 0x6d5f7765, 0x69727461,
+    0x00000078, 0x00080006, 0x00000014, 0x00000001, 0x6a6f7270, 0x69746365, 0x6d5f6e6f, 0x69727461,
+    0x00000078, 0x00070006, 0x00000014, 0x00000002, 0x5f657375, 0x7274616d, 0x73656369, 0x00000000,
+    0x00050006, 0x00000014, 0x00000003, 0x6361706f, 0x00797469, 0x00080006, 0x00000014, 0x00000004,
+    0x7074756f, 0x695f7475, 0x6e65746e, 0x79746973, 0x00000000, 0x00060006, 0x00000014, 0x00000005,
+    0x72657473, 0x655f6f65, 0x00006579, 0x00030005, 0x00000016, 0x00006370, 0x00060005, 0x0000002e,
+    0x505f6c67, 0x65567265, 0x78657472, 0x00000000, 0x00060006, 0x0000002e, 0x00000000, 0x505f6c67,
+    0x7469736f, 0x006e6f69, 0x00070006, 0x0000002e, 0x00000001, 0x505f6c67, 0x746e696f, 0x657a6953,
+    0x00000000, 0x00070006, 0x0000002e, 0x00000002, 0x435f6c67, 0x4470696c, 0x61747369, 0x0065636e,
+    0x00070006, 0x0000002e, 0x00000003, 0x435f6c67, 0x446c6c75, 0x61747369, 0x0065636e, 0x00030005,
+    0x00000030, 0x00000000, 0x00040005, 0x00000036, 0x76755f76, 0x00000000, 0x00040005, 0x00000038,
+    0x76755f61, 0x00000000, 0x00040047, 0x0000000c, 0x0000001e, 0x00000000, 0x00030047, 0x00000014,
+    0x00000002, 0x00040048, 0x00000014, 0x00000000, 0x00000005, 0x00050048, 0x00000014, 0x00000000,
+    0x00000007, 0x00000010, 0x00050048, 0x00000014, 0x00000000, 0x00000023, 0x00000000, 0x00040048,
+    0x00000014, 0x00000001, 0x00000005, 0x00050048, 0x00000014, 0x00000001, 0x00000007, 0x00000010,
+    0x00050048, 0x00000014, 0x00000001, 0x00000023, 0x00000040, 0x00050048, 0x00000014, 0x00000002,
+    0x00000023, 0x00000080, 0x00050048, 0x00000014, 0x00000003, 0x00000023, 0x00000084, 0x00050048,
+    0x00000014, 0x00000004, 0x00000023, 0x00000088, 0x00050048, 0x00000014, 0x00000005, 0x00000023,
+    0x0000008c, 0x00030047, 0x0000002e, 0x00000002, 0x00050048, 0x0000002e, 0x00000000, 0x0000000b,
+    0x00000000, 0x00050048, 0x0000002e, 0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x0000002e,
+    0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x0000002e, 0x00000003, 0x0000000b, 0x00000004,
+    0x00040047, 0x00000036, 0x0000001e, 0x00000000, 0x00040047, 0x00000038, 0x0000001e, 0x00000001,
+    0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020,
+    0x00040017, 0x00000007, 0x00000006, 0x00000004, 0x00040020, 0x00000008, 0x00000007, 0x00000007,
+    0x00040017, 0x0000000a, 0x00000006, 0x00000003, 0x00040020, 0x0000000b, 0x00000001, 0x0000000a,
+    0x0004003b, 0x0000000b, 0x0000000c, 0x00000001, 0x0004002b, 0x00000006, 0x0000000e, 0x3f800000,
+    0x00040018, 0x00000013, 0x00000007, 0x00000004, 0x0008001e, 0x00000014, 0x00000013, 0x00000013,
+    0x00000006, 0x00000006, 0x00000006, 0x00000006, 0x00040020, 0x00000015, 0x00000009, 0x00000014,
+    0x0004003b, 0x00000015, 0x00000016, 0x00000009, 0x00040015, 0x00000017, 0x00000020, 0x00000001,
+    0x0004002b, 0x00000017, 0x00000018, 0x00000002, 0x00040020, 0x00000019, 0x00000009, 0x00000006,
+    0x0004002b, 0x00000006, 0x0000001c, 0x3f000000, 0x00020014, 0x0000001d, 0x0004002b, 0x00000017,
+    0x00000021, 0x00000001, 0x00040020, 0x00000022, 0x00000009, 0x00000013, 0x0004002b, 0x00000017,
+    0x00000025, 0x00000000, 0x00040015, 0x0000002b, 0x00000020, 0x00000000, 0x0004002b, 0x0000002b,
+    0x0000002c, 0x00000001, 0x0004001c, 0x0000002d, 0x00000006, 0x0000002c, 0x0006001e, 0x0000002e,
+    0x00000007, 0x00000006, 0x0000002d, 0x0000002d, 0x00040020, 0x0000002f, 0x00000003, 0x0000002e,
+    0x0004003b, 0x0000002f, 0x00000030, 0x00000003, 0x00040020, 0x00000032, 0x00000003, 0x00000007,
+    0x00040017, 0x00000034, 0x00000006, 0x00000002, 0x00040020, 0x00000035, 0x00000003, 0x00000034,
+    0x0004003b, 0x00000035, 0x00000036, 0x00000003, 0x00040020, 0x00000037, 0x00000001, 0x00000034,
+    0x0004003b, 0x00000037, 0x00000038, 0x00000001, 0x00050036, 0x00000002, 0x00000004, 0x00000000,
+    0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x00000008, 0x00000009, 0x00000007, 0x0004003d,
+    0x0000000a, 0x0000000d, 0x0000000c, 0x00050051, 0x00000006, 0x0000000f, 0x0000000d, 0x00000000,
+    0x00050051, 0x00000006, 0x00000010, 0x0000000d, 0x00000001, 0x00050051, 0x00000006, 0x00000011,
+    0x0000000d, 0x00000002, 0x00070050, 0x00000007, 0x00000012, 0x0000000f, 0x00000010, 0x00000011,
+    0x0000000e, 0x0003003e, 0x00000009, 0x00000012, 0x00050041, 0x00000019, 0x0000001a, 0x00000016,
+    0x00000018, 0x0004003d, 0x00000006, 0x0000001b, 0x0000001a, 0x000500ba, 0x0000001d, 0x0000001e,
+    0x0000001b, 0x0000001c, 0x000300f7, 0x00000020, 0x00000000, 0x000400fa, 0x0000001e, 0x0000001f,
+    0x00000020, 0x000200f8, 0x0000001f, 0x00050041, 0x00000022, 0x00000023, 0x00000016, 0x00000021,
+    0x0004003d, 0x00000013, 0x00000024, 0x00000023, 0x00050041, 0x00000022, 0x00000026, 0x00000016,
+    0x00000025, 0x0004003d, 0x00000013, 0x00000027, 0x00000026, 0x00050092, 0x00000013, 0x00000028,
+    0x00000024, 0x00000027, 0x0004003d, 0x00000007, 0x00000029, 0x00000009, 0x00050091, 0x00000007,
+    0x0000002a, 0x00000028, 0x00000029, 0x0003003e, 0x00000009, 0x0000002a, 0x000200f9, 0x00000020,
+    0x000200f8, 0x00000020, 0x0004003d, 0x00000007, 0x00000031, 0x00000009, 0x00050041, 0x00000032,
+    0x00000033, 0x00000030, 0x00000025, 0x0003003e, 0x00000033, 0x00000031, 0x0004003d, 0x00000034,
+    0x00000039, 0x00000038, 0x0003003e, 0x00000036, 0x00000039, 0x000100fd, 0x00010038
 };
 
 static constexpr u32 s_mundo_video_nv12_mesh_fragment_shader_spirv[] {
@@ -1534,8 +1562,16 @@ static ErrorOr<VkShaderModule> create_mundo_vulkan_video_shader_module(Gfx::Vulk
     return shader_module;
 }
 
-OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImage source_image, VkImageView source_image_view, VkSampler immutable_sampler, u32 source_layout, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count)
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImage source_image, VkImageView source_image_view, VkSampler immutable_sampler, u32 source_layout, VulkanVideoMeshUniformSnapshot const& uniform_snapshot, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count)
 {
+    struct MeshPushConstants {
+        Array<float, 16> model_view_matrix {};
+        Array<float, 16> projection_matrix {};
+        float use_matrices { 0.0f };
+        float opacity { 1.0f };
+        float output_intensity { 1.0f };
+        float stereo_eye { 0.0f };
+    };
     struct MeshPipelineResources {
         VkDevice device { VK_NULL_HANDLE };
         VkFormat destination_format { VK_FORMAT_UNDEFINED };
@@ -1663,14 +1699,19 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     if (result != VK_SUCCESS)
         return log_failure("create_descriptor_set_layout_failed"sv, result);
 
+    VkPushConstantRange push_constant_range {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0,
+        .size = sizeof(MeshPushConstants),
+    };
     VkPipelineLayoutCreateInfo pipeline_layout_info {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
         .setLayoutCount = 1,
         .pSetLayouts = &s_resources.descriptor_set_layout,
-        .pushConstantRangeCount = 0,
-        .pPushConstantRanges = nullptr,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push_constant_range,
     };
     result = vkCreatePipelineLayout(context.logical_device, &pipeline_layout_info, nullptr, &s_resources.pipeline_layout);
     if (result != VK_SUCCESS)
@@ -2024,6 +2065,15 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         vkCmdSetScissor(context.command_buffer, 0, 1, &scissor);
         vkCmdBindPipeline(context.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline);
         vkCmdBindDescriptorSets(context.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline_layout, 0, 1, &s_resources.descriptor_set, 0, nullptr);
+        MeshPushConstants push_constants {
+            .model_view_matrix = uniform_snapshot.model_view_matrix,
+            .projection_matrix = uniform_snapshot.projection_matrix,
+            .use_matrices = uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix ? 1.0f : 0.0f,
+            .opacity = uniform_snapshot.opacity,
+            .output_intensity = uniform_snapshot.output_intensity,
+            .stereo_eye = uniform_snapshot.stereo_eye,
+        };
+        vkCmdPushConstants(context.command_buffer, s_resources.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
         VkBuffer vertex_buffers[] { replay_buffers.position_buffer->buffer, replay_buffers.uv_buffer->buffer };
         VkDeviceSize vertex_offsets[] { 0, 0 };
         vkCmdBindVertexBuffers(context.command_buffer, 0, 2, vertex_buffers, vertex_offsets);
@@ -2091,7 +2141,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     }
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} vertex_bindings=2 vertex_attributes=2 next_step={}",
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} vertex_bindings=2 vertex_attributes=2 matrix_push_constants={} next_step={}",
             log_count,
             probe_count,
             frame_id,
@@ -2115,6 +2165,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             viewport_height,
             viewport_x,
             viewport_y,
+            uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix,
             mesh_draw_enabled ? "verify_direct_vulkan_mesh_visual_output" : "enable_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_for_real_draw");
     }
     return VulkanVideoMeshPipelineProbeResult {

@@ -565,6 +565,11 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
     bool has_matrix_uniform = false;
     size_t sampler_uniform_count = 0;
     size_t non_sampler_uniform_count = 0;
+    OpenGLContext::VulkanVideoMeshUniformSnapshot uniform_snapshot;
+    for (size_t i = 0; i < 16; ++i) {
+        uniform_snapshot.model_view_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
+        uniform_snapshot.projection_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
+    }
     for (GLint index = 0; index < uniforms_to_log; ++index) {
         GLint size = 0;
         GLenum type = 0;
@@ -579,6 +584,22 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
         sampler_uniform_count += is_sampler ? 1 : 0;
         non_sampler_uniform_count += is_sampler ? 0 : 1;
         has_matrix_uniform |= is_matrix;
+        auto location = glGetUniformLocation(program_handle, name);
+        if (location >= 0) {
+            if (type == GL_FLOAT_MAT4 && uniform_name == "modelViewMatrix"sv) {
+                glGetUniformfv(program_handle, location, uniform_snapshot.model_view_matrix.data());
+                uniform_snapshot.has_model_view_matrix = true;
+            } else if (type == GL_FLOAT_MAT4 && uniform_name == "projectionMatrix"sv) {
+                glGetUniformfv(program_handle, location, uniform_snapshot.projection_matrix.data());
+                uniform_snapshot.has_projection_matrix = true;
+            } else if (type == GL_FLOAT && uniform_name == "opacity"sv) {
+                glGetUniformfv(program_handle, location, &uniform_snapshot.opacity);
+            } else if (type == GL_FLOAT && uniform_name == "uOutputIntensity"sv) {
+                glGetUniformfv(program_handle, location, &uniform_snapshot.output_intensity);
+            } else if (type == GL_FLOAT && uniform_name == "uStereoEye"sv) {
+                glGetUniformfv(program_handle, location, &uniform_snapshot.stereo_eye);
+            }
+        }
         dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_UNIFORM count={} frame_id={} program={} index={} name={} type={} size={} sampler={} matrix={} next_step={}",
             draw_log_count,
             backing.frame_id,
@@ -591,7 +612,21 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
             is_matrix,
             is_sampler ? "map_video_sampler_to_vulkan_ycbcr_descriptor" : "preserve_uniform_for_shader_replay");
     }
-    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_UNIFORM_SUMMARY count={} frame_id={} program={} scanned_uniforms={} active_uniforms={} sampler_uniforms_scanned={} non_sampler_uniforms_scanned={} has_matrix_uniform={} simple_fixed_shader_safe={} next_step={}",
+    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_UNIFORM_SNAPSHOT count={} frame_id={} program={} has_model_view_matrix={} has_projection_matrix={} opacity={} output_intensity={} stereo_eye={} model_view_m00={} model_view_m13={} projection_m00={} projection_m11={} next_step=feed_uniform_snapshot_to_vulkan_mesh_pipeline",
+        draw_log_count,
+        backing.frame_id,
+        program_handle,
+        uniform_snapshot.has_model_view_matrix,
+        uniform_snapshot.has_projection_matrix,
+        uniform_snapshot.opacity,
+        uniform_snapshot.output_intensity,
+        uniform_snapshot.stereo_eye,
+        uniform_snapshot.model_view_matrix[0],
+        uniform_snapshot.model_view_matrix[13],
+        uniform_snapshot.projection_matrix[0],
+        uniform_snapshot.projection_matrix[5]);
+    auto matrix_replay_ready = uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix;
+    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_UNIFORM_SUMMARY count={} frame_id={} program={} scanned_uniforms={} active_uniforms={} sampler_uniforms_scanned={} non_sampler_uniforms_scanned={} has_matrix_uniform={} simple_fixed_shader_safe={} matrix_replay_ready={} next_step={}",
         draw_log_count,
         backing.frame_id,
         program_handle,
@@ -601,7 +636,8 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
         non_sampler_uniform_count,
         has_matrix_uniform,
         !has_matrix_uniform && non_sampler_uniform_count == 0,
-        has_matrix_uniform || non_sampler_uniform_count > 0 ? "preserve_or_translate_original_webgl_shader_state" : "fixed_video_mesh_shader_can_be_validated");
+        matrix_replay_ready,
+        matrix_replay_ready ? "execute_vulkan_mesh_with_captured_matrix_uniforms" : has_matrix_uniform || non_sampler_uniform_count > 0 ? "preserve_or_translate_original_webgl_shader_state" : "fixed_video_mesh_shader_can_be_validated");
 
     auto attribs_to_log = active_attrib_count < 8 ? active_attrib_count : 8;
     bool all_enabled_attrib_buffers_shadowed = true;
@@ -731,12 +767,13 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
             replay_buffer_probe = opengl_context.probe_vulkan_video_replay_buffers(position_data, uv_data, uv_right_data, element_data, backing.frame_id, draw_log_count);
         auto destination_format = opengl_context.vulkan_painting_surface_format();
         if (simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && cached_source && destination_format.has_value())
-            mesh_pipeline_probe = opengl_context.probe_vulkan_video_mesh_pipeline(backing.frame_id, destination_format.value(), cached_source->image, cached_source->ycbcr_image_view, cached_source->ycbcr_sampler, backing.source_vulkan_layout, geometry.count, geometry.type, geometry.offset, viewport[0], viewport[1], viewport[2], viewport[3], draw_log_count);
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_STRATEGY count={} frame_id={} program={} simple_video_mesh_replay_possible={} has_position={} has_uv={} has_uv_right={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} element_shadow_complete={} source_direct_sample_ready={} replay_buffers_ready={} mesh_pipeline_ready={} destination_format={} selected={} reason={} next_step={}",
+            mesh_pipeline_probe = opengl_context.probe_vulkan_video_mesh_pipeline(backing.frame_id, destination_format.value(), cached_source->image, cached_source->ycbcr_image_view, cached_source->ycbcr_sampler, backing.source_vulkan_layout, uniform_snapshot, geometry.count, geometry.type, geometry.offset, viewport[0], viewport[1], viewport[2], viewport[3], draw_log_count);
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_STRATEGY count={} frame_id={} program={} simple_video_mesh_replay_possible={} matrix_replay_ready={} has_position={} has_uv={} has_uv_right={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} element_shadow_complete={} source_direct_sample_ready={} replay_buffers_ready={} mesh_pipeline_ready={} destination_format={} selected={} reason={} next_step={}",
             draw_log_count,
             backing.frame_id,
             program_handle,
             simple_video_mesh_replay_possible,
+            matrix_replay_ready,
             has_position_attrib,
             has_uv_attrib,
             has_uv_right_attrib,
@@ -748,13 +785,13 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
             replay_buffer_probe.has_value() && replay_buffer_probe->supported,
             mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported,
             destination_format.value_or(0),
-            simple_video_mesh_replay_possible ? "fixed_vulkan_video_mesh_shader" : "full_webgl_shader_replay_or_interop",
+            simple_video_mesh_replay_possible && matrix_replay_ready ? "matrix_aware_vulkan_video_mesh_shader" : simple_video_mesh_replay_possible ? "fixed_vulkan_video_mesh_shader" : "full_webgl_shader_replay_or_interop",
             !simple_video_mesh_replay_possible ? "missing_simple_mesh_prerequisite"sv
                 : !(replay_buffer_probe.has_value() && replay_buffer_probe->supported) ? "vulkan_replay_buffer_probe_failed"sv
                 : !destination_format.has_value() ? "missing_vulkan_painting_surface_format"sv
                 : mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported ? "position_uv_mesh_with_vulkan_buffers_and_pipeline"sv
                 : "vulkan_mesh_pipeline_probe_failed"sv,
-            simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported ? "bind_replay_buffers_and_execute_vulkan_mesh_draw" : "capture_more_shader_or_buffer_state");
+            simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported ? "bind_replay_buffers_uniforms_and_execute_vulkan_mesh_draw" : "capture_more_shader_or_buffer_state");
     }
 
     if (attached_shader_count > 0) {

@@ -9,6 +9,7 @@
 #include <AK/Error.h>
 #include <AK/NonnullOwnPtr.h>
 #include <AK/NonnullRefPtr.h>
+#include <AK/Array.h>
 #include <AK/RefPtr.h>
 #include <AK/StringView.h>
 #include <AK/Vector.h>
@@ -116,6 +117,15 @@ public:
         bool supported { false };
         StringView reason { "not_attempted"sv };
     };
+    struct VulkanVideoMeshUniformSnapshot {
+        bool has_model_view_matrix { false };
+        bool has_projection_matrix { false };
+        Array<float, 16> model_view_matrix {};
+        Array<float, 16> projection_matrix {};
+        float opacity { 1.0f };
+        float output_intensity { 1.0f };
+        float stereo_eye { 0.0f };
+    };
 
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture> create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count);
@@ -129,7 +139,7 @@ public:
     ErrorOr<NonnullOwnPtr<Gfx::ImportedVulkanNV12Image>> import_retained_vulkan_video_source_for_virtual_draw(int source_opaque_fd, u32 source_handle_type, u64 source_allocation_size, u32 width, u32 height, u32 source_format, u32 source_layout);
     RetainedVulkanVideoSourceProbeResult probe_retained_vulkan_video_source_for_virtual_draw(int source_opaque_fd, u32 source_handle_type, u64 source_allocation_size, u32 width, u32 height, u32 source_format, u32 source_layout, u64 frame_id, size_t log_count);
     VulkanVideoReplayBufferProbeResult probe_vulkan_video_replay_buffers(ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes uv_right_data, ReadonlyBytes index_data, u64 frame_id, size_t log_count);
-    VulkanVideoMeshPipelineProbeResult probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImage source_image, VkImageView source_image_view, VkSampler immutable_sampler, u32 source_layout, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count);
+    VulkanVideoMeshPipelineProbeResult probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImage source_image, VkImageView source_image_view, VkSampler immutable_sampler, u32 source_layout, VulkanVideoMeshUniformSnapshot const&, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count);
     Optional<u32> vulkan_painting_surface_format() const;
     void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif
