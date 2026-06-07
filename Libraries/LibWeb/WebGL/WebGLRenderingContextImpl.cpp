@@ -598,6 +598,10 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
                 glGetUniformfv(program_handle, location, &uniform_snapshot.output_intensity);
             } else if (type == GL_FLOAT && uniform_name == "uStereoEye"sv) {
                 glGetUniformfv(program_handle, location, &uniform_snapshot.stereo_eye);
+            } else if (type == GL_BOOL && uniform_name == "uStereoEyeLeft"sv) {
+                GLint stereo_eye_left = 1;
+                glGetUniformiv(program_handle, location, &stereo_eye_left);
+                uniform_snapshot.stereo_eye_left = stereo_eye_left ? 1.0f : 0.0f;
             }
         }
         dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_UNIFORM count={} frame_id={} program={} index={} name={} type={} size={} sampler={} matrix={} next_step={}",
@@ -612,7 +616,7 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
             is_matrix,
             is_sampler ? "map_video_sampler_to_vulkan_ycbcr_descriptor" : "preserve_uniform_for_shader_replay");
     }
-    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_UNIFORM_SNAPSHOT count={} frame_id={} program={} has_model_view_matrix={} has_projection_matrix={} opacity={} output_intensity={} stereo_eye={} model_view_m00={} model_view_m13={} projection_m00={} projection_m11={} next_step=feed_uniform_snapshot_to_vulkan_mesh_pipeline",
+    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_UNIFORM_SNAPSHOT count={} frame_id={} program={} has_model_view_matrix={} has_projection_matrix={} opacity={} output_intensity={} stereo_eye={} stereo_eye_left={} model_view_m00={} model_view_m13={} projection_m00={} projection_m11={} next_step=feed_uniform_snapshot_to_vulkan_mesh_pipeline",
         draw_log_count,
         backing.frame_id,
         program_handle,
@@ -621,6 +625,7 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
         uniform_snapshot.opacity,
         uniform_snapshot.output_intensity,
         uniform_snapshot.stereo_eye,
+        uniform_snapshot.stereo_eye_left,
         uniform_snapshot.model_view_matrix[0],
         uniform_snapshot.model_view_matrix[13],
         uniform_snapshot.projection_matrix[0],

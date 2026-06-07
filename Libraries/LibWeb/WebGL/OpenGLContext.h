@@ -125,6 +125,7 @@ public:
         float opacity { 1.0f };
         float output_intensity { 1.0f };
         float stereo_eye { 0.0f };
+        float stereo_eye_left { 1.0f };
     };
 
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
