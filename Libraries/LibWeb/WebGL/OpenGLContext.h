@@ -51,6 +51,8 @@ public:
     void make_current();
 
     void present(bool preserve_drawing_buffer);
+    void note_gl_draw_submitted();
+    void note_direct_vulkan_video_draw_submitted();
 
     void set_size(Gfx::IntSize const&);
 

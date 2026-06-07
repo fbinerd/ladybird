@@ -1609,6 +1609,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
     needs_to_present();
     auto start = MonotonicTime::now();
     glDrawArrays(mode, first, count);
+    m_context->note_gl_draw_submitted();
     record_mundo_webgl_timing_summary("drawArrays", (MonotonicTime::now() - start).to_microseconds());
     if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
         dbgln("MUNDO_WEBGL_TIMING count={} op=drawArrays duration={}ms threshold={}ms mode={} first={} count={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), mode, first, count);
@@ -1890,7 +1891,9 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     vulkan_video_draw_used_sampler);
         }
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
+        m_context->note_gl_draw_submitted();
     } else {
+        m_context->note_direct_vulkan_video_draw_submitted();
         static size_t s_replaced_draw_count { 0 };
         auto replaced_draw_count = ++s_replaced_draw_count;
         if (replaced_draw_count <= 16 || replaced_draw_count % 120 == 0)

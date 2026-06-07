@@ -193,6 +193,8 @@ struct OpenGLContext::Impl {
     Optional<ImportedVideoOpaqueFDTexture> cached_video_uv_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_target_texture;
+    u64 gl_draw_serial { 0 };
+    u64 direct_vulkan_video_draw_serial { 0 };
     struct CachedVulkanVideoReplayBuffers {
         unsigned signature { 0 };
         size_t position_bytes { 0 };
@@ -2982,6 +2984,20 @@ void OpenGLContext::make_current()
 #endif
 }
 
+void OpenGLContext::note_gl_draw_submitted()
+{
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    ++m_impl->gl_draw_serial;
+#endif
+}
+
+void OpenGLContext::note_direct_vulkan_video_draw_submitted()
+{
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    m_impl->direct_vulkan_video_draw_serial = ++m_impl->gl_draw_serial;
+#endif
+}
+
 void OpenGLContext::present(bool preserve_drawing_buffer)
 {
 #ifdef ENABLE_WEBGL
@@ -2998,16 +3014,24 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
     // MUNDO_WEBGL_PRESENT_SYNC_MODE lets the direct-video path validate lighter present synchronization without changing the default for non-direct video paths.
     auto direct_vulkan_mesh_present = false;
     direct_vulkan_mesh_present = mundo_webgl_video_direct_vulkan_mesh_enabled();
-    auto present_sync_mode = direct_vulkan_mesh_present ? "flush"sv : "finish"sv;
+    auto direct_vulkan_video_was_last_draw = direct_vulkan_mesh_present
+        && m_impl->direct_vulkan_video_draw_serial > 0
+        && m_impl->gl_draw_serial == m_impl->direct_vulkan_video_draw_serial;
+    auto present_sync_mode = direct_vulkan_mesh_present ? "auto"sv : "finish"sv;
     if (auto const* present_sync_mode_value = getenv("MUNDO_WEBGL_PRESENT_SYNC_MODE")) {
         auto value = StringView { present_sync_mode_value, strlen(present_sync_mode_value) };
-        if (value == "flush"sv)
+        if (value == "auto"sv)
+            present_sync_mode = "auto"sv;
+        else if (value == "flush"sv)
             present_sync_mode = "flush"sv;
         else if (value == "none"sv)
             present_sync_mode = "none"sv;
         else if (value == "finish"sv)
             present_sync_mode = "finish"sv;
     }
+    auto requested_present_sync_mode = present_sync_mode;
+    if (present_sync_mode == "auto"sv)
+        present_sync_mode = direct_vulkan_video_was_last_draw ? "none"sv : "flush"sv;
 
     auto present_sync_started_at = MonotonicTime::now();
     if (present_sync_mode == "flush"sv)
@@ -3019,7 +3043,18 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
     static size_t s_present_sync_log_count = 0;
     ++s_present_sync_log_count;
     if (s_present_sync_log_count <= 8 || s_present_sync_log_count % 120 == 0)
-        dbgln("MUNDO_WEBGL_PRESENT_SYNC count={} mode={} sync_us={} direct_vulkan_mesh_present={} preserve_drawing_buffer={} next_step={}", s_present_sync_log_count, present_sync_mode, present_sync_us, direct_vulkan_mesh_present, preserve_drawing_buffer, present_sync_mode == "finish"sv ? "test_flush_or_export_fence_for_gpu_only_present"sv : "verify_webgl_present_visual_integrity"sv);
+        dbgln("MUNDO_WEBGL_PRESENT_SYNC count={} requested_mode={} mode={} sync_us={} direct_vulkan_mesh_present={} direct_vulkan_video_was_last_draw={} gl_draw_serial={} direct_vulkan_video_draw_serial={} preserve_drawing_buffer={} next_step={}",
+            s_present_sync_log_count,
+            requested_present_sync_mode,
+            present_sync_mode,
+            present_sync_us,
+            direct_vulkan_mesh_present,
+            direct_vulkan_video_was_last_draw,
+            m_impl->gl_draw_serial,
+            m_impl->direct_vulkan_video_draw_serial,
+            preserve_drawing_buffer,
+            present_sync_mode == "finish"sv ? "test_flush_or_export_fence_for_gpu_only_present"sv : present_sync_mode == "none"sv ? "verify_pure_vulkan_video_present_without_gl_sync"sv
+                                                                                                      : "verify_webgl_present_visual_integrity"sv);
 #    endif
 
     // "By default, after compositing the contents of the drawing buffer shall be cleared to their default values, as shown in the table above.
