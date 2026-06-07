@@ -96,6 +96,16 @@ static bool mundo_webgl_env_flag_enabled(char const* name)
     return value && StringView { value, strlen(value) } == "1"sv;
 }
 
+static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
+{
+    auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
+    if (!value)
+        return false;
+
+    auto view = StringView { value, strlen(value) };
+    return view == "1"sv || view == "auto"sv;
+}
+
 static bool mundo_webgl_video_pbo_upload_enabled()
 {
     auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_PBO_UPLOAD");
@@ -1572,8 +1582,12 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     direct_sampling_reason = "gl_y_uv_plane_import_supported";
                 }
             }
+            auto direct_vulkan_mesh_requested = mundo_webgl_video_direct_vulkan_mesh_enabled()
+                || mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD_FOR_REPLACE");
+            auto direct_vulkan_mesh_selected = direct_vulkan_mesh_requested
+                && !strcmp(direct_sampling_route, "vulkan_direct_sampling_virtualization");
             if (skia_ycbcr_probe.attempted) {
-                dbgln("MUNDO_WEBGL_VIDEO_DIRECT_SAMPLING_ROUTE attempt={} frame_id={} backend={} preferred=skia_vulkan_ycbcr selected={} selected_reason={} skia_supported={} skia_reason={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={} gl_probe_attempted={} gl_y_plane_supported={} gl_y_plane_reason={} gl_uv_plane_supported={} gl_uv_plane_reason={} gl_uv_plane_gl_error={} fallback={} current_path=vulkan_render_nv12_to_webgl_texture_storage direct_zero_copy=false",
+                dbgln("MUNDO_WEBGL_VIDEO_DIRECT_SAMPLING_ROUTE attempt={} frame_id={} backend={} preferred=skia_vulkan_ycbcr selected={} selected_reason={} skia_supported={} skia_reason={} backend_texture_valid={} backend_format_valid={} backend_format_has_ycbcr={} promise_format_valid={} promise_image_created={} gl_probe_attempted={} gl_y_plane_supported={} gl_y_plane_reason={} gl_uv_plane_supported={} gl_uv_plane_reason={} gl_uv_plane_gl_error={} fallback={} current_path={} direct_zero_copy={}",
                     attempt_count,
                     hardware_frame_id,
                     hardware_backend,
@@ -1592,11 +1606,11 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     gl_external_import_probe.uv_plane_supported,
                     gl_external_import_probe.uv_plane_reason,
                     gl_external_import_probe.uv_plane_gl_error,
-                    direct_sampling_route);
+                    direct_sampling_route,
+                    direct_vulkan_mesh_selected ? "vulkan_mesh_direct_nv12" : "vulkan_render_nv12_to_webgl_texture_storage",
+                    direct_vulkan_mesh_selected);
             }
-            if ((mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH")
-                    || mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD_FOR_REPLACE"))
-                && !strcmp(direct_sampling_route, "vulkan_direct_sampling_virtualization")) {
+            if (direct_vulkan_mesh_selected) {
                 if (auto texture = current_bound_texture_for_target(target)) {
                     auto const& source_plane = external_memory.planes[0];
                     int retained_source_opaque_fd = -1;

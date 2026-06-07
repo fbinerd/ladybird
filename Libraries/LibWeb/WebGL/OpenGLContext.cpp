@@ -67,6 +67,16 @@ extern "C" {
 namespace Web::WebGL {
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
+static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
+{
+    auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
+    if (!value)
+        return false;
+
+    auto view = StringView { value, strlen(value) };
+    return view == "1"sv || view == "auto"sv;
+}
+
 static constexpr u32 s_mundo_video_nv12_mesh_vertex_shader_spirv[] {
     0x07230203, 0x00010000, 0x0008000b, 0x0000004b, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
     0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
@@ -2069,10 +2079,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         target_image->cached_video_framebuffer_height = target_image->info.extent.height;
     }
 
-    auto direct_vulkan_mesh_mode = [] {
-        auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
-        return value && StringView { value, strlen(value) } == "1"sv;
-    }();
+    auto direct_vulkan_mesh_mode = mundo_webgl_video_direct_vulkan_mesh_enabled();
     auto mesh_draw_enabled = [direct_vulkan_mesh_mode] {
         if (direct_vulkan_mesh_mode)
             return true;
@@ -2990,8 +2997,7 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
     // FIXME: CPU sync for now, but it would be better to export a fence and have Skia wait for it before reading from the surface.
     // MUNDO_WEBGL_PRESENT_SYNC_MODE lets the direct-video path validate lighter present synchronization without changing the default for non-direct video paths.
     auto direct_vulkan_mesh_present = false;
-    if (auto const* direct_vulkan_mesh_value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH"))
-        direct_vulkan_mesh_present = StringView { direct_vulkan_mesh_value, strlen(direct_vulkan_mesh_value) } == "1"sv;
+    direct_vulkan_mesh_present = mundo_webgl_video_direct_vulkan_mesh_enabled();
     auto present_sync_mode = direct_vulkan_mesh_present ? "flush"sv : "finish"sv;
     if (auto const* present_sync_mode_value = getenv("MUNDO_WEBGL_PRESENT_SYNC_MODE")) {
         auto value = StringView { present_sync_mode_value, strlen(present_sync_mode_value) };
