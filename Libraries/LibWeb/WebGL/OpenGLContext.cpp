@@ -1649,7 +1649,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         pipeline_cache_status = "hit"sv;
     }
 
-    auto queue_sync_mode = "idle"sv;
+    auto queue_sync_mode = "ring"sv;
     if (auto const* queue_sync_mode_value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_QUEUE_SYNC_MODE")) {
         auto value = StringView { queue_sync_mode_value, strlen(queue_sync_mode_value) };
         if (value == "fence"sv)
