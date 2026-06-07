@@ -488,7 +488,7 @@ static void log_mundo_webgl_video_virtual_draw_ready(char const* op, size_t draw
         ready ? "replace_rgba_sampler_with_cached_nv12_vulkan_source" : "keep_rgba_intermediate_until_virtual_draw_is_ready");
 }
 
-static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextImpl const& webgl_context, char const* op, size_t draw_log_count, WebGLTexture& texture, WebGLTexture::HardwareVideoBacking const& backing, GLuint program_handle, GLuint texture_handle, MundoWebGLVideoVirtualizationReadiness const& readiness, MundoWebGLVirtualVideoSourceCacheState const& cache_state, MundoWebGLVirtualVideoDrawGeometry geometry)
+static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_context, WebGLRenderingContextImpl const& webgl_context, char const* op, size_t draw_log_count, WebGLTexture& texture, WebGLTexture::HardwareVideoBacking const& backing, GLuint program_handle, GLuint texture_handle, MundoWebGLVideoVirtualizationReadiness const& readiness, MundoWebGLVirtualVideoSourceCacheState const& cache_state, MundoWebGLVirtualVideoDrawGeometry geometry)
 {
     auto const* cached_source = texture.cached_virtual_vulkan_video_source();
     auto cached_frame_id = texture.cached_virtual_vulkan_video_source_frame_id();
@@ -564,6 +564,9 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
     bool has_position_attrib = false;
     bool has_uv_attrib = false;
     bool has_uv_right_attrib = false;
+    ReadonlyBytes position_data;
+    ReadonlyBytes uv_data;
+    ReadonlyBytes uv_right_data;
     for (GLint index = 0; index < attribs_to_log; ++index) {
         GLint size = 0;
         GLenum type = 0;
@@ -602,6 +605,14 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
             if (auto webgl_buffer = webgl_context.mundo_buffer_for_handle(static_cast<GLuint>(buffer))) {
                 buffer_shadow_complete = webgl_buffer->has_complete_shadow_data();
                 buffer_shadow_bytes = webgl_buffer->shadow_byte_length();
+                if (buffer_shadow_complete) {
+                    if (attribute_name == "position"sv)
+                        position_data = webgl_buffer->shadow_data();
+                    else if (attribute_name == "uv"sv)
+                        uv_data = webgl_buffer->shadow_data();
+                    else if (attribute_name == "uv_right"sv)
+                        uv_right_data = webgl_buffer->shadow_data();
+                }
             }
             if (enabled) {
                 ++enabled_attrib_count;
@@ -632,10 +643,13 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
     if (geometry.type) {
         bool element_shadow_complete = false;
         size_t element_shadow_bytes = 0;
+        ReadonlyBytes element_data;
         auto element_buffer_handle = static_cast<GLuint>(element_array_buffer);
         if (auto element_buffer = webgl_context.mundo_buffer_for_handle(element_buffer_handle)) {
             element_shadow_complete = element_buffer->has_complete_shadow_data();
             element_shadow_bytes = element_buffer->shadow_byte_length();
+            if (element_shadow_complete)
+                element_data = element_buffer->shadow_data();
         }
         dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_INDEX_BUFFER count={} frame_id={} program={} element_buffer={} shadow_complete={} shadow_bytes={} draw_type={} draw_offset={} draw_count={} next_step={}",
             draw_log_count,
@@ -666,6 +680,9 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
             all_enabled_attrib_buffers_shadowed && element_shadow_complete && cached_source && cached_source->direct_sample_ready ? "create_vulkan_pipeline_from_webgl_draw_inputs" : "complete_replay_inputs_before_vulkan_pipeline");
 
         auto simple_video_mesh_replay_possible = has_position_attrib && has_uv_attrib && all_enabled_attrib_buffers_shadowed && element_shadow_complete && cached_source && cached_source->direct_sample_ready;
+        Optional<OpenGLContext::VulkanVideoReplayBufferProbeResult> replay_buffer_probe;
+        if (simple_video_mesh_replay_possible)
+            replay_buffer_probe = opengl_context.probe_vulkan_video_replay_buffers(position_data, uv_data, uv_right_data, element_data, backing.frame_id, draw_log_count);
         dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_STRATEGY count={} frame_id={} program={} simple_video_mesh_replay_possible={} has_position={} has_uv={} has_uv_right={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} element_shadow_complete={} source_direct_sample_ready={} selected={} reason={} next_step={}",
             draw_log_count,
             backing.frame_id,
@@ -680,8 +697,10 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
             element_shadow_complete,
             cached_source ? cached_source->direct_sample_ready : false,
             simple_video_mesh_replay_possible ? "fixed_vulkan_video_mesh_shader" : "full_webgl_shader_replay_or_interop",
-            simple_video_mesh_replay_possible ? "position_uv_mesh_with_shadowed_buffers" : "missing_simple_mesh_prerequisite",
-            simple_video_mesh_replay_possible ? "build_vulkan_pipeline_for_position_uv_nv12_sampling" : "capture_more_shader_or_buffer_state");
+            !simple_video_mesh_replay_possible ? "missing_simple_mesh_prerequisite"sv
+                : replay_buffer_probe.has_value() && replay_buffer_probe->supported ? "position_uv_mesh_with_vulkan_buffers"sv
+                : "vulkan_replay_buffer_probe_failed"sv,
+            simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported ? "persist_replay_buffers_and_build_vulkan_pipeline" : "capture_more_shader_or_buffer_state");
     }
 
     if (attached_shader_count > 0) {
@@ -1554,7 +1573,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                 m_context->probe_retained_vulkan_video_source_for_virtual_draw(backing.source_opaque_fd, backing.source_handle_type, backing.source_allocation_size, backing.width, backing.height, backing.source_vulkan_format, backing.source_vulkan_layout, backing.frame_id, log_count);
                 auto cache_state = ensure_mundo_webgl_video_virtual_source_cached(*m_context, *m_texture_binding_2d, backing, "drawArrays", log_count, program_handle, texture_handle, true);
                 log_mundo_webgl_video_virtual_draw_ready("drawArrays", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, cache_state);
-                log_mundo_webgl_video_vulkan_direct_draw_plan(*this, "drawArrays", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, cache_state, { mode, first, count, 0, 0 });
+                log_mundo_webgl_video_vulkan_direct_draw_plan(*m_context, *this, "drawArrays", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, cache_state, { mode, first, count, 0, 0 });
             }
 #endif
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
@@ -1666,7 +1685,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 m_context->probe_retained_vulkan_video_source_for_virtual_draw(backing.source_opaque_fd, backing.source_handle_type, backing.source_allocation_size, backing.width, backing.height, backing.source_vulkan_format, backing.source_vulkan_layout, backing.frame_id, log_count);
                 if (virtual_source_cache_state.has_value()) {
                     log_mundo_webgl_video_virtual_draw_ready("drawElements", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, virtual_source_cache_state.value());
-                    log_mundo_webgl_video_vulkan_direct_draw_plan(*this, "drawElements", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, virtual_source_cache_state.value(), { mode, 0, count, type, static_cast<GLintptr>(offset) });
+                    log_mundo_webgl_video_vulkan_direct_draw_plan(*m_context, *this, "drawElements", log_count, *m_texture_binding_2d, backing, program_handle, texture_handle, readiness, virtual_source_cache_state.value(), { mode, 0, count, type, static_cast<GLintptr>(offset) });
                 }
             }
 #endif

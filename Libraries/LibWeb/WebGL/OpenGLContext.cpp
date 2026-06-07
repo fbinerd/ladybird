@@ -1292,6 +1292,89 @@ OpenGLContext::RetainedVulkanVideoSourceProbeResult OpenGLContext::probe_retaine
     };
 }
 
+OpenGLContext::VulkanVideoReplayBufferProbeResult OpenGLContext::probe_vulkan_video_replay_buffers(ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes uv_right_data, ReadonlyBytes index_data, u64 frame_id, size_t log_count)
+{
+    static size_t s_probe_count { 0 };
+    auto probe_count = ++s_probe_count;
+    auto should_log = probe_count <= 8 || probe_count % 120 == 0;
+    auto total_bytes = position_data.size() + uv_data.size() + uv_right_data.size() + index_data.size();
+
+    auto log_failure = [&](StringView reason) {
+        if (should_log) {
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_REPLAY_BUFFER_PROBE draw_count={} probe_count={} frame_id={} status=failed reason={} position_bytes={} uv_bytes={} uv_right_bytes={} index_bytes={} total_bytes={} next_step=fix_shadowed_buffers_before_vulkan_replay",
+                log_count,
+                probe_count,
+                frame_id,
+                reason,
+                position_data.size(),
+                uv_data.size(),
+                uv_right_data.size(),
+                index_data.size(),
+                total_bytes);
+        }
+        return VulkanVideoReplayBufferProbeResult {
+            .attempted = true,
+            .supported = false,
+            .reason = reason,
+            .total_bytes = total_bytes,
+        };
+    };
+
+    if (position_data.is_empty())
+        return log_failure("missing_position_data"sv);
+    if (uv_data.is_empty())
+        return log_failure("missing_uv_data"sv);
+    if (index_data.is_empty())
+        return log_failure("missing_index_data"sv);
+
+    auto const& vulkan_context = m_skia_backend_context->vulkan_context();
+    auto position_buffer_or_error = Gfx::create_host_visible_vulkan_buffer_from_bytes(vulkan_context, position_data, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    if (position_buffer_or_error.is_error())
+        return log_failure(position_buffer_or_error.error().string_literal());
+    auto position_buffer = position_buffer_or_error.release_value();
+
+    auto uv_buffer_or_error = Gfx::create_host_visible_vulkan_buffer_from_bytes(vulkan_context, uv_data, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    if (uv_buffer_or_error.is_error())
+        return log_failure(uv_buffer_or_error.error().string_literal());
+    auto uv_buffer = uv_buffer_or_error.release_value();
+
+    OwnPtr<Gfx::VulkanBuffer> uv_right_buffer;
+    if (!uv_right_data.is_empty()) {
+        auto uv_right_buffer_or_error = Gfx::create_host_visible_vulkan_buffer_from_bytes(vulkan_context, uv_right_data, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        if (uv_right_buffer_or_error.is_error())
+            return log_failure(uv_right_buffer_or_error.error().string_literal());
+        uv_right_buffer = uv_right_buffer_or_error.release_value();
+    }
+
+    auto index_buffer_or_error = Gfx::create_host_visible_vulkan_buffer_from_bytes(vulkan_context, index_data, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    if (index_buffer_or_error.is_error())
+        return log_failure(index_buffer_or_error.error().string_literal());
+    auto index_buffer = index_buffer_or_error.release_value();
+
+    if (should_log) {
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_REPLAY_BUFFER_PROBE draw_count={} probe_count={} frame_id={} status=ok position_buffer={} uv_buffer={} uv_right_buffer={} index_buffer={} position_bytes={} uv_bytes={} uv_right_bytes={} index_bytes={} total_bytes={} next_step=persist_replay_buffers_and_build_vulkan_pipeline",
+            log_count,
+            probe_count,
+            frame_id,
+            reinterpret_cast<uintptr_t>(position_buffer->buffer),
+            reinterpret_cast<uintptr_t>(uv_buffer->buffer),
+            uv_right_buffer ? reinterpret_cast<uintptr_t>(uv_right_buffer->buffer) : 0,
+            reinterpret_cast<uintptr_t>(index_buffer->buffer),
+            position_data.size(),
+            uv_data.size(),
+            uv_right_data.size(),
+            index_data.size(),
+            total_bytes);
+    }
+
+    return VulkanVideoReplayBufferProbeResult {
+        .attempted = true,
+        .supported = true,
+        .reason = "ok"sv,
+        .total_bytes = total_bytes,
+    };
+}
+
 ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture> OpenGLContext::create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count)
 {
     auto log_failure = [&](StringView reason, u32 gl_error = 0) {
