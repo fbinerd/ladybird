@@ -145,6 +145,12 @@ static bool should_skip_mundo_webgl_draw_elements_for_budget(WebIDL::Long count)
     return true;
 }
 
+static bool mundo_webgl_env_flag_enabled(char const* name)
+{
+    auto const* value = getenv(name);
+    return value && StringView { value, strlen(value) } == "1"sv;
+}
+
 struct MundoWebGLTimingSummary {
     size_t draw_arrays_count { 0 };
     i64 draw_arrays_us { 0 };
@@ -1699,6 +1705,10 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
 
     auto start = MonotonicTime::now();
     bool vulkan_video_draw_executed = false;
+    GLint video_draw_framebuffer = 0;
+    GLenum video_draw_framebuffer_status = 0;
+    GLint video_draw_color_attachment_type = 0;
+    GLint video_draw_color_attachment_name = 0;
     if (m_texture_binding_2d && m_texture_binding_2d->has_hardware_video_backing()) {
         static size_t s_hardware_video_draw_elements_count { 0 };
         auto log_count = ++s_hardware_video_draw_elements_count;
@@ -1716,6 +1726,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
         auto readiness = mundo_webgl_video_virtualization_readiness(program_handle, texture_handle, backing, m_current_program ? m_current_program->video_sampler_plan() : Optional<WebGLProgram::VideoSamplerPlan> {});
         auto uses_video_sampler = readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture;
         auto should_log_video_draw = log_count <= 8 || log_count % 120 == 0;
+        glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &video_draw_framebuffer);
+        if (video_draw_framebuffer) {
+            video_draw_framebuffer_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &video_draw_color_attachment_type);
+            glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &video_draw_color_attachment_name);
+        }
 #ifdef USE_VULKAN_DMABUF_IMAGES
         Optional<MundoWebGLVirtualVideoSourceCacheState> virtual_source_cache_state;
         if (uses_video_sampler)
@@ -1785,6 +1801,17 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 uses_video_sampler,
                 readiness.reason,
                 uses_video_sampler ? "implement_vulkan_sampler_draw_path" : "wait_for_matching_video_sampler_draw");
+            dbgln("MUNDO_WEBGL_VIDEO_DRAW_TARGET_STATE count={} op=drawElements frame_id={} framebuffer={} default_framebuffer={} framebuffer_status={} color_attachment_type={} color_attachment_name={} vulkan_mesh_target=painting_surface next_step={}",
+                log_count,
+                backing.frame_id,
+                video_draw_framebuffer,
+                m_context->default_framebuffer(),
+                video_draw_framebuffer_status,
+                video_draw_color_attachment_type,
+                video_draw_color_attachment_name,
+                video_draw_framebuffer == static_cast<GLint>(m_context->default_framebuffer())
+                    ? "map_webgl_default_color_buffer_to_vulkan_mesh_target_before_replacing_gl"
+                    : "map_webgl_framebuffer_attachment_to_vulkan_mesh_target_before_replacing_gl");
             if (uses_video_sampler)
                 log_mundo_webgl_video_virtualization_draw_state("drawElements", log_count, backing, program_handle, texture_handle, mode, 0, count, type, static_cast<GLintptr>(offset));
 #ifdef USE_VULKAN_DMABUF_IMAGES
@@ -1798,11 +1825,22 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             log_mundo_webgl_video_sampler_uniforms(program_handle, texture_handle, m_texture_binding_2d->hardware_video_backing(), log_count);
         }
     }
-    auto replace_gl_draw = [] {
-        auto const* value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL");
-        return value && StringView { value, strlen(value) } == "1"sv;
-    }();
-    if (!(vulkan_video_draw_executed && replace_gl_draw)) {
+    auto replace_gl_draw = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL");
+    auto force_replace_gl_draw = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_FORCE_TARGET_MISMATCH");
+    auto can_replace_gl_draw = vulkan_video_draw_executed && replace_gl_draw && force_replace_gl_draw;
+    if (!(can_replace_gl_draw)) {
+        if (vulkan_video_draw_executed && replace_gl_draw) {
+            static size_t s_blocked_replace_draw_count { 0 };
+            auto blocked_replace_draw_count = ++s_blocked_replace_draw_count;
+            if (blocked_replace_draw_count <= 16 || blocked_replace_draw_count % 120 == 0)
+                dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_BLOCKED count={} framebuffer={} default_framebuffer={} framebuffer_status={} color_attachment_type={} color_attachment_name={} reason=vulkan_mesh_target_not_wired_to_webgl_present_target next_step=make_vulkan_mesh_render_into_webgl_draw_target_before_skipping_gl",
+                    blocked_replace_draw_count,
+                    video_draw_framebuffer,
+                    m_context->default_framebuffer(),
+                    video_draw_framebuffer_status,
+                    video_draw_color_attachment_type,
+                    video_draw_color_attachment_name);
+        }
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
     } else {
         static size_t s_replaced_draw_count { 0 };
@@ -1817,7 +1855,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
     }
     record_mundo_webgl_timing_summary("drawElements", (MonotonicTime::now() - start).to_microseconds());
     if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
-        dbgln("MUNDO_WEBGL_TIMING count={} op=drawElements duration={}ms threshold={}ms mode={} count={} type={} offset={} vulkan_video_draw_executed={} replace_gl_draw={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), mode, count, type, offset, vulkan_video_draw_executed, replace_gl_draw);
+        dbgln("MUNDO_WEBGL_TIMING count={} op=drawElements duration={}ms threshold={}ms mode={} count={} type={} offset={} vulkan_video_draw_executed={} replace_gl_draw={} can_replace_gl_draw={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), mode, count, type, offset, vulkan_video_draw_executed, replace_gl_draw, can_replace_gl_draw);
     needs_to_present();
 }
 
