@@ -730,7 +730,7 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
         if (simple_video_mesh_replay_possible)
             replay_buffer_probe = opengl_context.probe_vulkan_video_replay_buffers(position_data, uv_data, uv_right_data, element_data, backing.frame_id, draw_log_count);
         if (simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && cached_source)
-            mesh_pipeline_probe = opengl_context.probe_vulkan_video_mesh_pipeline(backing.frame_id, VK_FORMAT_R8G8B8A8_UNORM, cached_source->ycbcr_sampler, draw_log_count);
+            mesh_pipeline_probe = opengl_context.probe_vulkan_video_mesh_pipeline(backing.frame_id, VK_FORMAT_R8G8B8A8_UNORM, cached_source->ycbcr_image_view, cached_source->ycbcr_sampler, draw_log_count);
         dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_STRATEGY count={} frame_id={} program={} simple_video_mesh_replay_possible={} has_position={} has_uv={} has_uv_right={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} element_shadow_complete={} source_direct_sample_ready={} replay_buffers_ready={} mesh_pipeline_ready={} selected={} reason={} next_step={}",
             draw_log_count,
             backing.frame_id,

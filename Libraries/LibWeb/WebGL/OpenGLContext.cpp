@@ -1533,18 +1533,21 @@ static ErrorOr<VkShaderModule> create_mundo_vulkan_video_shader_module(Gfx::Vulk
     return shader_module;
 }
 
-OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkSampler immutable_sampler, size_t log_count)
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImageView source_image_view, VkSampler immutable_sampler, size_t log_count)
 {
     struct MeshPipelineResources {
         VkDevice device { VK_NULL_HANDLE };
         VkFormat destination_format { VK_FORMAT_UNDEFINED };
         VkSampler immutable_sampler { VK_NULL_HANDLE };
+        VkImageView last_source_image_view { VK_NULL_HANDLE };
         VkShaderModule vertex_shader { VK_NULL_HANDLE };
         VkShaderModule fragment_shader { VK_NULL_HANDLE };
         VkRenderPass render_pass { VK_NULL_HANDLE };
         VkDescriptorSetLayout descriptor_set_layout { VK_NULL_HANDLE };
         VkPipelineLayout pipeline_layout { VK_NULL_HANDLE };
         VkPipeline pipeline { VK_NULL_HANDLE };
+        VkDescriptorPool descriptor_pool { VK_NULL_HANDLE };
+        VkDescriptorSet descriptor_set { VK_NULL_HANDLE };
     };
     static MeshPipelineResources s_resources;
     static size_t s_probe_count { 0 };
@@ -1553,13 +1556,14 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
 
     auto log_failure = [&](StringView reason, VkResult result = VK_SUCCESS) {
         if (should_log) {
-            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=failed reason={} vk_result={} destination_format={} sampler={} next_step=fix_vulkan_mesh_pipeline_before_draw",
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=failed reason={} vk_result={} destination_format={} source_image_view={} sampler={} next_step=fix_vulkan_mesh_pipeline_before_draw",
                 log_count,
                 probe_count,
                 frame_id,
                 reason,
                 to_underlying(result),
                 destination_format,
+                reinterpret_cast<uintptr_t>(source_image_view),
                 reinterpret_cast<uintptr_t>(immutable_sampler));
         }
         return VulkanVideoMeshPipelineProbeResult {
@@ -1571,6 +1575,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
 
     if (immutable_sampler == VK_NULL_HANDLE)
         return log_failure("missing_ycbcr_sampler"sv);
+    if (source_image_view == VK_NULL_HANDLE)
+        return log_failure("missing_ycbcr_image_view"sv);
 
     auto const& context = m_skia_backend_context->vulkan_context();
     auto format = static_cast<VkFormat>(destination_format);
@@ -1580,14 +1586,35 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             && s_resources.immutable_sampler == immutable_sampler;
         if (!matches)
             return log_failure("multiple_mesh_pipeline_configurations_not_supported_yet"sv);
+        VkDescriptorImageInfo descriptor_image_info {
+            .sampler = VK_NULL_HANDLE,
+            .imageView = source_image_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet descriptor_write {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = nullptr,
+            .dstSet = s_resources.descriptor_set,
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &descriptor_image_info,
+            .pBufferInfo = nullptr,
+            .pTexelBufferView = nullptr,
+        };
+        vkUpdateDescriptorSets(context.logical_device, 1, &descriptor_write, 0, nullptr);
+        s_resources.last_source_image_view = source_image_view;
         if (should_log) {
-            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=hit destination_format={} sampler={} pipeline={} next_step=bind_replay_buffers_and_execute_vulkan_mesh_draw",
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=hit descriptor_status=updated destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} next_step=bind_replay_buffers_and_execute_vulkan_mesh_draw",
                 log_count,
                 probe_count,
                 frame_id,
                 destination_format,
+                reinterpret_cast<uintptr_t>(source_image_view),
                 reinterpret_cast<uintptr_t>(immutable_sampler),
-                reinterpret_cast<uintptr_t>(s_resources.pipeline));
+                reinterpret_cast<uintptr_t>(s_resources.pipeline),
+                reinterpret_cast<uintptr_t>(s_resources.descriptor_set));
         }
         return VulkanVideoMeshPipelineProbeResult {
             .attempted = true,
@@ -1823,17 +1850,66 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     if (result != VK_SUCCESS)
         return log_failure("create_graphics_pipeline_failed"sv, result);
 
+    VkDescriptorPoolSize pool_size {
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+    };
+    VkDescriptorPoolCreateInfo descriptor_pool_info {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .maxSets = 1,
+        .poolSizeCount = 1,
+        .pPoolSizes = &pool_size,
+    };
+    result = vkCreateDescriptorPool(context.logical_device, &descriptor_pool_info, nullptr, &s_resources.descriptor_pool);
+    if (result != VK_SUCCESS)
+        return log_failure("create_descriptor_pool_failed"sv, result);
+
+    VkDescriptorSetAllocateInfo descriptor_set_allocate_info {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .descriptorPool = s_resources.descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &s_resources.descriptor_set_layout,
+    };
+    result = vkAllocateDescriptorSets(context.logical_device, &descriptor_set_allocate_info, &s_resources.descriptor_set);
+    if (result != VK_SUCCESS)
+        return log_failure("allocate_descriptor_set_failed"sv, result);
+
+    VkDescriptorImageInfo descriptor_image_info {
+        .sampler = VK_NULL_HANDLE,
+        .imageView = source_image_view,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkWriteDescriptorSet descriptor_write {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .pNext = nullptr,
+        .dstSet = s_resources.descriptor_set,
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .pImageInfo = &descriptor_image_info,
+        .pBufferInfo = nullptr,
+        .pTexelBufferView = nullptr,
+    };
+    vkUpdateDescriptorSets(context.logical_device, 1, &descriptor_write, 0, nullptr);
+
     s_resources.device = context.logical_device;
     s_resources.destination_format = format;
     s_resources.immutable_sampler = immutable_sampler;
+    s_resources.last_source_image_view = source_image_view;
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=filled destination_format={} sampler={} pipeline={} vertex_bindings=2 vertex_attributes=2 next_step=bind_replay_buffers_and_execute_vulkan_mesh_draw",
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=filled descriptor_status=updated destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} vertex_bindings=2 vertex_attributes=2 next_step=bind_replay_buffers_and_execute_vulkan_mesh_draw",
             log_count,
             probe_count,
             frame_id,
             destination_format,
+            reinterpret_cast<uintptr_t>(source_image_view),
             reinterpret_cast<uintptr_t>(immutable_sampler),
-            reinterpret_cast<uintptr_t>(s_resources.pipeline));
+            reinterpret_cast<uintptr_t>(s_resources.pipeline),
+            reinterpret_cast<uintptr_t>(s_resources.descriptor_set));
     }
     return VulkanVideoMeshPipelineProbeResult {
         .attempted = true,
