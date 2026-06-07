@@ -2000,6 +2000,16 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     }();
     auto draw_status = "disabled"sv;
     auto draw_reason = "set_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_1_to_execute"sv;
+    auto queue_sync_mode = "idle"sv;
+    if (auto const* queue_sync_mode_value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_QUEUE_SYNC_MODE")) {
+        auto value = StringView { queue_sync_mode_value, strlen(queue_sync_mode_value) };
+        if (value == "fence"sv)
+            queue_sync_mode = "fence"sv;
+        else if (value == "none"sv)
+            queue_sync_mode = "none"sv;
+        else if (value == "idle"sv)
+            queue_sync_mode = "idle"sv;
+    }
     bool mesh_draw_executed = false;
     auto flip_mesh_viewport_y = [direct_vulkan_mesh_mode] {
         if (direct_vulkan_mesh_mode)
@@ -2174,25 +2184,48 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             .signalSemaphoreCount = 0,
             .pSignalSemaphores = nullptr,
         };
-        result = vkQueueSubmit(context.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
-        if (result != VK_SUCCESS)
+        VkFence submit_fence = VK_NULL_HANDLE;
+        if (queue_sync_mode == "fence"sv) {
+            VkFenceCreateInfo fence_info {
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+            };
+            result = vkCreateFence(context.logical_device, &fence_info, nullptr, &submit_fence);
+            if (result != VK_SUCCESS)
+                return log_failure("create_mesh_draw_fence_failed"sv, result);
+        }
+
+        result = vkQueueSubmit(context.graphics_queue, 1, &submit_info, submit_fence);
+        if (result != VK_SUCCESS) {
+            if (submit_fence != VK_NULL_HANDLE)
+                vkDestroyFence(context.logical_device, submit_fence, nullptr);
             return log_failure("submit_mesh_draw_command_buffer_failed"sv, result);
-        result = vkQueueWaitIdle(context.graphics_queue);
-        if (result != VK_SUCCESS)
-            return log_failure("wait_mesh_draw_queue_idle_failed"sv, result);
+        }
+        if (queue_sync_mode == "fence"sv) {
+            result = vkWaitForFences(context.logical_device, 1, &submit_fence, VK_TRUE, UINT64_MAX);
+            vkDestroyFence(context.logical_device, submit_fence, nullptr);
+            if (result != VK_SUCCESS)
+                return log_failure("wait_mesh_draw_fence_failed"sv, result);
+        } else if (queue_sync_mode == "idle"sv) {
+            result = vkQueueWaitIdle(context.graphics_queue);
+            if (result != VK_SUCCESS)
+                return log_failure("wait_mesh_draw_queue_idle_failed"sv, result);
+        }
         draw_status = "executed"sv;
-        draw_reason = "vkCmdDrawIndexed_submitted"sv;
+        draw_reason = queue_sync_mode == "none"sv ? "vkCmdDrawIndexed_submitted_without_cpu_wait"sv : "vkCmdDrawIndexed_submitted"sv;
         mesh_draw_executed = true;
     }
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} viewport_flip_y={} vertex_bindings=3 vertex_attributes=3 matrix_push_constants={} stereo_eye_left={} next_step={}",
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} queue_sync_mode={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} viewport_flip_y={} vertex_bindings=3 vertex_attributes=3 matrix_push_constants={} stereo_eye_left={} next_step={}",
             log_count,
             probe_count,
             frame_id,
             pipeline_cache_status,
             draw_status,
             draw_reason,
+            mesh_draw_enabled ? queue_sync_mode : "not_submitted"sv,
             destination_format,
             reinterpret_cast<uintptr_t>(source_image_view),
             reinterpret_cast<uintptr_t>(immutable_sampler),
