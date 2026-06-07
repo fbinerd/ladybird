@@ -115,6 +115,7 @@ public:
     struct VulkanVideoMeshPipelineProbeResult {
         bool attempted { false };
         bool supported { false };
+        bool executed { false };
         StringView reason { "not_attempted"sv };
     };
     struct VulkanVideoMeshUniformSnapshot {

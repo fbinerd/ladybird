@@ -1994,6 +1994,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     }();
     auto draw_status = "disabled"sv;
     auto draw_reason = "set_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_1_to_execute"sv;
+    bool mesh_draw_executed = false;
     if (mesh_draw_enabled) {
         auto index_type = VK_INDEX_TYPE_UINT16;
         if (draw_type == GL_UNSIGNED_SHORT)
@@ -2158,6 +2159,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             return log_failure("wait_mesh_draw_queue_idle_failed"sv, result);
         draw_status = "executed"sv;
         draw_reason = "vkCmdDrawIndexed_submitted"sv;
+        mesh_draw_executed = true;
     }
 
     if (should_log) {
@@ -2192,6 +2194,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     return VulkanVideoMeshPipelineProbeResult {
         .attempted = true,
         .supported = true,
+        .executed = mesh_draw_executed,
         .reason = "ok"sv,
     };
 }
