@@ -1629,7 +1629,7 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                         .source_single_optimal_multiplanar = external_memory.single_image && external_memory.single_memory && external_memory.plane_count == 1,
                     });
                     if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
-                        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD attempt={} frame_id={} texture={} size={}x{} backend={} route={} direct_zero_copy=true copied_on_gpu=false source_format={} source_layout={} source_allocation_size={} source_handle_type={} source_opaque_fd_retained={} source_single_optimal_multiplanar={} reason=forced_vulkan_mesh_replace_can_sample_decoder_surface_directly",
+                        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD attempt={} frame_id={} texture={} size={}x{} backend={} route={} direct_zero_copy=true copied_on_gpu=false source_format={} source_layout={} source_allocation_size={} source_handle_type={} source_opaque_fd_retained={} source_single_optimal_multiplanar={} reason=direct_vulkan_mesh_replace_can_sample_decoder_surface_directly",
                             attempt_count,
                             hardware_frame_id,
                             previous_texture_2d,

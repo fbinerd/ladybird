@@ -2001,7 +2001,13 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             return true;
 
         auto const* force_replace = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_FORCE_TARGET_MISMATCH");
-        return force_replace && StringView { force_replace, strlen(force_replace) } == "1"sv;
+        if (force_replace && StringView { force_replace, strlen(force_replace) } == "1"sv)
+            return true;
+
+        auto const* replace_gl = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL");
+        auto const* skip_rgba_upload = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD_FOR_REPLACE");
+        return replace_gl && StringView { replace_gl, strlen(replace_gl) } == "1"sv
+            && skip_rgba_upload && StringView { skip_rgba_upload, strlen(skip_rgba_upload) } == "1"sv;
     }();
     if (mesh_draw_enabled) {
         auto index_type = VK_INDEX_TYPE_UINT16;
