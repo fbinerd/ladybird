@@ -1749,7 +1749,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && !mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_DISABLE_AUTO_SYNC");
             auto explicit_sync = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SYNC_GL_BEFORE_DRAW");
             if (explicit_sync || auto_sync_direct_zero_copy_replace) {
-                auto sync_mode = "finish"sv;
+                auto sync_mode = auto_sync_direct_zero_copy_replace ? "flush"sv : "finish"sv;
                 if (auto const* sync_mode_value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SYNC_MODE")) {
                     auto value = StringView { sync_mode_value, strlen(sync_mode_value) };
                     if (value == "flush"sv)
