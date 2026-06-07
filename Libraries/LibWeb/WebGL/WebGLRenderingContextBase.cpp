@@ -90,6 +90,12 @@ static bool should_log_mundo_webgl_texture_diagnostic(size_t count)
     return count <= 12 || count % 120 == 0;
 }
 
+static bool mundo_webgl_env_flag_enabled(char const* name)
+{
+    auto const* value = getenv(name);
+    return value && StringView { value, strlen(value) } == "1"sv;
+}
+
 static bool mundo_webgl_video_pbo_upload_enabled()
 {
     auto const* raw_value = getenv("MUNDO_WEBGL_VIDEO_PBO_UPLOAD");
@@ -1587,6 +1593,67 @@ bool WebGLRenderingContextBase::upload_texture_source_with_video_nv12_shader_fas
                     gl_external_import_probe.uv_plane_reason,
                     gl_external_import_probe.uv_plane_gl_error,
                     direct_sampling_route);
+            }
+            if (mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD_FOR_REPLACE")
+                && !strcmp(direct_sampling_route, "vulkan_direct_sampling_virtualization")) {
+                if (auto texture = current_bound_texture_for_target(target)) {
+                    auto const& source_plane = external_memory.planes[0];
+                    int retained_source_opaque_fd = -1;
+                    if (source_plane.fd >= 0) {
+                        retained_source_opaque_fd = dup(source_plane.fd);
+                        if (retained_source_opaque_fd < 0 && should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                            dbgln("MUNDO_WEBGL_VIDEO_TEXTURE_BACKING_SOURCE_FD_DUP attempt={} frame_id={} texture={} status=failed source_fd={} errno={} next_step=retain_decoder_surface_for_virtual_draw",
+                                attempt_count,
+                                hardware_frame_id,
+                                previous_texture_2d,
+                                source_plane.fd,
+                                errno);
+                        }
+                    }
+                    texture->set_hardware_video_backing(WebGLTexture::HardwareVideoBacking {
+                        .frame_id = hardware_frame_id,
+                        .width = static_cast<u32>(video_width),
+                        .height = static_cast<u32>(video_height),
+                        .backend = hardware_backend,
+                        .upload_mode = "vulkan_mesh_direct_nv12",
+                        .copy_stage = "decoder_surface_direct_vulkan_mesh",
+                        .direct_zero_copy = true,
+                        .copied_on_gpu = false,
+                        .direct_sampling_route = direct_sampling_route,
+                        .direct_sampling_reason = direct_sampling_reason,
+                        .source_vulkan_format = source_plane.vulkan_format,
+                        .source_vulkan_layout = source_plane.vulkan_image_layout,
+                        .source_allocation_size = source_plane.allocation_size,
+                        .source_handle_type = source_plane.fd >= 0 ? static_cast<u32>(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT) : 0,
+                        .source_opaque_fd = retained_source_opaque_fd,
+                        .source_single_optimal_multiplanar = external_memory.single_image && external_memory.single_memory && external_memory.plane_count == 1,
+                    });
+                    if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD attempt={} frame_id={} texture={} size={}x{} backend={} route={} direct_zero_copy=true copied_on_gpu=false source_format={} source_layout={} source_allocation_size={} source_handle_type={} source_opaque_fd_retained={} source_single_optimal_multiplanar={} reason=forced_vulkan_mesh_replace_can_sample_decoder_surface_directly",
+                            attempt_count,
+                            hardware_frame_id,
+                            previous_texture_2d,
+                            video_width,
+                            video_height,
+                            hardware_backend,
+                            direct_sampling_route,
+                            source_plane.vulkan_format,
+                            source_plane.vulkan_image_layout,
+                            source_plane.allocation_size,
+                            source_plane.fd >= 0 ? to_underlying(VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT) : 0,
+                            retained_source_opaque_fd >= 0,
+                            external_memory.single_image && external_memory.single_memory && external_memory.plane_count == 1);
+                    }
+                    restore_state();
+                    return true;
+                }
+                if (should_log_mundo_webgl_texture_diagnostic(attempt_count)) {
+                    dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_SKIP_RGBA_UPLOAD_BLOCKED attempt={} frame_id={} target={} texture={} reason=no_current_bound_webgl_texture fallback=vulkan_render_nv12_to_webgl_texture_storage",
+                        attempt_count,
+                        hardware_frame_id,
+                        target,
+                        previous_texture_2d);
+                }
             }
             auto target_rgba_or_error = context().get_or_create_imported_video_rgba_target_texture(static_cast<u32>(previous_texture_2d), static_cast<u32>(video_width), static_cast<u32>(video_height), attempt_count);
             if (!target_rgba_or_error.is_error()) {
