@@ -2988,8 +2988,11 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
     eglWaitUntilWorkScheduledANGLE(m_impl->display);
 #    elif defined(USE_VULKAN_DMABUF_IMAGES)
     // FIXME: CPU sync for now, but it would be better to export a fence and have Skia wait for it before reading from the surface.
-    // MUNDO_WEBGL_PRESENT_SYNC_MODE lets the direct-video path validate lighter present synchronization without changing the default.
-    auto present_sync_mode = "finish"sv;
+    // MUNDO_WEBGL_PRESENT_SYNC_MODE lets the direct-video path validate lighter present synchronization without changing the default for non-direct video paths.
+    auto direct_vulkan_mesh_present = false;
+    if (auto const* direct_vulkan_mesh_value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH"))
+        direct_vulkan_mesh_present = StringView { direct_vulkan_mesh_value, strlen(direct_vulkan_mesh_value) } == "1"sv;
+    auto present_sync_mode = direct_vulkan_mesh_present ? "flush"sv : "finish"sv;
     if (auto const* present_sync_mode_value = getenv("MUNDO_WEBGL_PRESENT_SYNC_MODE")) {
         auto value = StringView { present_sync_mode_value, strlen(present_sync_mode_value) };
         if (value == "flush"sv)
@@ -3010,7 +3013,7 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
     static size_t s_present_sync_log_count = 0;
     ++s_present_sync_log_count;
     if (s_present_sync_log_count <= 8 || s_present_sync_log_count % 120 == 0)
-        dbgln("MUNDO_WEBGL_PRESENT_SYNC count={} mode={} sync_us={} preserve_drawing_buffer={} next_step={}", s_present_sync_log_count, present_sync_mode, present_sync_us, preserve_drawing_buffer, present_sync_mode == "finish"sv ? "test_flush_or_export_fence_for_gpu_only_present"sv : "verify_webgl_present_visual_integrity"sv);
+        dbgln("MUNDO_WEBGL_PRESENT_SYNC count={} mode={} sync_us={} direct_vulkan_mesh_present={} preserve_drawing_buffer={} next_step={}", s_present_sync_log_count, present_sync_mode, present_sync_us, direct_vulkan_mesh_present, preserve_drawing_buffer, present_sync_mode == "finish"sv ? "test_flush_or_export_fence_for_gpu_only_present"sv : "verify_webgl_present_visual_integrity"sv);
 #    endif
 
     // "By default, after compositing the contents of the drawing buffer shall be cleared to their default values, as shown in the table above.
