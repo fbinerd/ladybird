@@ -561,6 +561,9 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
     auto attribs_to_log = active_attrib_count < 8 ? active_attrib_count : 8;
     bool all_enabled_attrib_buffers_shadowed = true;
     size_t enabled_attrib_count = 0;
+    bool has_position_attrib = false;
+    bool has_uv_attrib = false;
+    bool has_uv_right_attrib = false;
     for (GLint index = 0; index < attribs_to_log; ++index) {
         GLint size = 0;
         GLenum type = 0;
@@ -569,6 +572,14 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
         glGetActiveAttrib(program_handle, static_cast<GLuint>(index), sizeof(name), &length, &size, &type, name);
         if (!length)
             continue;
+
+        auto attribute_name = StringView { name, static_cast<size_t>(length) };
+        if (attribute_name == "position"sv)
+            has_position_attrib = true;
+        else if (attribute_name == "uv"sv)
+            has_uv_attrib = true;
+        else if (attribute_name == "uv_right"sv)
+            has_uv_right_attrib = true;
 
         auto location = glGetAttribLocation(program_handle, name);
         GLint enabled = 0;
@@ -602,7 +613,7 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
             backing.frame_id,
             program_handle,
             index,
-            StringView { name, static_cast<size_t>(length) },
+            attribute_name,
             location,
             size,
             type,
@@ -653,6 +664,24 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
             element_shadow_complete,
             cached_source ? cached_source->direct_sample_ready : false,
             all_enabled_attrib_buffers_shadowed && element_shadow_complete && cached_source && cached_source->direct_sample_ready ? "create_vulkan_pipeline_from_webgl_draw_inputs" : "complete_replay_inputs_before_vulkan_pipeline");
+
+        auto simple_video_mesh_replay_possible = has_position_attrib && has_uv_attrib && all_enabled_attrib_buffers_shadowed && element_shadow_complete && cached_source && cached_source->direct_sample_ready;
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_STRATEGY count={} frame_id={} program={} simple_video_mesh_replay_possible={} has_position={} has_uv={} has_uv_right={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} element_shadow_complete={} source_direct_sample_ready={} selected={} reason={} next_step={}",
+            draw_log_count,
+            backing.frame_id,
+            program_handle,
+            simple_video_mesh_replay_possible,
+            has_position_attrib,
+            has_uv_attrib,
+            has_uv_right_attrib,
+            active_attrib_count,
+            enabled_attrib_count,
+            all_enabled_attrib_buffers_shadowed,
+            element_shadow_complete,
+            cached_source ? cached_source->direct_sample_ready : false,
+            simple_video_mesh_replay_possible ? "fixed_vulkan_video_mesh_shader" : "full_webgl_shader_replay_or_interop",
+            simple_video_mesh_replay_possible ? "position_uv_mesh_with_shadowed_buffers" : "missing_simple_mesh_prerequisite",
+            simple_video_mesh_replay_possible ? "build_vulkan_pipeline_for_position_uv_nv12_sampling" : "capture_more_shader_or_buffer_state");
     }
 
     if (attached_shader_count > 0) {
