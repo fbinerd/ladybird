@@ -559,6 +559,8 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
         ready ? "implement_vulkan_geometry_or_backend_interop_for_this_draw" : "complete_direct_draw_prerequisites");
 
     auto attribs_to_log = active_attrib_count < 8 ? active_attrib_count : 8;
+    bool all_enabled_attrib_buffers_shadowed = true;
+    size_t enabled_attrib_count = 0;
     for (GLint index = 0; index < attribs_to_log; ++index) {
         GLint size = 0;
         GLenum type = 0;
@@ -590,6 +592,10 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
                 buffer_shadow_complete = webgl_buffer->has_complete_shadow_data();
                 buffer_shadow_bytes = webgl_buffer->shadow_byte_length();
             }
+            if (enabled) {
+                ++enabled_attrib_count;
+                all_enabled_attrib_buffers_shadowed &= buffer_shadow_complete;
+            }
         }
         dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_DRAW_ATTRIB count={} frame_id={} program={} active_index={} name={} location={} declared_size={} declared_type={} enabled={} array_size={} array_type={} normalized={} stride={} pointer_offset={} buffer={} buffer_shadow_complete={} buffer_shadow_bytes={} next_step={}",
             draw_log_count,
@@ -615,11 +621,8 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
     if (geometry.type) {
         bool element_shadow_complete = false;
         size_t element_shadow_bytes = 0;
-        GLuint element_buffer_handle = 0;
-        if (auto element_buffer = webgl_context.current_bound_buffer_for_target(GL_ELEMENT_ARRAY_BUFFER)) {
-            auto handle_or_error = element_buffer->handle(&webgl_context);
-            if (!handle_or_error.is_error())
-                element_buffer_handle = handle_or_error.release_value();
+        auto element_buffer_handle = static_cast<GLuint>(element_array_buffer);
+        if (auto element_buffer = webgl_context.mundo_buffer_for_handle(element_buffer_handle)) {
             element_shadow_complete = element_buffer->has_complete_shadow_data();
             element_shadow_bytes = element_buffer->shadow_byte_length();
         }
@@ -634,6 +637,22 @@ static void log_mundo_webgl_video_vulkan_direct_draw_plan(WebGLRenderingContextI
             geometry.offset,
             geometry.count,
             element_shadow_complete ? "map_shadowed_webgl_index_buffer_to_vulkan_pipeline" : "capture_or_share_webgl_index_buffer_before_vulkan_replay");
+
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_DIRECT_REPLAY_INPUTS_READY count={} frame_id={} program={} ready={} reason={} enabled_attribs={} attrib_buffers_shadowed={} element_buffer={} element_shadow_complete={} source_direct_sample_ready={} next_step={}",
+            draw_log_count,
+            backing.frame_id,
+            program_handle,
+            all_enabled_attrib_buffers_shadowed && element_shadow_complete && cached_source && cached_source->direct_sample_ready,
+            !all_enabled_attrib_buffers_shadowed ? "missing_vertex_buffer_shadow"sv
+                : !element_shadow_complete ? "missing_index_buffer_shadow"sv
+                : !(cached_source && cached_source->direct_sample_ready) ? "source_not_direct_sample_ready"sv
+                : "ready_for_vulkan_replay_pipeline"sv,
+            enabled_attrib_count,
+            all_enabled_attrib_buffers_shadowed,
+            element_buffer_handle,
+            element_shadow_complete,
+            cached_source ? cached_source->direct_sample_ready : false,
+            all_enabled_attrib_buffers_shadowed && element_shadow_complete && cached_source && cached_source->direct_sample_ready ? "create_vulkan_pipeline_from_webgl_draw_inputs" : "complete_replay_inputs_before_vulkan_pipeline");
     }
 
     if (attached_shader_count > 0) {
