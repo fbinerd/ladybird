@@ -2001,6 +2001,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     auto draw_status = "disabled"sv;
     auto draw_reason = "set_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_1_to_execute"sv;
     auto queue_sync_mode = "idle"sv;
+    i64 queue_submit_us = 0;
+    i64 queue_wait_us = 0;
     if (auto const* queue_sync_mode_value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_QUEUE_SYNC_MODE")) {
         auto value = StringView { queue_sync_mode_value, strlen(queue_sync_mode_value) };
         if (value == "fence"sv)
@@ -2196,19 +2198,25 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
                 return log_failure("create_mesh_draw_fence_failed"sv, result);
         }
 
+        auto submit_started_at = MonotonicTime::now();
         result = vkQueueSubmit(context.graphics_queue, 1, &submit_info, submit_fence);
+        queue_submit_us = (MonotonicTime::now() - submit_started_at).to_microseconds();
         if (result != VK_SUCCESS) {
             if (submit_fence != VK_NULL_HANDLE)
                 vkDestroyFence(context.logical_device, submit_fence, nullptr);
             return log_failure("submit_mesh_draw_command_buffer_failed"sv, result);
         }
         if (queue_sync_mode == "fence"sv) {
+            auto wait_started_at = MonotonicTime::now();
             result = vkWaitForFences(context.logical_device, 1, &submit_fence, VK_TRUE, UINT64_MAX);
+            queue_wait_us = (MonotonicTime::now() - wait_started_at).to_microseconds();
             vkDestroyFence(context.logical_device, submit_fence, nullptr);
             if (result != VK_SUCCESS)
                 return log_failure("wait_mesh_draw_fence_failed"sv, result);
         } else if (queue_sync_mode == "idle"sv) {
+            auto wait_started_at = MonotonicTime::now();
             result = vkQueueWaitIdle(context.graphics_queue);
+            queue_wait_us = (MonotonicTime::now() - wait_started_at).to_microseconds();
             if (result != VK_SUCCESS)
                 return log_failure("wait_mesh_draw_queue_idle_failed"sv, result);
         }
@@ -2218,7 +2226,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     }
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} queue_sync_mode={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} viewport_flip_y={} vertex_bindings=3 vertex_attributes=3 matrix_push_constants={} stereo_eye_left={} next_step={}",
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status={} descriptor_status=updated target_status=ok draw_status={} draw_reason={} queue_sync_mode={} queue_submit_us={} queue_wait_us={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} viewport_flip_y={} vertex_bindings=3 vertex_attributes=3 matrix_push_constants={} stereo_eye_left={} next_step={}",
             log_count,
             probe_count,
             frame_id,
@@ -2226,6 +2234,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             draw_status,
             draw_reason,
             mesh_draw_enabled ? queue_sync_mode : "not_submitted"sv,
+            queue_submit_us,
+            queue_wait_us,
             destination_format,
             reinterpret_cast<uintptr_t>(source_image_view),
             reinterpret_cast<uintptr_t>(immutable_sampler),
