@@ -55,6 +55,7 @@ extern "C" {
 #ifdef USE_VULKAN_DMABUF_IMAGES
 #    include <ffnvcodec/dynlink_cuda.h>
 #    include <dlfcn.h>
+#    include <stdlib.h>
 #    include <unistd.h>
 #endif
 
@@ -1533,7 +1534,7 @@ static ErrorOr<VkShaderModule> create_mundo_vulkan_video_shader_module(Gfx::Vulk
     return shader_module;
 }
 
-OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImageView source_image_view, VkSampler immutable_sampler, size_t log_count)
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImage source_image, VkImageView source_image_view, VkSampler immutable_sampler, u32 source_layout, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count)
 {
     struct MeshPipelineResources {
         VkDevice device { VK_NULL_HANDLE };
@@ -1957,11 +1958,174 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         target_image->cached_video_framebuffer_width = target_image->info.extent.width;
         target_image->cached_video_framebuffer_height = target_image->info.extent.height;
     }
+
+    auto mesh_draw_enabled = [] {
+        auto const* value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW");
+        return value && StringView { value, strlen(value) } == "1"sv;
+    }();
+    auto draw_status = "disabled"sv;
+    auto draw_reason = "set_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_1_to_execute"sv;
+    if (mesh_draw_enabled) {
+        auto index_type = VK_INDEX_TYPE_UINT16;
+        if (draw_type == GL_UNSIGNED_SHORT)
+            index_type = VK_INDEX_TYPE_UINT16;
+        else if (draw_type == GL_UNSIGNED_INT)
+            index_type = VK_INDEX_TYPE_UINT32;
+        else {
+            return log_failure("unsupported_index_type_for_vulkan_mesh_draw"sv);
+        }
+
+        if (!m_impl->cached_vulkan_video_replay_buffers)
+            return log_failure("missing_cached_replay_buffers_for_draw"sv);
+        auto const& replay_buffers = *m_impl->cached_vulkan_video_replay_buffers;
+
+        vkResetCommandBuffer(context.command_buffer, 0);
+        VkCommandBufferBeginInfo begin_info {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            .pInheritanceInfo = nullptr,
+        };
+        result = vkBeginCommandBuffer(context.command_buffer, &begin_info);
+        if (result != VK_SUCCESS)
+            return log_failure("begin_mesh_draw_command_buffer_failed"sv, result);
+
+        VkImageMemoryBarrier pre_render_barriers[] {
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .oldLayout = static_cast<VkImageLayout>(source_layout),
+                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = source_image,
+                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 },
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+                .oldLayout = target_image->info.layout,
+                .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = target_image->image,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+            },
+        };
+        vkCmdPipelineBarrier(context.command_buffer,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            2, pre_render_barriers);
+
+        VkRenderPassBeginInfo render_pass_begin {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            .pNext = nullptr,
+            .renderPass = s_resources.render_pass,
+            .framebuffer = target_image->cached_video_framebuffer,
+            .renderArea = {
+                .offset = { 0, 0 },
+                .extent = { target_image->info.extent.width, target_image->info.extent.height },
+            },
+            .clearValueCount = 0,
+            .pClearValues = nullptr,
+        };
+        vkCmdBeginRenderPass(context.command_buffer, &render_pass_begin, VK_SUBPASS_CONTENTS_INLINE);
+        VkViewport viewport {
+            .x = static_cast<float>(viewport_x),
+            .y = static_cast<float>(viewport_y),
+            .width = static_cast<float>(viewport_width),
+            .height = static_cast<float>(viewport_height),
+            .minDepth = 0.0f,
+            .maxDepth = 1.0f,
+        };
+        VkRect2D scissor {
+            .offset = { viewport_x, viewport_y },
+            .extent = { static_cast<u32>(viewport_width), static_cast<u32>(viewport_height) },
+        };
+        vkCmdSetViewport(context.command_buffer, 0, 1, &viewport);
+        vkCmdSetScissor(context.command_buffer, 0, 1, &scissor);
+        vkCmdBindPipeline(context.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline);
+        vkCmdBindDescriptorSets(context.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline_layout, 0, 1, &s_resources.descriptor_set, 0, nullptr);
+        VkBuffer vertex_buffers[] { replay_buffers.position_buffer->buffer, replay_buffers.uv_buffer->buffer };
+        VkDeviceSize vertex_offsets[] { 0, 0 };
+        vkCmdBindVertexBuffers(context.command_buffer, 0, 2, vertex_buffers, vertex_offsets);
+        vkCmdBindIndexBuffer(context.command_buffer, replay_buffers.index_buffer->buffer, draw_offset, index_type);
+        vkCmdDrawIndexed(context.command_buffer, draw_count, 1, 0, 0, 0);
+        vkCmdEndRenderPass(context.command_buffer);
+
+        VkImageMemoryBarrier post_render_barriers[] {
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .newLayout = static_cast<VkImageLayout>(source_layout),
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = source_image,
+                .subresourceRange = { VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 1, 0, 1 },
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext = nullptr,
+                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .newLayout = target_image->info.layout,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = target_image->image,
+                .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+            },
+        };
+        vkCmdPipelineBarrier(context.command_buffer,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            2, post_render_barriers);
+
+        result = vkEndCommandBuffer(context.command_buffer);
+        if (result != VK_SUCCESS)
+            return log_failure("end_mesh_draw_command_buffer_failed"sv, result);
+
+        VkSubmitInfo submit_info {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .pNext = nullptr,
+            .waitSemaphoreCount = 0,
+            .pWaitSemaphores = nullptr,
+            .pWaitDstStageMask = nullptr,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &context.command_buffer,
+            .signalSemaphoreCount = 0,
+            .pSignalSemaphores = nullptr,
+        };
+        result = vkQueueSubmit(context.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+        if (result != VK_SUCCESS)
+            return log_failure("submit_mesh_draw_command_buffer_failed"sv, result);
+        result = vkQueueWaitIdle(context.graphics_queue);
+        if (result != VK_SUCCESS)
+            return log_failure("wait_mesh_draw_queue_idle_failed"sv, result);
+        draw_status = "executed"sv;
+        draw_reason = "vkCmdDrawIndexed_submitted"sv;
+    }
+
     if (should_log) {
-        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=filled descriptor_status=updated target_status=ok destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} vertex_bindings=2 vertex_attributes=2 next_step=bind_replay_buffers_and_execute_vulkan_mesh_draw",
+        dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_PIPELINE_PROBE draw_count={} probe_count={} frame_id={} status=ok cache_status=filled descriptor_status=updated target_status=ok draw_status={} draw_reason={} destination_format={} source_image_view={} sampler={} pipeline={} descriptor_set={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} vertex_bindings=2 vertex_attributes=2 next_step={}",
             log_count,
             probe_count,
             frame_id,
+            draw_status,
+            draw_reason,
             destination_format,
             reinterpret_cast<uintptr_t>(source_image_view),
             reinterpret_cast<uintptr_t>(immutable_sampler),
@@ -1971,7 +2135,15 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             reinterpret_cast<uintptr_t>(target_image->cached_video_color_attachment_view),
             reinterpret_cast<uintptr_t>(target_image->cached_video_framebuffer),
             target_image->info.extent.width,
-            target_image->info.extent.height);
+            target_image->info.extent.height,
+            draw_count,
+            draw_type,
+            draw_offset,
+            viewport_width,
+            viewport_height,
+            viewport_x,
+            viewport_y,
+            mesh_draw_enabled ? "verify_direct_vulkan_mesh_visual_output" : "enable_MUNDO_WEBGL_VIDEO_VULKAN_MESH_DRAW_for_real_draw");
     }
     return VulkanVideoMeshPipelineProbeResult {
         .attempted = true,
