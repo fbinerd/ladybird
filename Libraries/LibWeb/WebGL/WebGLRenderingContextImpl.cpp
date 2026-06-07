@@ -374,7 +374,7 @@ static void log_mundo_webgl_video_virtualization_draw_state(char const* op, size
         backing.frame_id,
         program_handle,
         texture_handle,
-        backing.copied_on_gpu && !backing.direct_zero_copy,
+        backing.direct_zero_copy || backing.copied_on_gpu,
         backing.direct_zero_copy,
         backing.copied_on_gpu,
         backing.upload_mode,
@@ -1705,6 +1705,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
 
     auto start = MonotonicTime::now();
     bool vulkan_video_draw_executed = false;
+    bool vulkan_video_draw_used_sampler = false;
+    bool vulkan_video_draw_direct_zero_copy = false;
     GLint video_draw_framebuffer = 0;
     GLenum video_draw_framebuffer_status = 0;
     GLint video_draw_color_attachment_type = 0;
@@ -1725,6 +1727,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             texture_handle = texture_handle_or_error.release_value();
         auto readiness = mundo_webgl_video_virtualization_readiness(program_handle, texture_handle, backing, m_current_program ? m_current_program->video_sampler_plan() : Optional<WebGLProgram::VideoSamplerPlan> {});
         auto uses_video_sampler = readiness.route_supported && readiness.direct_texture_call && readiness.sampler_matches_video_texture;
+        vulkan_video_draw_used_sampler = uses_video_sampler;
+        vulkan_video_draw_direct_zero_copy = backing.direct_zero_copy && !strcmp(backing.upload_mode, "vulkan_mesh_direct_nv12");
         auto should_log_video_draw = log_count <= 8 || log_count % 120 == 0;
         glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &video_draw_framebuffer);
         if (video_draw_framebuffer) {
@@ -1833,31 +1837,35 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
     }
     auto replace_gl_draw = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL");
     auto force_replace_gl_draw = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_FORCE_TARGET_MISMATCH");
-    auto can_replace_gl_draw = vulkan_video_draw_executed && replace_gl_draw && force_replace_gl_draw;
+    auto direct_zero_copy_replace_gl_draw = vulkan_video_draw_direct_zero_copy && vulkan_video_draw_used_sampler;
+    auto can_replace_gl_draw = vulkan_video_draw_executed && replace_gl_draw && (force_replace_gl_draw || direct_zero_copy_replace_gl_draw);
     if (!(can_replace_gl_draw)) {
         if (vulkan_video_draw_executed && replace_gl_draw) {
             static size_t s_blocked_replace_draw_count { 0 };
             auto blocked_replace_draw_count = ++s_blocked_replace_draw_count;
             if (blocked_replace_draw_count <= 16 || blocked_replace_draw_count % 120 == 0)
-                dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_BLOCKED count={} framebuffer={} default_framebuffer={} framebuffer_status={} color_attachment_type={} color_attachment_name={} reason=vulkan_mesh_target_not_wired_to_webgl_present_target next_step=make_vulkan_mesh_render_into_webgl_draw_target_before_skipping_gl",
+                dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_BLOCKED count={} framebuffer={} default_framebuffer={} framebuffer_status={} color_attachment_type={} color_attachment_name={} direct_zero_copy={} uses_video_sampler={} reason=vulkan_mesh_target_not_wired_to_webgl_present_target next_step=make_vulkan_mesh_render_into_webgl_draw_target_before_skipping_gl",
                     blocked_replace_draw_count,
                     video_draw_framebuffer,
                     m_context->default_framebuffer(),
                     video_draw_framebuffer_status,
                     video_draw_color_attachment_type,
-                    video_draw_color_attachment_name);
+                    video_draw_color_attachment_name,
+                    vulkan_video_draw_direct_zero_copy,
+                    vulkan_video_draw_used_sampler);
         }
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
     } else {
         static size_t s_replaced_draw_count { 0 };
         auto replaced_draw_count = ++s_replaced_draw_count;
         if (replaced_draw_count <= 16 || replaced_draw_count % 120 == 0)
-            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_DRAW count={} mode={} draw_count={} type={} offset={} reason=vulkan_mesh_draw_executed next_step=verify_rgba_sampler_path_is_not_required_for_this_video_draw",
+            dbgln("MUNDO_WEBGL_VIDEO_VULKAN_MESH_REPLACE_GL_DRAW count={} mode={} draw_count={} type={} offset={} reason={} next_step=verify_rgba_sampler_path_is_not_required_for_this_video_draw",
                 replaced_draw_count,
                 mode,
                 count,
                 type,
-                offset);
+                offset,
+                direct_zero_copy_replace_gl_draw ? "direct_zero_copy_vulkan_mesh_draw_executed" : "forced_vulkan_mesh_draw_executed");
     }
     record_mundo_webgl_timing_summary("drawElements", (MonotonicTime::now() - start).to_microseconds());
     if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
