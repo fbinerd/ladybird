@@ -2998,6 +2998,17 @@ void OpenGLContext::note_direct_vulkan_video_draw_submitted()
 #endif
 }
 
+bool OpenGLContext::has_direct_vulkan_video_draw_pending_gl_present() const
+{
+#ifdef USE_VULKAN_DMABUF_IMAGES
+    return mundo_webgl_video_direct_vulkan_mesh_enabled()
+        && m_impl->direct_vulkan_video_draw_serial > 0
+        && m_impl->gl_draw_serial == m_impl->direct_vulkan_video_draw_serial;
+#else
+    return false;
+#endif
+}
+
 void OpenGLContext::present(bool preserve_drawing_buffer)
 {
 #ifdef ENABLE_WEBGL

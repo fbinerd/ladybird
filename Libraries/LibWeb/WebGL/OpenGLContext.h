@@ -53,6 +53,7 @@ public:
     void present(bool preserve_drawing_buffer);
     void note_gl_draw_submitted();
     void note_direct_vulkan_video_draw_submitted();
+    bool has_direct_vulkan_video_draw_pending_gl_present() const;
 
     void set_size(Gfx::IntSize const&);
 

@@ -1607,9 +1607,38 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
     m_context->make_current();
     m_context->notify_content_will_change();
     needs_to_present();
+    auto gl_after_direct_vulkan_video = m_context->has_direct_vulkan_video_draw_pending_gl_present();
     auto start = MonotonicTime::now();
     glDrawArrays(mode, first, count);
     m_context->note_gl_draw_submitted();
+    if (gl_after_direct_vulkan_video) {
+        static size_t s_gl_after_direct_vulkan_video_draw_arrays_count { 0 };
+        auto log_count = ++s_gl_after_direct_vulkan_video_draw_arrays_count;
+        if (log_count <= 24 || log_count % 120 == 0) {
+            GLuint program_handle = 0;
+            if (m_current_program) {
+                auto program_handle_or_error = m_current_program->handle(this);
+                if (!program_handle_or_error.is_error())
+                    program_handle = program_handle_or_error.release_value();
+            }
+            GLuint texture_handle = 0;
+            bool bound_texture_has_video_backing = false;
+            if (m_texture_binding_2d) {
+                auto texture_handle_or_error = m_texture_binding_2d->handle(this);
+                if (!texture_handle_or_error.is_error())
+                    texture_handle = texture_handle_or_error.release_value();
+                bound_texture_has_video_backing = m_texture_binding_2d->has_hardware_video_backing();
+            }
+            dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_VIDEO_DRAW count={} op=drawArrays mode={} first={} draw_count={} program={} texture={} bound_texture_has_video_backing={} reason=gl_draw_after_direct_vulkan_video_before_present next_step=classify_or_virtualize_this_gl_draw_for_pure_vulkan_present",
+                log_count,
+                mode,
+                first,
+                count,
+                program_handle,
+                texture_handle,
+                bound_texture_has_video_backing);
+        }
+    }
     record_mundo_webgl_timing_summary("drawArrays", (MonotonicTime::now() - start).to_microseconds());
     if (auto duration = mundo_webgl_slow_duration(start); duration.has_value())
         dbgln("MUNDO_WEBGL_TIMING count={} op=drawArrays duration={}ms threshold={}ms mode={} first={} count={}", mundo_webgl_next_timing_count(), duration.value(), mundo_webgl_timing_threshold_ms(), mode, first, count);
@@ -1890,8 +1919,51 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     vulkan_video_draw_direct_zero_copy,
                     vulkan_video_draw_used_sampler);
         }
+        auto gl_after_direct_vulkan_video = m_context->has_direct_vulkan_video_draw_pending_gl_present();
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
         m_context->note_gl_draw_submitted();
+        if (gl_after_direct_vulkan_video) {
+            static size_t s_gl_after_direct_vulkan_video_draw_elements_count { 0 };
+            auto after_direct_log_count = ++s_gl_after_direct_vulkan_video_draw_elements_count;
+            if (after_direct_log_count <= 24 || after_direct_log_count % 120 == 0) {
+                GLint active_texture = 0;
+                glGetIntegervRobustANGLE(GL_ACTIVE_TEXTURE, 1, nullptr, &active_texture);
+                GLuint after_direct_program_handle = 0;
+                if (m_current_program) {
+                    auto handle_or_error = m_current_program->handle(this);
+                    if (!handle_or_error.is_error())
+                        after_direct_program_handle = handle_or_error.value();
+                }
+                GLuint after_direct_texture_handle = 0;
+                if (m_texture_binding_2d) {
+                    auto handle_or_error = m_texture_binding_2d->handle(this);
+                    if (!handle_or_error.is_error())
+                        after_direct_texture_handle = handle_or_error.value();
+                }
+                auto video_sampler_uniform = "none"sv;
+                auto video_sampler_direct_texture_call = false;
+                if (m_current_program && m_current_program->video_sampler_plan().has_value()) {
+                    auto const& plan = m_current_program->video_sampler_plan().value();
+                    video_sampler_uniform = plan.uniform_name.bytes_as_string_view();
+                    video_sampler_direct_texture_call = plan.direct_texture_call;
+                }
+                dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_VIDEO_DRAW count={} op=drawElements mode={} draw_count={} type={} offset={} program={} texture={} active_texture={} bound_texture_has_video_backing={} vulkan_video_draw_executed={} vulkan_video_draw_direct_zero_copy={} vulkan_video_draw_used_sampler={} video_sampler_uniform={} video_sampler_direct_texture_call={} reason=gl_draw_after_direct_vulkan_video_before_present next_step=classify_or_virtualize_this_gl_draw_for_pure_vulkan_present",
+                    after_direct_log_count,
+                    mode,
+                    count,
+                    type,
+                    offset,
+                    after_direct_program_handle,
+                    after_direct_texture_handle,
+                    active_texture,
+                    m_texture_binding_2d && m_texture_binding_2d->has_hardware_video_backing(),
+                    vulkan_video_draw_executed,
+                    vulkan_video_draw_direct_zero_copy,
+                    vulkan_video_draw_used_sampler,
+                    video_sampler_uniform,
+                    video_sampler_direct_texture_call);
+            }
+        }
     } else {
         m_context->note_direct_vulkan_video_draw_submitted();
         static size_t s_replaced_draw_count { 0 };
