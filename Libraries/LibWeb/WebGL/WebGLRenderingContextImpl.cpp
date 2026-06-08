@@ -2119,11 +2119,13 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             auto destination_format = m_context->vulkan_painting_surface_format();
             static size_t s_post_direct_solid_attempt_count { 0 };
             auto attempt_count = ++s_post_direct_solid_attempt_count;
+            auto solid_replay_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY");
             auto can_replay = position_layout_supported && position_ready && element_ready && destination_format.has_value()
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
-                && mode == GL_TRIANGLES;
+                && mode == GL_TRIANGLES
+                && solid_replay_enabled;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} ready={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
                     attempt_count,
                     program_handle,
                     count,
@@ -2137,6 +2139,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     element_ready,
                     element_data.size(),
                     destination_format.value_or(0),
+                    solid_replay_enabled,
                     can_replay,
                     !position_layout_supported ? "unsupported_position_layout"sv
                         : !position_ready ? "missing_position_shadow"sv
@@ -2144,6 +2147,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !destination_format.has_value() ? "missing_vulkan_target_format"sv
                         : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
                         : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
+                        : !solid_replay_enabled ? "solid_replay_requires_explicit_opt_in_after_white_overlay_regression"sv
                         : "ready"sv,
                     can_replay ? "execute_solid_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
             }
