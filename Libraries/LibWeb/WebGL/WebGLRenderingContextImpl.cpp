@@ -161,6 +161,16 @@ static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
     return view == "1"sv || view == "auto"sv;
 }
 
+static bool mundo_webgl_skip_post_direct_vulkan_non_sampler_gl_enabled()
+{
+    auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_SKIP_POST_NON_SAMPLER_GL");
+    if (!value)
+        return true;
+
+    auto view = StringView { value, strlen(value) };
+    return view != "0"sv && view != "false"sv && view != "off"sv;
+}
+
 struct MundoWebGLTimingSummary {
     size_t draw_arrays_count { 0 };
     i64 draw_arrays_us { 0 };
@@ -1940,6 +1950,63 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     vulkan_video_draw_used_sampler);
         }
         auto gl_after_direct_vulkan_video = m_context->has_direct_vulkan_video_draw_pending_gl_present();
+        auto skip_post_direct_vulkan_non_sampler_gl = direct_vulkan_mesh_mode
+            && gl_after_direct_vulkan_video
+            && mundo_webgl_skip_post_direct_vulkan_non_sampler_gl_enabled()
+            && vulkan_video_draw_direct_zero_copy
+            && !vulkan_video_draw_used_sampler
+            && m_texture_binding_2d
+            && m_texture_binding_2d->has_hardware_video_backing();
+        if (skip_post_direct_vulkan_non_sampler_gl) {
+            static size_t s_skipped_post_direct_vulkan_non_sampler_gl_count { 0 };
+            auto skip_count = ++s_skipped_post_direct_vulkan_non_sampler_gl_count;
+            if (skip_count <= 24 || skip_count % 120 == 0) {
+                GLuint skipped_program_handle = 0;
+                if (m_current_program) {
+                    auto handle_or_error = m_current_program->handle(this);
+                    if (!handle_or_error.is_error())
+                        skipped_program_handle = handle_or_error.value();
+                }
+                GLuint skipped_texture_handle = 0;
+                if (m_texture_binding_2d) {
+                    auto handle_or_error = m_texture_binding_2d->handle(this);
+                    if (!handle_or_error.is_error())
+                        skipped_texture_handle = handle_or_error.value();
+                }
+                GLint framebuffer = 0;
+                GLint vertex_array = 0;
+                GLint element_array_buffer = 0;
+                GLint active_attrib_count = 0;
+                GLint active_uniform_count = 0;
+                GLint viewport[4] {};
+                glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &framebuffer);
+                glGetIntegervRobustANGLE(GL_VERTEX_ARRAY_BINDING, 1, nullptr, &vertex_array);
+                glGetIntegervRobustANGLE(GL_ELEMENT_ARRAY_BUFFER_BINDING, 1, nullptr, &element_array_buffer);
+                glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
+                if (skipped_program_handle) {
+                    glGetProgramivRobustANGLE(skipped_program_handle, GL_ACTIVE_ATTRIBUTES, 1, nullptr, &active_attrib_count);
+                    glGetProgramivRobustANGLE(skipped_program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
+                }
+                dbgln("MUNDO_WEBGL_SKIP_POST_DIRECT_VULKAN_NON_SAMPLER_GL count={} op=drawElements mode={} draw_count={} type={} offset={} program={} texture={} framebuffer={} vertex_array={} element_array_buffer={} active_attribs={} active_uniforms={} viewport={}x{}+{}+{} reason=post_direct_vulkan_draw_does_not_use_video_sampler next_step=verify_present_auto_can_skip_gl_sync_without_losing_required_scene_geometry",
+                    skip_count,
+                    mode,
+                    count,
+                    type,
+                    offset,
+                    skipped_program_handle,
+                    skipped_texture_handle,
+                    framebuffer,
+                    vertex_array,
+                    element_array_buffer,
+                    active_attrib_count,
+                    active_uniform_count,
+                    viewport[2],
+                    viewport[3],
+                    viewport[0],
+                    viewport[1]);
+            }
+            return;
+        }
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
         m_context->note_gl_draw_submitted();
         if (gl_after_direct_vulkan_video) {
