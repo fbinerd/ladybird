@@ -165,10 +165,10 @@ static bool mundo_webgl_skip_post_direct_vulkan_non_sampler_gl_enabled()
 {
     auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_SKIP_POST_NON_SAMPLER_GL");
     if (!value)
-        return true;
+        return false;
 
     auto view = StringView { value, strlen(value) };
-    return view != "0"sv && view != "false"sv && view != "off"sv;
+    return view == "1"sv || view == "true"sv || view == "on"sv;
 }
 
 struct MundoWebGLTimingSummary {
@@ -2072,6 +2072,59 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     vulkan_video_draw_used_sampler,
                     video_sampler_uniform,
                     video_sampler_direct_texture_call);
+                if (after_direct_log_count <= 8 && after_direct_program_handle) {
+                    auto uniforms_to_log = active_uniform_count < 8 ? active_uniform_count : 8;
+                    for (GLint index = 0; index < uniforms_to_log; ++index) {
+                        GLint uniform_size = 0;
+                        GLenum uniform_type = 0;
+                        GLsizei uniform_length = 0;
+                        GLchar uniform_name[256];
+                        glGetActiveUniform(after_direct_program_handle, static_cast<GLuint>(index), sizeof(uniform_name), &uniform_length, &uniform_size, &uniform_type, uniform_name);
+                        if (!uniform_length)
+                            continue;
+                        dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_UNIFORM count={} program={} index={} name={} type={} size={} sampler={} next_step=map_required_uniform_for_vulkan_replay",
+                            after_direct_log_count,
+                            after_direct_program_handle,
+                            index,
+                            StringView { uniform_name, static_cast<size_t>(uniform_length) },
+                            uniform_type,
+                            uniform_size,
+                            mundo_webgl_is_sampler_uniform_type(uniform_type));
+                    }
+                    auto attribs_to_log = active_attrib_count < 8 ? active_attrib_count : 8;
+                    for (GLint index = 0; index < attribs_to_log; ++index) {
+                        GLint attrib_size = 0;
+                        GLenum attrib_type = 0;
+                        GLsizei attrib_length = 0;
+                        GLchar attrib_name[256];
+                        glGetActiveAttrib(after_direct_program_handle, static_cast<GLuint>(index), sizeof(attrib_name), &attrib_length, &attrib_size, &attrib_type, attrib_name);
+                        if (!attrib_length)
+                            continue;
+                        auto attrib_location = glGetAttribLocation(after_direct_program_handle, attrib_name);
+                        GLint enabled = 0;
+                        GLint array_size = 0;
+                        GLint array_type = 0;
+                        GLint stride = 0;
+                        if (attrib_location >= 0) {
+                            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(attrib_location), GL_VERTEX_ATTRIB_ARRAY_ENABLED, 1, nullptr, &enabled);
+                            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(attrib_location), GL_VERTEX_ATTRIB_ARRAY_SIZE, 1, nullptr, &array_size);
+                            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(attrib_location), GL_VERTEX_ATTRIB_ARRAY_TYPE, 1, nullptr, &array_type);
+                            glGetVertexAttribivRobustANGLE(static_cast<GLuint>(attrib_location), GL_VERTEX_ATTRIB_ARRAY_STRIDE, 1, nullptr, &stride);
+                        }
+                        dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_ATTRIB count={} program={} index={} name={} location={} declared_size={} declared_type={} enabled={} array_size={} array_type={} stride={} next_step=map_required_vertex_input_for_vulkan_replay",
+                            after_direct_log_count,
+                            after_direct_program_handle,
+                            index,
+                            StringView { attrib_name, static_cast<size_t>(attrib_length) },
+                            attrib_location,
+                            attrib_size,
+                            attrib_type,
+                            enabled,
+                            array_size,
+                            array_type,
+                            stride);
+                    }
+                }
             }
         }
     } else {
