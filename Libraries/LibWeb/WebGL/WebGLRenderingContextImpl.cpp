@@ -2131,6 +2131,10 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             GLint blend_dst_alpha = 0;
             GLint blend_equation_rgb = 0;
             GLint blend_equation_alpha = 0;
+            auto depth_test_enabled = glIsEnabled(GL_DEPTH_TEST) == GL_TRUE;
+            auto stencil_test_enabled = glIsEnabled(GL_STENCIL_TEST) == GL_TRUE;
+            auto cull_face_enabled = glIsEnabled(GL_CULL_FACE) == GL_TRUE;
+            auto scissor_test_enabled = glIsEnabled(GL_SCISSOR_TEST) == GL_TRUE;
             glGetBooleanvRobustANGLE(GL_COLOR_WRITEMASK, 4, nullptr, color_write_mask);
             glGetBooleanvRobustANGLE(GL_DEPTH_WRITEMASK, 1, nullptr, &depth_write_mask);
             glGetIntegervRobustANGLE(GL_DEPTH_FUNC, 1, nullptr, &depth_func);
@@ -2172,7 +2176,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !solid_replay_enabled ? "solid_replay_requires_explicit_opt_in_after_white_overlay_regression"sv
                         : "ready"sv,
                     can_replay ? "execute_solid_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_GL_STATE count={} program={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} depth_test={} depth_func={} depth_write={} cull_face={} cull_face_mode={} front_face={} scissor_test={} color_mask=({},{},{},{}) diffuse=({}, {}, {}, {}) opacity={} output_intensity={} reason=solid_replay_needs_matching_gl_state next_step=map_blend_depth_cull_color_mask_before_enabling_solid_vulkan_replay",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_GL_STATE count={} program={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} depth_test={} depth_func={} depth_write={} stencil_test={} cull_face={} cull_face_mode={} front_face={} scissor_test={} color_mask=({},{},{},{}) diffuse=({}, {}, {}, {}) opacity={} output_intensity={} reason=solid_replay_needs_matching_gl_state next_step=map_blend_depth_cull_color_mask_before_enabling_solid_vulkan_replay",
                     attempt_count,
                     program_handle,
                     glIsEnabled(GL_BLEND) == GL_TRUE,
@@ -2182,13 +2186,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     blend_dst_alpha,
                     blend_equation_rgb,
                     blend_equation_alpha,
-                    glIsEnabled(GL_DEPTH_TEST) == GL_TRUE,
+                    depth_test_enabled,
                     depth_func,
                     depth_write_mask == GL_TRUE,
-                    glIsEnabled(GL_CULL_FACE) == GL_TRUE,
+                    stencil_test_enabled,
+                    cull_face_enabled,
                     cull_face_mode,
                     front_face,
-                    glIsEnabled(GL_SCISSOR_TEST) == GL_TRUE,
+                    scissor_test_enabled,
                     color_write_mask[0] == GL_TRUE,
                     color_write_mask[1] == GL_TRUE,
                     color_write_mask[2] == GL_TRUE,
@@ -2199,6 +2204,26 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     uniform_snapshot.diffuse[3],
                     uniform_snapshot.opacity,
                     uniform_snapshot.output_intensity);
+            }
+            auto has_color_effect = color_write_mask[0] == GL_TRUE
+                || color_write_mask[1] == GL_TRUE
+                || color_write_mask[2] == GL_TRUE
+                || color_write_mask[3] == GL_TRUE;
+            auto has_depth_effect = depth_test_enabled && depth_write_mask == GL_TRUE;
+            auto has_stencil_effect = stencil_test_enabled;
+            if (!has_color_effect && !has_depth_effect && !has_stencil_effect) {
+                static size_t s_skipped_no_effect_solid_count { 0 };
+                auto skipped_no_effect_count = ++s_skipped_no_effect_solid_count;
+                if (skipped_no_effect_count <= 24 || skipped_no_effect_count % 120 == 0) {
+                    dbgln("MUNDO_WEBGL_SKIP_POST_DIRECT_VULKAN_NO_EFFECT_SOLID count={} attempt_count={} program={} draw_count={} type={} offset={} reason=no_color_depth_or_stencil_effect next_step=verify_present_auto_can_avoid_gl_sync_after_skipping_noop_draw",
+                        skipped_no_effect_count,
+                        attempt_count,
+                        program_handle,
+                        count,
+                        type,
+                        offset);
+                }
+                return true;
             }
             if (!can_replay)
                 return false;
