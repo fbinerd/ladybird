@@ -2239,6 +2239,21 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     vulkan_video_draw_used_sampler,
                     video_sampler_uniform,
                     video_sampler_direct_texture_call);
+                if (m_texture_binding_2d && !m_texture_binding_2d->has_hardware_video_backing()) {
+                    auto const& texture_snapshot = m_texture_binding_2d->mundo_texture_upload_snapshot();
+                    dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_TEXTURE_STATE count={} texture={} snapshot={} complete={} size={}x{} internal_format={} format={} type={} bytes={} reason=post_direct_gl_draw_uses_generic_texture next_step={}",
+                        after_direct_log_count,
+                        after_direct_texture_handle,
+                        texture_snapshot.has_value(),
+                        texture_snapshot.has_value() ? texture_snapshot->complete : false,
+                        texture_snapshot.has_value() ? texture_snapshot->width : 0,
+                        texture_snapshot.has_value() ? texture_snapshot->height : 0,
+                        texture_snapshot.has_value() ? texture_snapshot->internal_format : 0,
+                        texture_snapshot.has_value() ? texture_snapshot->format : 0,
+                        texture_snapshot.has_value() ? texture_snapshot->type : 0,
+                        texture_snapshot.has_value() ? texture_snapshot->byte_length : 0,
+                        texture_snapshot.has_value() && texture_snapshot->complete ? "build_vulkan_textured_replay_for_this_draw"sv : "capture_missing_texture_upload_or_support_subimage_updates"sv);
+                }
                 if (after_direct_log_count <= 8 && after_direct_program_handle) {
                     auto uniforms_to_log = active_uniform_count < 8 ? active_uniform_count : 8;
                     for (GLint index = 0; index < uniforms_to_log; ++index) {

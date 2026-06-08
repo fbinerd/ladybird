@@ -280,9 +280,11 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
     m_context->make_current();
 
     if (pixels) {
-        if (auto texture = current_bound_texture_for_target(target))
-            texture->clear_hardware_video_backing();
         auto span = MUST(get_offset_span<u8>(*pixels, /* src_offset= */ 0));
+        if (auto texture = current_bound_texture_for_target(target)) {
+            texture->clear_hardware_video_backing();
+            texture->set_mundo_texture_upload_snapshot(width, height, internalformat, format, type, span);
+        }
         auto start = MonotonicTime::now();
         glTexImage2DRobustANGLE(target, level, internalformat, width, height, border, format, type, span.size(), span.data());
         record_mundo_webgl_timing_summary("texImage2D(pixels)", (MonotonicTime::now() - start).to_microseconds());
@@ -346,8 +348,10 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
     }
 
     auto byte_buffer = MUST(ByteBuffer::create_zeroed(bytes.value_unchecked()));
-    if (auto texture = current_bound_texture_for_target(target))
+    if (auto texture = current_bound_texture_for_target(target)) {
         texture->clear_hardware_video_backing();
+        texture->set_mundo_texture_upload_snapshot(width, height, internalformat, format, type, byte_buffer.bytes());
+    }
     auto start = MonotonicTime::now();
     glTexImage2DRobustANGLE(target, level, internalformat, width, height, border, format, type, byte_buffer.size(), byte_buffer.data());
     record_mundo_webgl_timing_summary("texImage2D(null)", (MonotonicTime::now() - start).to_microseconds());
@@ -377,8 +381,10 @@ void WebGLRenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, We
     auto converted_texture = maybe_converted_texture.release_value();
     if (upload_texture_source_with_video_pbo(source, target, level, internalformat, 0, 0, 0, format, type, converted_texture, false))
         return;
-    if (auto texture = current_bound_texture_for_target(target))
+    if (auto texture = current_bound_texture_for_target(target)) {
         texture->clear_hardware_video_backing();
+        texture->set_mundo_texture_upload_snapshot(converted_texture.width, converted_texture.height, internalformat, format, type, converted_texture.buffer.bytes());
+    }
     auto start = MonotonicTime::now();
     glTexImage2DRobustANGLE(target, level, internalformat, converted_texture.width, converted_texture.height, 0, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
     record_mundo_webgl_timing_summary("texImage2D(source)", (MonotonicTime::now() - start).to_microseconds());
@@ -390,8 +396,10 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
 {
     m_context->make_current();
 
-    if (auto texture = current_bound_texture_for_target(target))
+    if (auto texture = current_bound_texture_for_target(target)) {
         texture->clear_hardware_video_backing();
+        texture->mark_mundo_texture_upload_snapshot_incomplete();
+    }
     auto span = MUST(get_offset_span<u8>(*pixels, /* src_offset= */ 0));
     auto start = MonotonicTime::now();
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, width, height, format, type, span.size(), span.data());
@@ -423,8 +431,10 @@ void WebGLRenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong target
     auto converted_texture = maybe_converted_texture.release_value();
     if (upload_texture_source_with_video_pbo(source, target, level, 0, xoffset, yoffset, 0, format, type, converted_texture, true))
         return;
-    if (auto texture = current_bound_texture_for_target(target))
+    if (auto texture = current_bound_texture_for_target(target)) {
         texture->clear_hardware_video_backing();
+        texture->mark_mundo_texture_upload_snapshot_incomplete();
+    }
     auto start = MonotonicTime::now();
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
     record_mundo_webgl_timing_summary("texSubImage2D(source)", (MonotonicTime::now() - start).to_microseconds());

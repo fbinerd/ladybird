@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <AK/ByteBuffer.h>
 #include <AK/NonnullOwnPtr.h>
 #include <LibWeb/WebGL/Types.h>
 #include <LibWeb/WebGL/WebGLObject.h>
@@ -50,6 +51,23 @@ public:
     void clear_hardware_video_backing();
     bool has_hardware_video_backing() const { return m_hardware_video_backing.has_value(); }
     Optional<HardwareVideoBacking> const& hardware_video_backing() const { return m_hardware_video_backing; }
+
+    struct MundoTextureUploadSnapshot {
+        u32 width { 0 };
+        u32 height { 0 };
+        u32 internal_format { 0 };
+        u32 format { 0 };
+        u32 type { 0 };
+        size_t byte_length { 0 };
+        bool complete { false };
+        ByteBuffer pixels;
+    };
+
+    void set_mundo_texture_upload_snapshot(u32 width, u32 height, u32 internal_format, u32 format, u32 type, ReadonlyBytes pixels);
+    void set_mundo_texture_upload_snapshot_incomplete(u32 width, u32 height, u32 internal_format, u32 format, u32 type, size_t byte_length);
+    void mark_mundo_texture_upload_snapshot_incomplete();
+    void clear_mundo_texture_upload_snapshot();
+    Optional<MundoTextureUploadSnapshot> const& mundo_texture_upload_snapshot() const { return m_mundo_texture_upload_snapshot; }
 #ifdef USE_VULKAN_DMABUF_IMAGES
     void set_cached_virtual_vulkan_video_source(u64 frame_id, NonnullOwnPtr<Gfx::ImportedVulkanNV12Image>);
     Gfx::ImportedVulkanNV12Image const* cached_virtual_vulkan_video_source() const { return m_cached_virtual_vulkan_video_source.ptr(); }
@@ -63,6 +81,7 @@ protected:
 
 private:
     Optional<HardwareVideoBacking> m_hardware_video_backing;
+    Optional<MundoTextureUploadSnapshot> m_mundo_texture_upload_snapshot;
 #ifdef USE_VULKAN_DMABUF_IMAGES
     OwnPtr<Gfx::ImportedVulkanNV12Image> m_cached_virtual_vulkan_video_source;
     u64 m_cached_virtual_vulkan_video_source_frame_id { 0 };

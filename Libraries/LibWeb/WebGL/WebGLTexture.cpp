@@ -53,6 +53,49 @@ void WebGLTexture::clear_hardware_video_backing()
 #endif
 }
 
+void WebGLTexture::set_mundo_texture_upload_snapshot(u32 width, u32 height, u32 internal_format, u32 format, u32 type, ReadonlyBytes pixels)
+{
+    static constexpr size_t max_snapshot_bytes = 64 * 1024 * 1024;
+
+    MundoTextureUploadSnapshot snapshot;
+    snapshot.width = width;
+    snapshot.height = height;
+    snapshot.internal_format = internal_format;
+    snapshot.format = format;
+    snapshot.type = type;
+    snapshot.byte_length = pixels.size();
+    snapshot.complete = pixels.size() <= max_snapshot_bytes;
+    if (snapshot.complete)
+        snapshot.pixels = MUST(ByteBuffer::copy(pixels));
+    m_mundo_texture_upload_snapshot = move(snapshot);
+}
+
+void WebGLTexture::set_mundo_texture_upload_snapshot_incomplete(u32 width, u32 height, u32 internal_format, u32 format, u32 type, size_t byte_length)
+{
+    MundoTextureUploadSnapshot snapshot;
+    snapshot.width = width;
+    snapshot.height = height;
+    snapshot.internal_format = internal_format;
+    snapshot.format = format;
+    snapshot.type = type;
+    snapshot.byte_length = byte_length;
+    snapshot.complete = false;
+    m_mundo_texture_upload_snapshot = move(snapshot);
+}
+
+void WebGLTexture::mark_mundo_texture_upload_snapshot_incomplete()
+{
+    if (!m_mundo_texture_upload_snapshot.has_value())
+        return;
+    m_mundo_texture_upload_snapshot->complete = false;
+    m_mundo_texture_upload_snapshot->pixels = {};
+}
+
+void WebGLTexture::clear_mundo_texture_upload_snapshot()
+{
+    m_mundo_texture_upload_snapshot.clear();
+}
+
 #ifdef USE_VULKAN_DMABUF_IMAGES
 void WebGLTexture::set_cached_virtual_vulkan_video_source(u64 frame_id, NonnullOwnPtr<Gfx::ImportedVulkanNV12Image> source)
 {
