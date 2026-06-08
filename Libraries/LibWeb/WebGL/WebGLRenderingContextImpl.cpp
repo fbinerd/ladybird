@@ -2120,6 +2120,28 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             static size_t s_post_direct_solid_attempt_count { 0 };
             auto attempt_count = ++s_post_direct_solid_attempt_count;
             auto solid_replay_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY");
+            GLboolean color_write_mask[4] {};
+            GLboolean depth_write_mask = GL_FALSE;
+            GLint depth_func = 0;
+            GLint cull_face_mode = 0;
+            GLint front_face = 0;
+            GLint blend_src_rgb = 0;
+            GLint blend_dst_rgb = 0;
+            GLint blend_src_alpha = 0;
+            GLint blend_dst_alpha = 0;
+            GLint blend_equation_rgb = 0;
+            GLint blend_equation_alpha = 0;
+            glGetBooleanvRobustANGLE(GL_COLOR_WRITEMASK, 4, nullptr, color_write_mask);
+            glGetBooleanvRobustANGLE(GL_DEPTH_WRITEMASK, 1, nullptr, &depth_write_mask);
+            glGetIntegervRobustANGLE(GL_DEPTH_FUNC, 1, nullptr, &depth_func);
+            glGetIntegervRobustANGLE(GL_CULL_FACE_MODE, 1, nullptr, &cull_face_mode);
+            glGetIntegervRobustANGLE(GL_FRONT_FACE, 1, nullptr, &front_face);
+            glGetIntegervRobustANGLE(GL_BLEND_SRC_RGB, 1, nullptr, &blend_src_rgb);
+            glGetIntegervRobustANGLE(GL_BLEND_DST_RGB, 1, nullptr, &blend_dst_rgb);
+            glGetIntegervRobustANGLE(GL_BLEND_SRC_ALPHA, 1, nullptr, &blend_src_alpha);
+            glGetIntegervRobustANGLE(GL_BLEND_DST_ALPHA, 1, nullptr, &blend_dst_alpha);
+            glGetIntegervRobustANGLE(GL_BLEND_EQUATION_RGB, 1, nullptr, &blend_equation_rgb);
+            glGetIntegervRobustANGLE(GL_BLEND_EQUATION_ALPHA, 1, nullptr, &blend_equation_alpha);
             auto can_replay = position_layout_supported && position_ready && element_ready && destination_format.has_value()
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
                 && mode == GL_TRIANGLES
@@ -2150,6 +2172,33 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !solid_replay_enabled ? "solid_replay_requires_explicit_opt_in_after_white_overlay_regression"sv
                         : "ready"sv,
                     can_replay ? "execute_solid_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_GL_STATE count={} program={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} depth_test={} depth_func={} depth_write={} cull_face={} cull_face_mode={} front_face={} scissor_test={} color_mask=({},{},{},{}) diffuse=({}, {}, {}, {}) opacity={} output_intensity={} reason=solid_replay_needs_matching_gl_state next_step=map_blend_depth_cull_color_mask_before_enabling_solid_vulkan_replay",
+                    attempt_count,
+                    program_handle,
+                    glIsEnabled(GL_BLEND) == GL_TRUE,
+                    blend_src_rgb,
+                    blend_dst_rgb,
+                    blend_src_alpha,
+                    blend_dst_alpha,
+                    blend_equation_rgb,
+                    blend_equation_alpha,
+                    glIsEnabled(GL_DEPTH_TEST) == GL_TRUE,
+                    depth_func,
+                    depth_write_mask == GL_TRUE,
+                    glIsEnabled(GL_CULL_FACE) == GL_TRUE,
+                    cull_face_mode,
+                    front_face,
+                    glIsEnabled(GL_SCISSOR_TEST) == GL_TRUE,
+                    color_write_mask[0] == GL_TRUE,
+                    color_write_mask[1] == GL_TRUE,
+                    color_write_mask[2] == GL_TRUE,
+                    color_write_mask[3] == GL_TRUE,
+                    uniform_snapshot.diffuse[0],
+                    uniform_snapshot.diffuse[1],
+                    uniform_snapshot.diffuse[2],
+                    uniform_snapshot.diffuse[3],
+                    uniform_snapshot.opacity,
+                    uniform_snapshot.output_intensity);
             }
             if (!can_replay)
                 return false;
