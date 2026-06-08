@@ -1629,14 +1629,34 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
                     texture_handle = texture_handle_or_error.release_value();
                 bound_texture_has_video_backing = m_texture_binding_2d->has_hardware_video_backing();
             }
-            dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_VIDEO_DRAW count={} op=drawArrays mode={} first={} draw_count={} program={} texture={} bound_texture_has_video_backing={} reason=gl_draw_after_direct_vulkan_video_before_present next_step=classify_or_virtualize_this_gl_draw_for_pure_vulkan_present",
+            GLint framebuffer = 0;
+            GLint vertex_array = 0;
+            GLint active_attrib_count = 0;
+            GLint active_uniform_count = 0;
+            GLint viewport[4] {};
+            glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &framebuffer);
+            glGetIntegervRobustANGLE(GL_VERTEX_ARRAY_BINDING, 1, nullptr, &vertex_array);
+            glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
+            if (program_handle) {
+                glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_ATTRIBUTES, 1, nullptr, &active_attrib_count);
+                glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
+            }
+            dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_VIDEO_DRAW count={} op=drawArrays mode={} first={} draw_count={} program={} texture={} bound_texture_has_video_backing={} framebuffer={} vertex_array={} active_attribs={} active_uniforms={} viewport={}x{}+{}+{} reason=gl_draw_after_direct_vulkan_video_before_present next_step=classify_or_virtualize_this_gl_draw_for_pure_vulkan_present",
                 log_count,
                 mode,
                 first,
                 count,
                 program_handle,
                 texture_handle,
-                bound_texture_has_video_backing);
+                bound_texture_has_video_backing,
+                framebuffer,
+                vertex_array,
+                active_attrib_count,
+                active_uniform_count,
+                viewport[2],
+                viewport[3],
+                viewport[0],
+                viewport[1]);
         }
     }
     record_mundo_webgl_timing_summary("drawArrays", (MonotonicTime::now() - start).to_microseconds());
@@ -1940,6 +1960,20 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     if (!handle_or_error.is_error())
                         after_direct_texture_handle = handle_or_error.value();
                 }
+                GLint framebuffer = 0;
+                GLint vertex_array = 0;
+                GLint element_array_buffer = 0;
+                GLint active_attrib_count = 0;
+                GLint active_uniform_count = 0;
+                GLint viewport[4] {};
+                glGetIntegervRobustANGLE(GL_FRAMEBUFFER_BINDING, 1, nullptr, &framebuffer);
+                glGetIntegervRobustANGLE(GL_VERTEX_ARRAY_BINDING, 1, nullptr, &vertex_array);
+                glGetIntegervRobustANGLE(GL_ELEMENT_ARRAY_BUFFER_BINDING, 1, nullptr, &element_array_buffer);
+                glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
+                if (after_direct_program_handle) {
+                    glGetProgramivRobustANGLE(after_direct_program_handle, GL_ACTIVE_ATTRIBUTES, 1, nullptr, &active_attrib_count);
+                    glGetProgramivRobustANGLE(after_direct_program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
+                }
                 auto video_sampler_uniform = "none"sv;
                 auto video_sampler_direct_texture_call = false;
                 if (m_current_program && m_current_program->video_sampler_plan().has_value()) {
@@ -1947,7 +1981,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     video_sampler_uniform = plan.uniform_name.bytes_as_string_view();
                     video_sampler_direct_texture_call = plan.direct_texture_call;
                 }
-                dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_VIDEO_DRAW count={} op=drawElements mode={} draw_count={} type={} offset={} program={} texture={} active_texture={} bound_texture_has_video_backing={} vulkan_video_draw_executed={} vulkan_video_draw_direct_zero_copy={} vulkan_video_draw_used_sampler={} video_sampler_uniform={} video_sampler_direct_texture_call={} reason=gl_draw_after_direct_vulkan_video_before_present next_step=classify_or_virtualize_this_gl_draw_for_pure_vulkan_present",
+                dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_VIDEO_DRAW count={} op=drawElements mode={} draw_count={} type={} offset={} program={} texture={} active_texture={} bound_texture_has_video_backing={} framebuffer={} vertex_array={} element_array_buffer={} active_attribs={} active_uniforms={} viewport={}x{}+{}+{} vulkan_video_draw_executed={} vulkan_video_draw_direct_zero_copy={} vulkan_video_draw_used_sampler={} video_sampler_uniform={} video_sampler_direct_texture_call={} reason=gl_draw_after_direct_vulkan_video_before_present next_step=classify_or_virtualize_this_gl_draw_for_pure_vulkan_present",
                     after_direct_log_count,
                     mode,
                     count,
@@ -1957,6 +1991,15 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     after_direct_texture_handle,
                     active_texture,
                     m_texture_binding_2d && m_texture_binding_2d->has_hardware_video_backing(),
+                    framebuffer,
+                    vertex_array,
+                    element_array_buffer,
+                    active_attrib_count,
+                    active_uniform_count,
+                    viewport[2],
+                    viewport[3],
+                    viewport[0],
+                    viewport[1],
                     vulkan_video_draw_executed,
                     vulkan_video_draw_direct_zero_copy,
                     vulkan_video_draw_used_sampler,
