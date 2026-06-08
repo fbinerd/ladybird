@@ -164,7 +164,8 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
 
     if (auto texture = current_bound_texture_for_target(target)) {
         texture->clear_hardware_video_backing();
-        texture->mark_mundo_texture_upload_snapshot_incomplete();
+        if (!texture->update_mundo_texture_upload_snapshot_region(xoffset, yoffset, width, height, format, type, pixels_span))
+            texture->mark_mundo_texture_upload_snapshot_incomplete();
     }
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, width, height, format, type, pixels_span.size(), pixels_span.data());
 }
@@ -194,7 +195,8 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
         return;
     if (auto texture = current_bound_texture_for_target(target)) {
         texture->clear_hardware_video_backing();
-        texture->mark_mundo_texture_upload_snapshot_incomplete();
+        if (!texture->update_mundo_texture_upload_snapshot_region(xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.bytes()))
+            texture->mark_mundo_texture_upload_snapshot_incomplete();
     }
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
@@ -272,7 +274,8 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
         return;
     if (auto texture = current_bound_texture_for_target(target)) {
         texture->clear_hardware_video_backing();
-        texture->mark_mundo_texture_upload_snapshot_incomplete();
+        if (!texture->update_mundo_texture_upload_snapshot_region(xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.bytes()))
+            texture->mark_mundo_texture_upload_snapshot_incomplete();
     }
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
@@ -288,7 +291,8 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
 
     if (auto texture = current_bound_texture_for_target(target)) {
         texture->clear_hardware_video_backing();
-        texture->mark_mundo_texture_upload_snapshot_incomplete();
+        if (!texture->update_mundo_texture_upload_snapshot_region(xoffset, yoffset, width, height, format, type, pixels_span))
+            texture->mark_mundo_texture_upload_snapshot_incomplete();
     }
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, width, height, format, type, pixels_span.size(), pixels_span.data());
 }

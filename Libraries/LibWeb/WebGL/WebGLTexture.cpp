@@ -10,6 +10,8 @@
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/WebGLTexture.h>
 #include <LibWeb/WebGL/WebGLTexture.h>
+#include <GLES3/gl3.h>
+#include <string.h>
 
 #if defined(__linux__)
 #    include <unistd.h>
@@ -18,6 +20,34 @@
 namespace Web::WebGL {
 
 GC_DEFINE_ALLOCATOR(WebGLTexture);
+
+static constexpr size_t max_mundo_texture_upload_snapshot_bytes = 64 * 1024 * 1024;
+
+static Optional<size_t> mundo_texture_bytes_per_pixel(u32 format, u32 type)
+{
+    if (type == GL_UNSIGNED_BYTE) {
+        switch (format) {
+        case GL_ALPHA:
+        case GL_LUMINANCE:
+        case GL_RED:
+            return 1;
+        case GL_LUMINANCE_ALPHA:
+        case GL_RG:
+            return 2;
+        case GL_RGB:
+            return 3;
+        case GL_RGBA:
+            return 4;
+        default:
+            return {};
+        }
+    }
+
+    if (type == GL_UNSIGNED_SHORT_5_6_5 || type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_5_5_5_1)
+        return 2;
+
+    return {};
+}
 
 GC::Ref<WebGLTexture> WebGLTexture::create(JS::Realm& realm, GC::Ref<WebGLRenderingContextBase> context, GLuint handle)
 {
@@ -55,8 +85,6 @@ void WebGLTexture::clear_hardware_video_backing()
 
 void WebGLTexture::set_mundo_texture_upload_snapshot(u32 width, u32 height, u32 internal_format, u32 format, u32 type, ReadonlyBytes pixels)
 {
-    static constexpr size_t max_snapshot_bytes = 64 * 1024 * 1024;
-
     MundoTextureUploadSnapshot snapshot;
     snapshot.width = width;
     snapshot.height = height;
@@ -64,7 +92,7 @@ void WebGLTexture::set_mundo_texture_upload_snapshot(u32 width, u32 height, u32 
     snapshot.format = format;
     snapshot.type = type;
     snapshot.byte_length = pixels.size();
-    snapshot.complete = pixels.size() <= max_snapshot_bytes;
+    snapshot.complete = pixels.size() <= max_mundo_texture_upload_snapshot_bytes;
     if (snapshot.complete)
         snapshot.pixels = MUST(ByteBuffer::copy(pixels));
     m_mundo_texture_upload_snapshot = move(snapshot);
@@ -81,6 +109,71 @@ void WebGLTexture::set_mundo_texture_upload_snapshot_incomplete(u32 width, u32 h
     snapshot.byte_length = byte_length;
     snapshot.complete = false;
     m_mundo_texture_upload_snapshot = move(snapshot);
+}
+
+bool WebGLTexture::update_mundo_texture_upload_snapshot_region(i32 xoffset, i32 yoffset, u32 width, u32 height, u32 format, u32 type, ReadonlyBytes pixels)
+{
+    if (!m_mundo_texture_upload_snapshot.has_value())
+        return false;
+
+    auto& snapshot = *m_mundo_texture_upload_snapshot;
+    if (xoffset < 0 || yoffset < 0) {
+        mark_mundo_texture_upload_snapshot_incomplete();
+        return false;
+    }
+
+    if (format != snapshot.format || type != snapshot.type) {
+        mark_mundo_texture_upload_snapshot_incomplete();
+        return false;
+    }
+
+    auto bytes_per_pixel = mundo_texture_bytes_per_pixel(format, type);
+    if (!bytes_per_pixel.has_value()) {
+        mark_mundo_texture_upload_snapshot_incomplete();
+        return false;
+    }
+
+    auto destination_x = static_cast<u32>(xoffset);
+    auto destination_y = static_cast<u32>(yoffset);
+    if (destination_x > snapshot.width || destination_y > snapshot.height || width > snapshot.width - destination_x || height > snapshot.height - destination_y) {
+        mark_mundo_texture_upload_snapshot_incomplete();
+        return false;
+    }
+
+    Checked<size_t> checked_row_bytes = width;
+    checked_row_bytes *= bytes_per_pixel.value();
+    Checked<size_t> checked_source_bytes = checked_row_bytes;
+    checked_source_bytes *= height;
+    Checked<size_t> checked_destination_row_bytes = snapshot.width;
+    checked_destination_row_bytes *= bytes_per_pixel.value();
+    Checked<size_t> checked_destination_bytes = checked_destination_row_bytes;
+    checked_destination_bytes *= snapshot.height;
+    if (checked_row_bytes.has_overflow() || checked_source_bytes.has_overflow() || checked_destination_row_bytes.has_overflow() || checked_destination_bytes.has_overflow()) {
+        mark_mundo_texture_upload_snapshot_incomplete();
+        return false;
+    }
+
+    auto row_bytes = checked_row_bytes.value();
+    auto source_bytes = checked_source_bytes.value();
+    auto destination_row_bytes = checked_destination_row_bytes.value();
+    auto destination_bytes = checked_destination_bytes.value();
+    if (pixels.size() < source_bytes || destination_bytes > max_mundo_texture_upload_snapshot_bytes) {
+        mark_mundo_texture_upload_snapshot_incomplete();
+        return false;
+    }
+
+    if (!snapshot.complete || snapshot.pixels.size() != destination_bytes)
+        snapshot.pixels = MUST(ByteBuffer::create_zeroed(destination_bytes));
+
+    for (u32 row = 0; row < height; ++row) {
+        auto source_offset = static_cast<size_t>(row) * row_bytes;
+        auto destination_offset = (static_cast<size_t>(destination_y + row) * destination_row_bytes) + (static_cast<size_t>(destination_x) * bytes_per_pixel.value());
+        memcpy(snapshot.pixels.data() + destination_offset, pixels.data() + source_offset, row_bytes);
+    }
+
+    snapshot.byte_length = destination_bytes;
+    snapshot.complete = true;
+    return true;
 }
 
 void WebGLTexture::mark_mundo_texture_upload_snapshot_incomplete()

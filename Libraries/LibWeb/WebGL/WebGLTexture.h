@@ -65,6 +65,7 @@ public:
 
     void set_mundo_texture_upload_snapshot(u32 width, u32 height, u32 internal_format, u32 format, u32 type, ReadonlyBytes pixels);
     void set_mundo_texture_upload_snapshot_incomplete(u32 width, u32 height, u32 internal_format, u32 format, u32 type, size_t byte_length);
+    bool update_mundo_texture_upload_snapshot_region(i32 xoffset, i32 yoffset, u32 width, u32 height, u32 format, u32 type, ReadonlyBytes pixels);
     void mark_mundo_texture_upload_snapshot_incomplete();
     void clear_mundo_texture_upload_snapshot();
     Optional<MundoTextureUploadSnapshot> const& mundo_texture_upload_snapshot() const { return m_mundo_texture_upload_snapshot; }
