@@ -21,6 +21,7 @@ extern "C" {
 #include <LibWeb/WebGL/OpenGLContext.h>
 #include <LibWeb/WebGL/WebGL2RenderingContextOverloads.h>
 #include <LibWeb/WebGL/WebGLBuffer.h>
+#include <LibWeb/WebGL/WebGLTexture.h>
 #include <LibWeb/WebGL/WebGLUniformLocation.h>
 #include <LibWeb/WebIDL/Buffers.h>
 #include <stdlib.h>
@@ -113,6 +114,13 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
         pixels_span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(*pixels, /* src_offset= */ 0), GL_INVALID_OPERATION);
     }
 
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        if (pixels)
+            texture->set_mundo_texture_upload_snapshot(width, height, internalformat, format, type, pixels_span);
+        else
+            texture->set_mundo_texture_upload_snapshot_incomplete(width, height, internalformat, format, type, 0);
+    }
     glTexImage2DRobustANGLE(target, level, internalformat, width, height, border, format, type, pixels_span.size(), pixels_span.data());
 }
 
@@ -138,6 +146,10 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
     auto converted_texture = maybe_converted_texture.release_value();
     if (upload_texture_source_with_video_pbo(source, target, level, internalformat, 0, 0, 0, format, type, converted_texture, false))
         return;
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->set_mundo_texture_upload_snapshot(converted_texture.width, converted_texture.height, internalformat, format, type, converted_texture.buffer.bytes());
+    }
     glTexImage2DRobustANGLE(target, level, internalformat, converted_texture.width, converted_texture.height, 0, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
 
@@ -150,6 +162,10 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
         pixels_span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(*pixels, /* src_offset= */ 0), GL_INVALID_OPERATION);
     }
 
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->mark_mundo_texture_upload_snapshot_incomplete();
+    }
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, width, height, format, type, pixels_span.size(), pixels_span.data());
 }
 
@@ -176,6 +192,10 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
     auto converted_texture = maybe_converted_texture.release_value();
     if (upload_texture_source_with_video_pbo(source, target, level, 0, xoffset, yoffset, 0, format, type, converted_texture, true))
         return;
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->mark_mundo_texture_upload_snapshot_incomplete();
+    }
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
 
@@ -201,6 +221,10 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
     auto converted_texture = maybe_converted_texture.release_value();
     if (upload_texture_source_with_video_pbo(source, target, level, internalformat, 0, 0, border, format, type, converted_texture, false))
         return;
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->set_mundo_texture_upload_snapshot(converted_texture.width, converted_texture.height, internalformat, format, type, converted_texture.buffer.bytes());
+    }
     glTexImage2DRobustANGLE(target, level, internalformat, converted_texture.width, converted_texture.height, border, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
 
@@ -213,6 +237,13 @@ void WebGL2RenderingContextOverloads::tex_image2d(WebIDL::UnsignedLong target, W
         pixels_span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(*src_data, src_offset), GL_INVALID_OPERATION);
     }
 
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        if (src_data)
+            texture->set_mundo_texture_upload_snapshot(width, height, internalformat, format, type, pixels_span);
+        else
+            texture->set_mundo_texture_upload_snapshot_incomplete(width, height, internalformat, format, type, 0);
+    }
     glTexImage2DRobustANGLE(target, level, internalformat, width, height, border, format, type, pixels_span.size(), pixels_span.data());
 }
 
@@ -239,6 +270,10 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
     auto converted_texture = maybe_converted_texture.release_value();
     if (upload_texture_source_with_video_pbo(source, target, level, 0, xoffset, yoffset, 0, format, type, converted_texture, true))
         return;
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->mark_mundo_texture_upload_snapshot_incomplete();
+    }
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, converted_texture.width, converted_texture.height, format, type, converted_texture.buffer.size(), converted_texture.buffer.data());
 }
 
@@ -251,6 +286,10 @@ void WebGL2RenderingContextOverloads::tex_sub_image2d(WebIDL::UnsignedLong targe
         pixels_span = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(*src_data, src_offset), GL_INVALID_OPERATION);
     }
 
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->mark_mundo_texture_upload_snapshot_incomplete();
+    }
     glTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, width, height, format, type, pixels_span.size(), pixels_span.data());
 }
 
@@ -264,6 +303,10 @@ void WebGL2RenderingContextOverloads::compressed_tex_image2d(WebIDL::UnsignedLon
     }
 
     auto pixels = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(*src_data, src_offset, src_length_override), GL_INVALID_VALUE);
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->set_mundo_texture_upload_snapshot_incomplete(width, height, internalformat, internalformat, 0, pixels.size());
+    }
     glCompressedTexImage2DRobustANGLE(target, level, internalformat, width, height, border, pixels.size(), pixels.size(), pixels.data());
 }
 
@@ -277,6 +320,10 @@ void WebGL2RenderingContextOverloads::compressed_tex_sub_image2d(WebIDL::Unsigne
     }
 
     auto pixels = SET_ERROR_VALUE_IF_ERROR(get_offset_span<u8 const>(*src_data, src_offset, src_length_override), GL_INVALID_VALUE);
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->mark_mundo_texture_upload_snapshot_incomplete();
+    }
     glCompressedTexSubImage2DRobustANGLE(target, level, xoffset, yoffset, width, height, format, pixels.size(), pixels.size(), pixels.data());
 }
 

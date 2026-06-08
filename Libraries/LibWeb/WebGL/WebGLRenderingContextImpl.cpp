@@ -1352,12 +1352,20 @@ void WebGLRenderingContextImpl::compile_shader(GC::Root<WebGLShader> shader)
 void WebGLRenderingContextImpl::copy_tex_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::UnsignedLong internalformat, WebIDL::Long x, WebIDL::Long y, WebIDL::Long width, WebIDL::Long height, WebIDL::Long border)
 {
     m_context->make_current();
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->set_mundo_texture_upload_snapshot_incomplete(width, height, internalformat, internalformat, 0, 0);
+    }
     glCopyTexImage2D(target, level, internalformat, x, y, width, height, border);
 }
 
 void WebGLRenderingContextImpl::copy_tex_sub_image2d(WebIDL::UnsignedLong target, WebIDL::Long level, WebIDL::Long xoffset, WebIDL::Long yoffset, WebIDL::Long x, WebIDL::Long y, WebIDL::Long width, WebIDL::Long height)
 {
     m_context->make_current();
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->mark_mundo_texture_upload_snapshot_incomplete();
+    }
     glCopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height);
 }
 
