@@ -40,6 +40,11 @@ struct VulkanImage : public RefCounted<VulkanImage> {
     VkRenderPass cached_video_framebuffer_render_pass { VK_NULL_HANDLE };
     uint32_t cached_video_framebuffer_width { 0 };
     uint32_t cached_video_framebuffer_height { 0 };
+    VkImageView cached_solid_mesh_color_attachment_view { VK_NULL_HANDLE };
+    VkFramebuffer cached_solid_mesh_framebuffer { VK_NULL_HANDLE };
+    VkRenderPass cached_solid_mesh_framebuffer_render_pass { VK_NULL_HANDLE };
+    uint32_t cached_solid_mesh_framebuffer_width { 0 };
+    uint32_t cached_solid_mesh_framebuffer_height { 0 };
     struct {
         VkFormat format;
         VkExtent3D extent;

@@ -16,6 +16,9 @@
 #    include <LibGfx/VulkanImage.h>
 #endif
 #include <LibWeb/WebGL/OpenGLContext.h>
+#ifdef USE_VULKAN_DMABUF_IMAGES
+#    include <LibWeb/WebGL/MundoSolidMeshShaders.inc>
+#endif
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -220,6 +223,23 @@ struct OpenGLContext::Impl {
         }
     };
     OwnPtr<CachedVulkanVideoReplayBuffers> cached_vulkan_video_replay_buffers;
+    struct CachedVulkanSolidMeshReplayBuffers {
+        unsigned signature { 0 };
+        size_t position_bytes { 0 };
+        size_t index_bytes { 0 };
+        NonnullOwnPtr<Gfx::VulkanBuffer> position_buffer;
+        NonnullOwnPtr<Gfx::VulkanBuffer> index_buffer;
+
+        CachedVulkanSolidMeshReplayBuffers(unsigned signature, size_t position_bytes, size_t index_bytes, NonnullOwnPtr<Gfx::VulkanBuffer> position_buffer, NonnullOwnPtr<Gfx::VulkanBuffer> index_buffer)
+            : signature(signature)
+            , position_bytes(position_bytes)
+            , index_bytes(index_bytes)
+            , position_buffer(move(position_buffer))
+            , index_buffer(move(index_buffer))
+        {
+        }
+    };
+    OwnPtr<CachedVulkanSolidMeshReplayBuffers> cached_vulkan_solid_mesh_replay_buffers;
     struct {
         PFNEGLQUERYDMABUFFORMATSEXTPROC query_dma_buf_formats { nullptr };
         PFNEGLQUERYDMABUFMODIFIERSEXTPROC query_dma_buf_modifiers { nullptr };
@@ -409,6 +429,7 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
                                                          .cached_video_rgba_texture = {},
                                                          .cached_video_rgba_target_texture = {},
                                                          .cached_vulkan_video_replay_buffers = {},
+                                                         .cached_vulkan_solid_mesh_replay_buffers = {},
                                                          .ext_procs = {
                                                              .query_dma_buf_formats = pfn_egl_query_dma_buf_formats_ext,
                                                              .query_dma_buf_modifiers = pfn_egl_query_dma_buf_modifiers_ext,
@@ -2340,6 +2361,539 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         .attempted = true,
         .supported = true,
         .executed = mesh_draw_executed,
+        .reason = "ok"sv,
+    };
+}
+
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_solid_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count)
+{
+    struct SolidPushConstants {
+        Array<float, 16> model_view_matrix {};
+        Array<float, 16> projection_matrix {};
+        Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
+        float use_matrices { 0.0f };
+        float opacity { 1.0f };
+        float output_intensity { 1.0f };
+        float _pad0 { 0.0f };
+    };
+    constexpr size_t solid_ring_slot_count = 3;
+    struct SolidPipelineResources {
+        VkDevice device { VK_NULL_HANDLE };
+        VkFormat destination_format { VK_FORMAT_UNDEFINED };
+        VkShaderModule vertex_shader { VK_NULL_HANDLE };
+        VkShaderModule fragment_shader { VK_NULL_HANDLE };
+        VkRenderPass render_pass { VK_NULL_HANDLE };
+        VkPipelineLayout pipeline_layout { VK_NULL_HANDLE };
+        VkPipeline pipeline { VK_NULL_HANDLE };
+        VkCommandPool ring_command_pool { VK_NULL_HANDLE };
+        Array<VkCommandBuffer, solid_ring_slot_count> ring_command_buffers {};
+        Array<VkFence, solid_ring_slot_count> ring_fences {};
+        size_t ring_cursor { 0 };
+    };
+    static SolidPipelineResources s_resources;
+    static size_t s_probe_count { 0 };
+    auto probe_count = ++s_probe_count;
+    auto should_log = probe_count <= 12 || probe_count % 120 == 0;
+    auto const& context = m_skia_backend_context->vulkan_context();
+    auto format = static_cast<VkFormat>(destination_format);
+    VkResult result { VK_SUCCESS };
+
+    auto log_failure = [&](StringView reason, VkResult result = VK_SUCCESS) {
+        if (should_log) {
+            dbgln("MUNDO_WEBGL_SOLID_MESH_PIPELINE_PROBE count={} probe_count={} status=failed reason={} vk_result={} destination_format={} draw_count={} draw_type={} draw_offset={} viewport={}x{}+{}+{} next_step=fix_solid_vulkan_replay_before_replacing_post_video_gl_draw",
+                log_count,
+                probe_count,
+                reason,
+                to_underlying(result),
+                destination_format,
+                draw_count,
+                draw_type,
+                draw_offset,
+                viewport_width,
+                viewport_height,
+                viewport_x,
+                viewport_y);
+        }
+        return VulkanVideoMeshPipelineProbeResult {
+            .attempted = true,
+            .supported = false,
+            .reason = reason,
+        };
+    };
+
+    if (position_data.is_empty())
+        return log_failure("missing_position_data"sv);
+    if (index_data.is_empty())
+        return log_failure("missing_index_data"sv);
+
+    auto signature = pair_int_hash(Traits<ReadonlyBytes>::hash(position_data), Traits<ReadonlyBytes>::hash(index_data));
+    signature = pair_int_hash(signature, pair_int_hash(u32_hash(position_data.size()), u32_hash(index_data.size())));
+    auto cache_matches = [&] {
+        if (!m_impl->cached_vulkan_solid_mesh_replay_buffers)
+            return false;
+        auto const& cached = *m_impl->cached_vulkan_solid_mesh_replay_buffers;
+        return cached.signature == signature
+            && cached.position_bytes == position_data.size()
+            && cached.index_bytes == index_data.size();
+    };
+    auto buffer_cache_status = "hit"sv;
+    if (!cache_matches()) {
+        auto position_buffer_or_error = Gfx::create_host_visible_vulkan_buffer_from_bytes(context, position_data, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        if (position_buffer_or_error.is_error())
+            return log_failure(position_buffer_or_error.error().string_literal());
+        auto index_buffer_or_error = Gfx::create_host_visible_vulkan_buffer_from_bytes(context, index_data, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        if (index_buffer_or_error.is_error())
+            return log_failure(index_buffer_or_error.error().string_literal());
+        m_impl->cached_vulkan_solid_mesh_replay_buffers = make<Impl::CachedVulkanSolidMeshReplayBuffers>(
+            signature,
+            position_data.size(),
+            index_data.size(),
+            position_buffer_or_error.release_value(),
+            index_buffer_or_error.release_value());
+        buffer_cache_status = "filled"sv;
+    }
+    auto const& replay_buffers = *m_impl->cached_vulkan_solid_mesh_replay_buffers;
+
+    auto pipeline_cache_status = "hit"sv;
+    if (s_resources.pipeline != VK_NULL_HANDLE) {
+        auto matches = s_resources.device == context.logical_device
+            && s_resources.destination_format == format;
+        if (!matches)
+            return log_failure("multiple_solid_pipeline_configurations_not_supported_yet"sv);
+    } else {
+        pipeline_cache_status = "filled"sv;
+        auto vertex_shader_or_error = create_mundo_vulkan_video_shader_module(context, s_mundo_solid_mesh_vertex_shader_spirv);
+        if (vertex_shader_or_error.is_error())
+            return log_failure(vertex_shader_or_error.error().string_literal());
+        s_resources.vertex_shader = vertex_shader_or_error.release_value();
+
+        auto fragment_shader_or_error = create_mundo_vulkan_video_shader_module(context, s_mundo_solid_mesh_fragment_shader_spirv);
+        if (fragment_shader_or_error.is_error())
+            return log_failure(fragment_shader_or_error.error().string_literal());
+        s_resources.fragment_shader = fragment_shader_or_error.release_value();
+
+        VkAttachmentDescription color_attachment {
+            .flags = 0,
+            .format = format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+        VkAttachmentReference color_attachment_ref {
+            .attachment = 0,
+            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+        VkSubpassDescription subpass {
+            .flags = 0,
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .inputAttachmentCount = 0,
+            .pInputAttachments = nullptr,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color_attachment_ref,
+            .pResolveAttachments = nullptr,
+            .pDepthStencilAttachment = nullptr,
+            .preserveAttachmentCount = 0,
+            .pPreserveAttachments = nullptr,
+        };
+        VkRenderPassCreateInfo render_pass_info {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .attachmentCount = 1,
+            .pAttachments = &color_attachment,
+            .subpassCount = 1,
+            .pSubpasses = &subpass,
+            .dependencyCount = 0,
+            .pDependencies = nullptr,
+        };
+        result = vkCreateRenderPass(context.logical_device, &render_pass_info, nullptr, &s_resources.render_pass);
+        if (result != VK_SUCCESS)
+            return log_failure("create_solid_render_pass_failed"sv, result);
+
+        VkPushConstantRange push_constant_range {
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = sizeof(SolidPushConstants),
+        };
+        VkPipelineLayoutCreateInfo pipeline_layout_info {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .setLayoutCount = 0,
+            .pSetLayouts = nullptr,
+            .pushConstantRangeCount = 1,
+            .pPushConstantRanges = &push_constant_range,
+        };
+        result = vkCreatePipelineLayout(context.logical_device, &pipeline_layout_info, nullptr, &s_resources.pipeline_layout);
+        if (result != VK_SUCCESS)
+            return log_failure("create_solid_pipeline_layout_failed"sv, result);
+
+        VkPipelineShaderStageCreateInfo shader_stages[] {
+            { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = nullptr, .flags = 0, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = s_resources.vertex_shader, .pName = "main", .pSpecializationInfo = nullptr },
+            { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = nullptr, .flags = 0, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = s_resources.fragment_shader, .pName = "main", .pSpecializationInfo = nullptr },
+        };
+        VkVertexInputBindingDescription vertex_binding { .binding = 0, .stride = sizeof(float) * 3, .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription vertex_attribute { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 };
+        VkPipelineVertexInputStateCreateInfo vertex_input_info {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .vertexBindingDescriptionCount = 1,
+            .pVertexBindingDescriptions = &vertex_binding,
+            .vertexAttributeDescriptionCount = 1,
+            .pVertexAttributeDescriptions = &vertex_attribute,
+        };
+        VkPipelineInputAssemblyStateCreateInfo input_assembly {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            .primitiveRestartEnable = VK_FALSE,
+        };
+        VkViewport viewport { .x = 0, .y = 0, .width = 1.0f, .height = 1.0f, .minDepth = 0.0f, .maxDepth = 1.0f };
+        VkRect2D scissor { .offset = { 0, 0 }, .extent = { 1, 1 } };
+        VkPipelineViewportStateCreateInfo viewport_state {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .viewportCount = 1,
+            .pViewports = &viewport,
+            .scissorCount = 1,
+            .pScissors = &scissor,
+        };
+        VkPipelineRasterizationStateCreateInfo rasterizer {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .depthClampEnable = VK_FALSE,
+            .rasterizerDiscardEnable = VK_FALSE,
+            .polygonMode = VK_POLYGON_MODE_FILL,
+            .cullMode = VK_CULL_MODE_NONE,
+            .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            .depthBiasEnable = VK_FALSE,
+            .depthBiasConstantFactor = 0.0f,
+            .depthBiasClamp = 0.0f,
+            .depthBiasSlopeFactor = 0.0f,
+            .lineWidth = 1.0f,
+        };
+        VkPipelineMultisampleStateCreateInfo multisampling {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+            .sampleShadingEnable = VK_FALSE,
+            .minSampleShading = 1.0f,
+            .pSampleMask = nullptr,
+            .alphaToCoverageEnable = VK_FALSE,
+            .alphaToOneEnable = VK_FALSE,
+        };
+        VkPipelineColorBlendAttachmentState color_blend_attachment {
+            .blendEnable = VK_TRUE,
+            .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+            .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .colorBlendOp = VK_BLEND_OP_ADD,
+            .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+            .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .alphaBlendOp = VK_BLEND_OP_ADD,
+            .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+        };
+        VkPipelineColorBlendStateCreateInfo color_blending {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .logicOpEnable = VK_FALSE,
+            .logicOp = VK_LOGIC_OP_COPY,
+            .attachmentCount = 1,
+            .pAttachments = &color_blend_attachment,
+            .blendConstants = { 0, 0, 0, 0 },
+        };
+        VkDynamicState dynamic_states[] { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamic_state {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .dynamicStateCount = 2,
+            .pDynamicStates = dynamic_states,
+        };
+        VkGraphicsPipelineCreateInfo pipeline_info {
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .stageCount = 2,
+            .pStages = shader_stages,
+            .pVertexInputState = &vertex_input_info,
+            .pInputAssemblyState = &input_assembly,
+            .pTessellationState = nullptr,
+            .pViewportState = &viewport_state,
+            .pRasterizationState = &rasterizer,
+            .pMultisampleState = &multisampling,
+            .pDepthStencilState = nullptr,
+            .pColorBlendState = &color_blending,
+            .pDynamicState = &dynamic_state,
+            .layout = s_resources.pipeline_layout,
+            .renderPass = s_resources.render_pass,
+            .subpass = 0,
+            .basePipelineHandle = VK_NULL_HANDLE,
+            .basePipelineIndex = -1,
+        };
+        result = vkCreateGraphicsPipelines(context.logical_device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &s_resources.pipeline);
+        if (result != VK_SUCCESS)
+            return log_failure("create_solid_graphics_pipeline_failed"sv, result);
+
+        s_resources.device = context.logical_device;
+        s_resources.destination_format = format;
+    }
+
+    if (s_resources.ring_command_pool == VK_NULL_HANDLE) {
+        VkCommandPoolCreateInfo command_pool_info {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = context.graphics_queue_family,
+        };
+        result = vkCreateCommandPool(context.logical_device, &command_pool_info, nullptr, &s_resources.ring_command_pool);
+        if (result != VK_SUCCESS)
+            return log_failure("create_solid_ring_command_pool_failed"sv, result);
+
+        VkCommandBufferAllocateInfo command_buffer_alloc_info {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .commandPool = s_resources.ring_command_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = solid_ring_slot_count,
+        };
+        result = vkAllocateCommandBuffers(context.logical_device, &command_buffer_alloc_info, s_resources.ring_command_buffers.data());
+        if (result != VK_SUCCESS)
+            return log_failure("allocate_solid_ring_command_buffers_failed"sv, result);
+
+        VkFenceCreateInfo fence_info {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+        for (size_t i = 0; i < solid_ring_slot_count; ++i) {
+            result = vkCreateFence(context.logical_device, &fence_info, nullptr, &s_resources.ring_fences[i]);
+            if (result != VK_SUCCESS)
+                return log_failure("create_solid_ring_fence_failed"sv, result);
+        }
+    }
+
+    auto target_image = m_painting_surface ? m_painting_surface->vulkan_image() : nullptr;
+    if (!target_image)
+        return log_failure("missing_vulkan_painting_surface_target"sv);
+    if (target_image->info.format != format)
+        return log_failure("vulkan_painting_surface_format_mismatch"sv);
+    if (!(target_image->info.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
+        return log_failure("vulkan_painting_surface_not_color_attachment"sv);
+
+    if (target_image->cached_solid_mesh_color_attachment_view == VK_NULL_HANDLE) {
+        VkImageViewCreateInfo target_image_view_info {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = target_image->image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = target_image->info.format,
+            .components = { .r = VK_COMPONENT_SWIZZLE_IDENTITY, .g = VK_COMPONENT_SWIZZLE_IDENTITY, .b = VK_COMPONENT_SWIZZLE_IDENTITY, .a = VK_COMPONENT_SWIZZLE_IDENTITY },
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        result = vkCreateImageView(context.logical_device, &target_image_view_info, nullptr, &target_image->cached_solid_mesh_color_attachment_view);
+        if (result != VK_SUCCESS)
+            return log_failure("create_solid_target_image_view_failed"sv, result);
+    }
+    if (target_image->cached_solid_mesh_framebuffer == VK_NULL_HANDLE
+        || target_image->cached_solid_mesh_framebuffer_render_pass != s_resources.render_pass
+        || target_image->cached_solid_mesh_framebuffer_width != target_image->info.extent.width
+        || target_image->cached_solid_mesh_framebuffer_height != target_image->info.extent.height) {
+        if (target_image->cached_solid_mesh_framebuffer != VK_NULL_HANDLE)
+            vkDestroyFramebuffer(context.logical_device, target_image->cached_solid_mesh_framebuffer, nullptr);
+        VkFramebufferCreateInfo framebuffer_info {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .renderPass = s_resources.render_pass,
+            .attachmentCount = 1,
+            .pAttachments = &target_image->cached_solid_mesh_color_attachment_view,
+            .width = target_image->info.extent.width,
+            .height = target_image->info.extent.height,
+            .layers = 1,
+        };
+        result = vkCreateFramebuffer(context.logical_device, &framebuffer_info, nullptr, &target_image->cached_solid_mesh_framebuffer);
+        if (result != VK_SUCCESS)
+            return log_failure("create_solid_target_framebuffer_failed"sv, result);
+        target_image->cached_solid_mesh_framebuffer_render_pass = s_resources.render_pass;
+        target_image->cached_solid_mesh_framebuffer_width = target_image->info.extent.width;
+        target_image->cached_solid_mesh_framebuffer_height = target_image->info.extent.height;
+    }
+
+    auto index_type = VK_INDEX_TYPE_UINT16;
+    if (draw_type == GL_UNSIGNED_SHORT)
+        index_type = VK_INDEX_TYPE_UINT16;
+    else if (draw_type == GL_UNSIGNED_INT)
+        index_type = VK_INDEX_TYPE_UINT32;
+    else
+        return log_failure("unsupported_index_type_for_solid_mesh_draw"sv);
+
+    auto queue_ring_slot = s_resources.ring_cursor++ % solid_ring_slot_count;
+    auto wait_started_at = MonotonicTime::now();
+    result = vkWaitForFences(context.logical_device, 1, &s_resources.ring_fences[queue_ring_slot], VK_TRUE, UINT64_MAX);
+    auto queue_wait_us = (MonotonicTime::now() - wait_started_at).to_microseconds();
+    if (result != VK_SUCCESS)
+        return log_failure("wait_solid_ring_fence_failed"sv, result);
+    result = vkResetFences(context.logical_device, 1, &s_resources.ring_fences[queue_ring_slot]);
+    if (result != VK_SUCCESS)
+        return log_failure("reset_solid_ring_fence_failed"sv, result);
+    auto command_buffer = s_resources.ring_command_buffers[queue_ring_slot];
+    vkResetCommandBuffer(command_buffer, 0);
+    VkCommandBufferBeginInfo begin_info {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = nullptr,
+    };
+    result = vkBeginCommandBuffer(command_buffer, &begin_info);
+    if (result != VK_SUCCESS)
+        return log_failure("begin_solid_draw_command_buffer_failed"sv, result);
+
+    VkImageMemoryBarrier pre_render_barrier {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+        .oldLayout = target_image->info.layout,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = target_image->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(command_buffer,
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &pre_render_barrier);
+
+    VkRenderPassBeginInfo render_pass_begin {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .pNext = nullptr,
+        .renderPass = s_resources.render_pass,
+        .framebuffer = target_image->cached_solid_mesh_framebuffer,
+        .renderArea = { .offset = { 0, 0 }, .extent = { target_image->info.extent.width, target_image->info.extent.height } },
+        .clearValueCount = 0,
+        .pClearValues = nullptr,
+    };
+    vkCmdBeginRenderPass(command_buffer, &render_pass_begin, VK_SUBPASS_CONTENTS_INLINE);
+    VkViewport viewport {
+        .x = static_cast<float>(viewport_x),
+        .y = static_cast<float>(viewport_y + viewport_height),
+        .width = static_cast<float>(viewport_width),
+        .height = -static_cast<float>(viewport_height),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+    VkRect2D scissor {
+        .offset = { viewport_x, viewport_y },
+        .extent = { static_cast<u32>(viewport_width), static_cast<u32>(viewport_height) },
+    };
+    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline);
+    SolidPushConstants push_constants {
+        .model_view_matrix = uniform_snapshot.model_view_matrix,
+        .projection_matrix = uniform_snapshot.projection_matrix,
+        .diffuse = uniform_snapshot.diffuse,
+        .use_matrices = uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix ? 1.0f : 0.0f,
+        .opacity = uniform_snapshot.opacity,
+        .output_intensity = uniform_snapshot.output_intensity,
+        ._pad0 = 0.0f,
+    };
+    vkCmdPushConstants(command_buffer, s_resources.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
+    VkDeviceSize vertex_offset = 0;
+    vkCmdBindVertexBuffers(command_buffer, 0, 1, &replay_buffers.position_buffer->buffer, &vertex_offset);
+    vkCmdBindIndexBuffer(command_buffer, replay_buffers.index_buffer->buffer, draw_offset, index_type);
+    vkCmdDrawIndexed(command_buffer, draw_count, 1, 0, 0, 0);
+    vkCmdEndRenderPass(command_buffer);
+
+    VkImageMemoryBarrier post_render_barrier {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = target_image->info.layout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = target_image->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(command_buffer,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        0,
+        0, nullptr,
+        0, nullptr,
+        1, &post_render_barrier);
+    result = vkEndCommandBuffer(command_buffer);
+    if (result != VK_SUCCESS)
+        return log_failure("end_solid_draw_command_buffer_failed"sv, result);
+
+    VkSubmitInfo submit_info {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 0,
+        .pWaitSemaphores = nullptr,
+        .pWaitDstStageMask = nullptr,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer,
+        .signalSemaphoreCount = 0,
+        .pSignalSemaphores = nullptr,
+    };
+    auto submit_started_at = MonotonicTime::now();
+    result = vkQueueSubmit(context.graphics_queue, 1, &submit_info, s_resources.ring_fences[queue_ring_slot]);
+    auto queue_submit_us = (MonotonicTime::now() - submit_started_at).to_microseconds();
+    if (result != VK_SUCCESS)
+        return log_failure("submit_solid_draw_command_buffer_failed"sv, result);
+
+    if (should_log) {
+        dbgln("MUNDO_WEBGL_SOLID_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} next_step=replace_matching_post_video_gl_draw_with_solid_vulkan_mesh",
+            log_count,
+            probe_count,
+            pipeline_cache_status,
+            buffer_cache_status,
+            queue_ring_slot,
+            queue_submit_us,
+            queue_wait_us,
+            destination_format,
+            reinterpret_cast<uintptr_t>(target_image->image),
+            reinterpret_cast<uintptr_t>(target_image->cached_solid_mesh_color_attachment_view),
+            reinterpret_cast<uintptr_t>(target_image->cached_solid_mesh_framebuffer),
+            target_image->info.extent.width,
+            target_image->info.extent.height,
+            draw_count,
+            draw_type,
+            draw_offset,
+            viewport_width,
+            viewport_height,
+            viewport_x,
+            viewport_y,
+            uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix,
+            uniform_snapshot.diffuse[0],
+            uniform_snapshot.diffuse[1],
+            uniform_snapshot.diffuse[2],
+            uniform_snapshot.diffuse[3],
+            uniform_snapshot.opacity,
+            uniform_snapshot.output_intensity);
+    }
+    return VulkanVideoMeshPipelineProbeResult {
+        .attempted = true,
+        .supported = true,
+        .executed = true,
         .reason = "ok"sv,
     };
 }

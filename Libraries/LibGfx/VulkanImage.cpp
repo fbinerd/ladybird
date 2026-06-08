@@ -45,6 +45,10 @@ static uint32_t find_memory_type_index(VkPhysicalDeviceMemoryProperties const& m
 
 VulkanImage::~VulkanImage()
 {
+    if (cached_solid_mesh_framebuffer != VK_NULL_HANDLE)
+        vkDestroyFramebuffer(context.logical_device, cached_solid_mesh_framebuffer, nullptr);
+    if (cached_solid_mesh_color_attachment_view != VK_NULL_HANDLE)
+        vkDestroyImageView(context.logical_device, cached_solid_mesh_color_attachment_view, nullptr);
     if (cached_video_framebuffer != VK_NULL_HANDLE)
         vkDestroyFramebuffer(context.logical_device, cached_video_framebuffer, nullptr);
     if (cached_video_color_attachment_view != VK_NULL_HANDLE)

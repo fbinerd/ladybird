@@ -2007,6 +2007,169 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             }
             return;
         }
+#ifdef USE_VULKAN_DMABUF_IMAGES
+        auto try_post_direct_vulkan_solid_mesh_replay = [&]() -> bool {
+            if (!direct_vulkan_mesh_mode || !gl_after_direct_vulkan_video || vulkan_video_draw_used_sampler)
+                return false;
+            if (!(m_texture_binding_2d && m_texture_binding_2d->has_hardware_video_backing()))
+                return false;
+
+            GLuint program_handle = 0;
+            if (m_current_program) {
+                auto handle_or_error = m_current_program->handle(this);
+                if (handle_or_error.is_error())
+                    return false;
+                program_handle = handle_or_error.value();
+            }
+            if (!program_handle)
+                return false;
+
+            GLint active_attrib_count = 0;
+            GLint active_uniform_count = 0;
+            GLint element_array_buffer = 0;
+            GLint viewport[4] {};
+            glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_ATTRIBUTES, 1, nullptr, &active_attrib_count);
+            glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
+            glGetIntegervRobustANGLE(GL_ELEMENT_ARRAY_BUFFER_BINDING, 1, nullptr, &element_array_buffer);
+            glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
+
+            if (active_attrib_count != 1)
+                return false;
+
+            OpenGLContext::VulkanSolidMeshUniformSnapshot uniform_snapshot;
+            for (size_t i = 0; i < 16; ++i) {
+                uniform_snapshot.model_view_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
+                uniform_snapshot.projection_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
+            }
+            auto uniforms_to_scan = active_uniform_count < 16 ? active_uniform_count : 16;
+            for (GLint index = 0; index < uniforms_to_scan; ++index) {
+                GLint uniform_size = 0;
+                GLenum uniform_type = 0;
+                GLsizei uniform_length = 0;
+                GLchar uniform_name[256];
+                glGetActiveUniform(program_handle, static_cast<GLuint>(index), sizeof(uniform_name), &uniform_length, &uniform_size, &uniform_type, uniform_name);
+                if (!uniform_length)
+                    continue;
+                auto uniform_name_view = StringView { uniform_name, static_cast<size_t>(uniform_length) };
+                auto location = glGetUniformLocation(program_handle, uniform_name);
+                if (location < 0)
+                    continue;
+                if (uniform_type == GL_FLOAT_MAT4 && uniform_name_view == "modelViewMatrix"sv) {
+                    glGetUniformfv(program_handle, location, uniform_snapshot.model_view_matrix.data());
+                    uniform_snapshot.has_model_view_matrix = true;
+                } else if (uniform_type == GL_FLOAT_MAT4 && uniform_name_view == "projectionMatrix"sv) {
+                    glGetUniformfv(program_handle, location, uniform_snapshot.projection_matrix.data());
+                    uniform_snapshot.has_projection_matrix = true;
+                } else if (uniform_type == GL_FLOAT && uniform_name_view == "opacity"sv) {
+                    glGetUniformfv(program_handle, location, &uniform_snapshot.opacity);
+                } else if (uniform_type == GL_FLOAT && uniform_name_view == "uOutputIntensity"sv) {
+                    glGetUniformfv(program_handle, location, &uniform_snapshot.output_intensity);
+                } else if ((uniform_type == GL_FLOAT_VEC3 || uniform_type == GL_FLOAT_VEC4) && uniform_name_view == "diffuse"sv) {
+                    Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
+                    glGetUniformfv(program_handle, location, diffuse.data());
+                    uniform_snapshot.diffuse = diffuse;
+                }
+            }
+
+            ReadonlyBytes position_data;
+            bool position_ready = false;
+            bool position_layout_supported = false;
+            for (GLint index = 0; index < active_attrib_count; ++index) {
+                GLint attrib_size = 0;
+                GLenum attrib_type = 0;
+                GLsizei attrib_length = 0;
+                GLchar attrib_name[256];
+                glGetActiveAttrib(program_handle, static_cast<GLuint>(index), sizeof(attrib_name), &attrib_length, &attrib_size, &attrib_type, attrib_name);
+                if (!attrib_length)
+                    continue;
+                auto attrib_name_view = StringView { attrib_name, static_cast<size_t>(attrib_length) };
+                if (attrib_name_view != "position"sv)
+                    continue;
+                auto location = glGetAttribLocation(program_handle, attrib_name);
+                if (location < 0)
+                    continue;
+                GLint enabled = 0;
+                GLint array_size = 0;
+                GLint array_type = 0;
+                GLint stride = 0;
+                GLint buffer = 0;
+                void* pointer = nullptr;
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_ENABLED, 1, nullptr, &enabled);
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_SIZE, 1, nullptr, &array_size);
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_TYPE, 1, nullptr, &array_type);
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_STRIDE, 1, nullptr, &stride);
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, 1, nullptr, &buffer);
+                glGetVertexAttribPointervRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_POINTER, 1, nullptr, &pointer);
+                position_layout_supported = enabled && array_size == 3 && array_type == GL_FLOAT && stride == static_cast<GLint>(sizeof(float) * 3) && reinterpret_cast<uintptr_t>(pointer) == 0;
+                if (!position_layout_supported)
+                    break;
+                if (auto webgl_buffer = mundo_buffer_for_handle(static_cast<GLuint>(buffer)); webgl_buffer && webgl_buffer->has_complete_shadow_data()) {
+                    position_data = webgl_buffer->shadow_data();
+                    position_ready = true;
+                }
+            }
+
+            ReadonlyBytes element_data;
+            bool element_ready = false;
+            if (auto element_buffer = mundo_buffer_for_handle(static_cast<GLuint>(element_array_buffer)); element_buffer && element_buffer->has_complete_shadow_data()) {
+                element_data = element_buffer->shadow_data();
+                element_ready = true;
+            }
+
+            auto destination_format = m_context->vulkan_painting_surface_format();
+            static size_t s_post_direct_solid_attempt_count { 0 };
+            auto attempt_count = ++s_post_direct_solid_attempt_count;
+            auto can_replay = position_layout_supported && position_ready && element_ready && destination_format.has_value()
+                && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
+                && mode == GL_TRIANGLES;
+            if (attempt_count <= 24 || attempt_count % 120 == 0) {
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} ready={} reason={} next_step={}",
+                    attempt_count,
+                    program_handle,
+                    count,
+                    type,
+                    offset,
+                    active_attrib_count,
+                    active_uniform_count,
+                    position_layout_supported,
+                    position_ready,
+                    position_data.size(),
+                    element_ready,
+                    element_data.size(),
+                    destination_format.value_or(0),
+                    can_replay,
+                    !position_layout_supported ? "unsupported_position_layout"sv
+                        : !position_ready ? "missing_position_shadow"sv
+                        : !element_ready ? "missing_index_shadow"sv
+                        : !destination_format.has_value() ? "missing_vulkan_target_format"sv
+                        : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
+                        : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
+                        : "ready"sv,
+                    can_replay ? "execute_solid_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
+            }
+            if (!can_replay)
+                return false;
+
+            auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(destination_format.value(), uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count);
+            if (!solid_pipeline_probe.executed)
+                return false;
+
+            m_context->note_direct_vulkan_video_draw_submitted();
+            static size_t s_post_direct_solid_replaced_count { 0 };
+            auto replaced_count = ++s_post_direct_solid_replaced_count;
+            if (replaced_count <= 24 || replaced_count % 120 == 0) {
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_REPLACE_GL count={} program={} draw_count={} type={} offset={} reason=solid_vulkan_mesh_draw_executed next_step=verify_remaining_post_video_gl_draws",
+                    replaced_count,
+                    program_handle,
+                    count,
+                    type,
+                    offset);
+            }
+            return true;
+        };
+        if (try_post_direct_vulkan_solid_mesh_replay())
+            return;
+#endif
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
         m_context->note_gl_draw_submitted();
         if (gl_after_direct_vulkan_video) {
