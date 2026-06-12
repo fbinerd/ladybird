@@ -2910,12 +2910,18 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             glGetIntegervRobustANGLE(GL_ELEMENT_ARRAY_BUFFER_BINDING, 1, nullptr, &element_array_buffer);
             glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
 
+            static size_t s_post_direct_textured_render_target_attempt_count { 0 };
+            auto attempt_count = ++s_post_direct_textured_render_target_attempt_count;
             OpenGLContext::VulkanSolidMeshUniformSnapshot uniform_snapshot;
             for (size_t i = 0; i < 16; ++i) {
                 uniform_snapshot.model_view_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
                 uniform_snapshot.projection_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
             }
             size_t sampler_uniform_count = 0;
+            size_t sampler_render_target_count = 0;
+            size_t sampler_video_count = 0;
+            size_t sampler_snapshot_complete_count = 0;
+            size_t sampler_unresolved_count = 0;
             auto uniforms_to_scan = active_uniform_count < 16 ? active_uniform_count : 16;
             for (GLint index = 0; index < uniforms_to_scan; ++index) {
                 GLint uniform_size = 0;
@@ -2930,22 +2936,82 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 if (is_sampler)
                     ++sampler_uniform_count;
                 auto location = glGetUniformLocation(program_handle, uniform_name);
-                if (location < 0)
-                    continue;
-                if (uniform_type == GL_FLOAT_MAT4 && uniform_name_view == "modelViewMatrix"sv) {
-                    glGetUniformfv(program_handle, location, uniform_snapshot.model_view_matrix.data());
-                    uniform_snapshot.has_model_view_matrix = true;
-                } else if (uniform_type == GL_FLOAT_MAT4 && uniform_name_view == "projectionMatrix"sv) {
-                    glGetUniformfv(program_handle, location, uniform_snapshot.projection_matrix.data());
-                    uniform_snapshot.has_projection_matrix = true;
-                } else if (uniform_type == GL_FLOAT && (uniform_name_view == "opacity"sv || uniform_name_view == "uOpacity"sv)) {
-                    glGetUniformfv(program_handle, location, &uniform_snapshot.opacity);
-                } else if (uniform_type == GL_FLOAT && (uniform_name_view == "uOutputIntensity"sv || uniform_name_view == "outputIntensity"sv)) {
-                    glGetUniformfv(program_handle, location, &uniform_snapshot.output_intensity);
-                } else if ((uniform_type == GL_FLOAT_VEC3 || uniform_type == GL_FLOAT_VEC4) && (uniform_name_view == "diffuse"sv || uniform_name_view == "uTintColor"sv)) {
-                    Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
-                    glGetUniformfv(program_handle, location, diffuse.data());
-                    uniform_snapshot.diffuse = diffuse;
+                GLint sampler_unit = -1;
+                GLuint sampler_texture_handle = 0;
+                bool sampler_texture_has_video_backing = false;
+                bool sampler_texture_render_target_written = false;
+                bool sampler_texture_snapshot_complete = false;
+                u32 sampler_texture_render_target_width = 0;
+                u32 sampler_texture_render_target_height = 0;
+                size_t sampler_texture_render_target_write_count = 0;
+                if (location >= 0) {
+                    if (uniform_type == GL_FLOAT_MAT4 && uniform_name_view == "modelViewMatrix"sv) {
+                        glGetUniformfv(program_handle, location, uniform_snapshot.model_view_matrix.data());
+                        uniform_snapshot.has_model_view_matrix = true;
+                    } else if (uniform_type == GL_FLOAT_MAT4 && uniform_name_view == "projectionMatrix"sv) {
+                        glGetUniformfv(program_handle, location, uniform_snapshot.projection_matrix.data());
+                        uniform_snapshot.has_projection_matrix = true;
+                    } else if (uniform_type == GL_FLOAT && (uniform_name_view == "opacity"sv || uniform_name_view == "uOpacity"sv)) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.opacity);
+                    } else if (uniform_type == GL_FLOAT && (uniform_name_view == "uOutputIntensity"sv || uniform_name_view == "outputIntensity"sv)) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.output_intensity);
+                    } else if ((uniform_type == GL_FLOAT_VEC3 || uniform_type == GL_FLOAT_VEC4) && (uniform_name_view == "diffuse"sv || uniform_name_view == "uTintColor"sv)) {
+                        Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
+                        glGetUniformfv(program_handle, location, diffuse.data());
+                        uniform_snapshot.diffuse = diffuse;
+                    } else if (is_sampler) {
+                        glGetUniformiv(program_handle, location, &sampler_unit);
+                        if (sampler_unit >= 0 && static_cast<size_t>(sampler_unit) < m_mundo_texture_binding_2d_by_unit.size()) {
+                            if (auto sampler_texture = m_mundo_texture_binding_2d_by_unit[static_cast<size_t>(sampler_unit)]) {
+                                sampler_texture_handle = sampler_texture->handle(this).value_or(0);
+                                sampler_texture_has_video_backing = sampler_texture->has_hardware_video_backing();
+                                auto const& sampler_render_target_state = sampler_texture->mundo_render_target_write_state();
+                                sampler_texture_render_target_written = sampler_render_target_state.has_value();
+                                if (sampler_render_target_state.has_value()) {
+                                    sampler_texture_render_target_width = sampler_render_target_state->last_viewport_width;
+                                    sampler_texture_render_target_height = sampler_render_target_state->last_viewport_height;
+                                    sampler_texture_render_target_write_count = sampler_render_target_state->write_count;
+                                }
+                                auto const& sampler_snapshot = sampler_texture->mundo_texture_upload_snapshot();
+                                sampler_texture_snapshot_complete = sampler_snapshot.has_value() && sampler_snapshot->complete;
+                            }
+                        }
+                    }
+                }
+                if (is_sampler) {
+                    if (sampler_texture_has_video_backing)
+                        ++sampler_video_count;
+                    else if (sampler_texture_render_target_written)
+                        ++sampler_render_target_count;
+                    else if (sampler_texture_snapshot_complete)
+                        ++sampler_snapshot_complete_count;
+                    else
+                        ++sampler_unresolved_count;
+                    if (attempt_count <= 24 || attempt_count % 120 == 0) {
+                        dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_SAMPLER count={} program={} index={} name={} type={} size={} location={} sampler_unit={} sampler_texture={} sampler_video_backing={} sampler_render_target_written={} sampler_render_target_size={}x{} sampler_render_target_write_count={} sampler_snapshot_complete={} current_source_texture={} current_source_write_count={} next_step={}",
+                            attempt_count,
+                            program_handle,
+                            index,
+                            uniform_name_view,
+                            uniform_type,
+                            uniform_size,
+                            location,
+                            sampler_unit,
+                            sampler_texture_handle,
+                            sampler_texture_has_video_backing,
+                            sampler_texture_render_target_written,
+                            sampler_texture_render_target_width,
+                            sampler_texture_render_target_height,
+                            sampler_texture_render_target_write_count,
+                            sampler_texture_snapshot_complete,
+                            source_texture_handle,
+                            render_target_state->write_count,
+                            sampler_texture_handle == source_texture_handle ? "source_sampler_for_vulkan_replay"sv
+                                : sampler_texture_render_target_written ? "secondary_render_target_sampler_needs_vulkan_multisampler_shader"sv
+                                : sampler_texture_snapshot_complete ? "secondary_static_sampler_needs_vulkan_multisampler_shader"sv
+                                : sampler_texture_has_video_backing ? "secondary_video_sampler_needs_ycbcr_or_prior_replay"sv
+                                : "capture_missing_sampler_binding"sv);
+                    }
                 }
             }
 
@@ -3007,12 +3073,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             }
 
             auto destination_format = m_context->vulkan_painting_surface_format();
-            static size_t s_post_direct_textured_render_target_attempt_count { 0 };
-            auto attempt_count = ++s_post_direct_textured_render_target_attempt_count;
             auto textured_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_REPLAY");
+            auto allow_extra_samplers = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALLOW_EXTRA_SAMPLERS");
+            auto sampler_count_supported = sampler_uniform_count == 1 || (allow_extra_samplers && sampler_render_target_count >= 1 && sampler_unresolved_count == 0);
             auto can_replay = textured_replay_enabled
                 && active_attrib_count == 2
-                && sampler_uniform_count == 1
+                && sampler_count_supported
                 && has_position_attrib
                 && has_uv_attrib
                 && position_layout_supported
@@ -3024,7 +3090,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
                 && mode == GL_TRIANGLES;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ATTEMPT count={} program={} source_texture={} source_write_count={} source_viewport={}x{} source_program={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_ready={} uv_ready={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ATTEMPT count={} program={} source_texture={} source_write_count={} source_viewport={}x{} source_program={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} sampler_render_targets={} sampler_videos={} sampler_snapshots={} sampler_unresolved={} allow_extra_samplers={} sampler_count_supported={} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_ready={} uv_ready={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
                     attempt_count,
                     program_handle,
                     source_texture_handle,
@@ -3037,6 +3103,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     offset,
                     active_attrib_count,
                     sampler_uniform_count,
+                    sampler_render_target_count,
+                    sampler_video_count,
+                    sampler_snapshot_complete_count,
+                    sampler_unresolved_count,
+                    allow_extra_samplers,
+                    sampler_count_supported,
                     has_position_attrib,
                     has_uv_attrib,
                     position_layout_supported,
@@ -3052,7 +3124,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     can_replay,
                     !textured_replay_enabled ? "textured_render_target_replay_explicitly_disabled"sv
                         : active_attrib_count != 2 ? "not_position_uv_mesh"sv
-                        : sampler_uniform_count != 1 ? "not_single_sampler_consumer"sv
+                        : !sampler_count_supported ? "unsupported_sampler_consumer"sv
                         : !has_position_attrib ? "missing_position_attrib"sv
                         : !has_uv_attrib ? "missing_uv_attrib"sv
                         : !position_layout_supported ? "unsupported_position_layout"sv
