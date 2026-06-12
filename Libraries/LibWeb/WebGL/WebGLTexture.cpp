@@ -125,6 +125,26 @@ void WebGLTexture::set_mundo_texture_upload_snapshot_incomplete(u32 width, u32 h
 bool WebGLTexture::update_mundo_texture_upload_snapshot_region(i32 xoffset, i32 yoffset, u32 width, u32 height, u32 format, u32 type, ReadonlyBytes pixels)
 {
     if (!m_mundo_texture_upload_snapshot.has_value()) {
+        if (xoffset == 0 && yoffset == 0) {
+            MundoTextureUploadSnapshot snapshot;
+            snapshot.width = width;
+            snapshot.height = height;
+            snapshot.internal_format = format;
+            snapshot.format = format;
+            snapshot.type = type;
+            snapshot.byte_length = 0;
+            snapshot.complete = false;
+            m_mundo_texture_upload_snapshot = move(snapshot);
+            if (should_log_mundo_texture_snapshot_event())
+                dbgln("MUNDO_WEBGL_TEXTURE_SNAPSHOT_STATE texture={} state=incomplete reason=subimage_created_base_from_zero_offset size={}x{} format={} type={} bytes={}", handle(m_context.ptr()).value_or(0), width, height, format, type, pixels.size());
+        } else {
+            if (should_log_mundo_texture_snapshot_event())
+                dbgln("MUNDO_WEBGL_TEXTURE_SNAPSHOT_STATE texture={} state=incomplete reason=subimage_without_base offset={}x{} size={}x{} format={} type={} bytes={}", handle(m_context.ptr()).value_or(0), xoffset, yoffset, width, height, format, type, pixels.size());
+            return false;
+        }
+    }
+
+    if (!m_mundo_texture_upload_snapshot.has_value()) {
         if (should_log_mundo_texture_snapshot_event())
             dbgln("MUNDO_WEBGL_TEXTURE_SNAPSHOT_STATE texture={} state=incomplete reason=subimage_without_base offset={}x{} size={}x{} format={} type={} bytes={}", handle(m_context.ptr()).value_or(0), xoffset, yoffset, width, height, format, type, pixels.size());
         return false;
