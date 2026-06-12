@@ -1266,6 +1266,9 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         size_t sampler_sources_snapshot_complete = 0;
         size_t sampler_sources_render_target = 0;
         size_t sampler_sources_video = 0;
+        GLuint render_target_sampler_texture_handle = 0;
+        u32 render_target_sampler_width = 0;
+        u32 render_target_sampler_height = 0;
 #ifdef USE_VULKAN_DMABUF_IMAGES
         OpenGLContext::VulkanSolidMeshUniformSnapshot uniform_snapshot;
         for (size_t i = 0; i < 16; ++i) {
@@ -1331,6 +1334,11 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                             } else if (sampler_texture_render_target_written) {
                                 ++sampler_sources_resolved;
                                 ++sampler_sources_render_target;
+                                if (!render_target_sampler_texture_handle && sampler_render_target_state.has_value()) {
+                                    render_target_sampler_texture_handle = sampler_texture_handle;
+                                    render_target_sampler_width = sampler_render_target_state->last_viewport_width;
+                                    render_target_sampler_height = sampler_render_target_state->last_viewport_height;
+                                }
                             } else if (sampler_texture_snapshot_complete) {
                                 ++sampler_sources_resolved;
                                 ++sampler_sources_snapshot_complete;
@@ -1367,10 +1375,13 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
 #ifdef USE_VULKAN_DMABUF_IMAGES
         bool has_position_attrib = false;
         bool has_color_attrib = false;
+        bool has_uv_attrib = false;
         bool position_layout_supported = false;
         bool color_layout_supported = false;
+        bool uv_layout_supported = false;
         ReadonlyBytes position_data;
         ReadonlyBytes color_data;
+        ReadonlyBytes uv_data;
 #endif
         for (GLint attrib_index = 0; attrib_index < attribs_to_log; ++attrib_index) {
             GLint size = 0;
@@ -1387,6 +1398,8 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 has_position_attrib = true;
             else if (attribute_name == "color"sv)
                 has_color_attrib = true;
+            else if (attribute_name == "uv"sv)
+                has_uv_attrib = true;
 #endif
             auto location = glGetAttribLocation(program_handle, name);
             GLint enabled = 0;
@@ -1420,6 +1433,10 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                             color_layout_supported = layout_supported;
                             if (layout_supported)
                                 color_data = webgl_buffer->shadow_data();
+                        } else if (attribute_name == "uv"sv) {
+                            uv_layout_supported = enabled && array_size == 2 && array_type == GL_FLOAT && stride == static_cast<GLint>(sizeof(float) * 2) && reinterpret_cast<uintptr_t>(pointer) == 0;
+                            if (uv_layout_supported)
+                                uv_data = webgl_buffer->shadow_data();
                         }
                     }
 #endif
@@ -1674,6 +1691,95 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                         solid_pipeline_probe.executed,
                         solid_pipeline_probe.reason,
                         solid_pipeline_probe.executed ? "verify_solid_render_target_consumers_can_sample_imported_texture" : "fix_solid_mesh_probe_before_offscreen_target");
+                }
+            }
+        }
+
+        static size_t s_textured_render_target_attempt_count { 0 };
+        auto textured_attempt_count = ++s_textured_render_target_attempt_count;
+        auto textured_consumer_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_TEXTURED_CONSUMER");
+        auto textured_consumer_possible = !strcmp(operation, "drawElements")
+            && mode == GL_TRIANGLES
+            && active_attrib_count == 2
+            && sampler_uniform_count == 1
+            && sampler_sources_render_target == 1
+            && render_target_sampler_texture_handle
+            && has_position_attrib
+            && has_uv_attrib
+            && position_layout_supported
+            && uv_layout_supported
+            && element_shadow_complete
+            && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
+        if (textured_attempt_count <= 24 || textured_attempt_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_TEXTURED_CONSUMER_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} sampler_sources_render_target={} sampled_render_target_texture={} sampled_render_target_size={}x{} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+                textured_attempt_count,
+                texture_handle,
+                render_target_state->write_count,
+                program_handle,
+                textured_consumer_enabled,
+                textured_consumer_possible,
+                operation,
+                mode,
+                count,
+                type,
+                offset,
+                active_attrib_count,
+                sampler_uniform_count,
+                sampler_sources_render_target,
+                render_target_sampler_texture_handle,
+                render_target_sampler_width,
+                render_target_sampler_height,
+                has_position_attrib,
+                has_uv_attrib,
+                position_layout_supported,
+                uv_layout_supported,
+                position_data.size(),
+                uv_data.size(),
+                element_shadow_complete,
+                element_data.size(),
+                destination_format.value_or(0),
+                strcmp(operation, "drawElements") ? "not_draw_elements"sv
+                    : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
+                    : active_attrib_count != 2 ? "not_position_uv_mesh"sv
+                    : sampler_uniform_count != 1 ? "not_single_sampler_consumer"sv
+                    : sampler_sources_render_target != 1 ? "sampler_not_single_render_target_source"sv
+                    : !render_target_sampler_texture_handle ? "missing_render_target_sampler_texture"sv
+                    : !has_position_attrib ? "missing_position_attrib"sv
+                    : !has_uv_attrib ? "missing_uv_attrib"sv
+                    : !position_layout_supported ? "unsupported_position_layout"sv
+                    : !uv_layout_supported ? "unsupported_uv_layout"sv
+                    : !element_shadow_complete ? "missing_index_shadow"sv
+                    : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
+                    : !destination_format.has_value() ? "missing_vulkan_target_format"sv
+                    : !textured_consumer_enabled ? "textured_consumer_explicitly_disabled"sv
+                    : "ready"sv,
+                textured_consumer_possible && textured_consumer_enabled ? "execute_textured_vulkan_mesh_from_offscreen_render_target"sv : "keep_collecting_textured_consumer_inputs"sv);
+        }
+        if (textured_consumer_enabled && textured_consumer_possible && destination_format.has_value()) {
+            auto source_image_or_error = m_context->get_or_create_vulkan_rgba_render_target_image(render_target_sampler_texture_handle, render_target_sampler_width ? render_target_sampler_width : 1, render_target_sampler_height ? render_target_sampler_height : 1, textured_attempt_count);
+            if (source_image_or_error.is_error()) {
+                if (textured_attempt_count <= 24 || textured_attempt_count % 120 == 0) {
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_TEXTURED_CONSUMER_SOURCE_IMPORT count={} color_texture={} sampled_render_target_texture={} status=failed reason={} route=vulkan_offscreen_image next_step=fix_vulkan_offscreen_source_before_textured_consumer",
+                        textured_attempt_count,
+                        texture_handle,
+                        render_target_sampler_texture_handle,
+                        source_image_or_error.error().string_literal());
+                }
+            } else {
+                auto* source_image_texture = source_image_or_error.release_value();
+                auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], textured_attempt_count);
+                if (textured_attempt_count <= 24 || textured_attempt_count % 120 == 0) {
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_TEXTURED_CONSUMER_PROBE_RESULT count={} color_texture={} write_count={} program={} sampled_render_target_texture={} attempted={} supported={} executed={} reason={} next_step={}",
+                        textured_attempt_count,
+                        texture_handle,
+                        render_target_state->write_count,
+                        program_handle,
+                        render_target_sampler_texture_handle,
+                        textured_pipeline_probe.attempted,
+                        textured_pipeline_probe.supported,
+                        textured_pipeline_probe.executed,
+                        textured_pipeline_probe.reason,
+                        textured_pipeline_probe.executed ? "validate_textured_consumer_visuals_then_make_render_target_chain_gpu_only" : "fix_textured_consumer_pipeline_before_replacing_gl_draw");
                 }
             }
         }
