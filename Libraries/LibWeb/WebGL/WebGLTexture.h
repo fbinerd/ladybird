@@ -10,6 +10,7 @@
 
 #include <AK/ByteBuffer.h>
 #include <AK/NonnullOwnPtr.h>
+#include <AK/Vector.h>
 #include <LibWeb/WebGL/Types.h>
 #include <LibWeb/WebGL/WebGLObject.h>
 
@@ -96,6 +97,7 @@ private:
     Optional<MundoRenderTargetWriteState> m_mundo_render_target_write_state;
 #ifdef USE_VULKAN_DMABUF_IMAGES
     OwnPtr<Gfx::ImportedVulkanNV12Image> m_cached_virtual_vulkan_video_source;
+    Vector<OwnPtr<Gfx::ImportedVulkanNV12Image>> m_retired_virtual_vulkan_video_sources;
     u64 m_cached_virtual_vulkan_video_source_frame_id { 0 };
 #endif
 };

@@ -22,6 +22,9 @@ namespace Web::WebGL {
 GC_DEFINE_ALLOCATOR(WebGLTexture);
 
 static constexpr size_t max_mundo_texture_upload_snapshot_bytes = 64 * 1024 * 1024;
+#ifdef USE_VULKAN_DMABUF_IMAGES
+static constexpr size_t max_retired_virtual_vulkan_video_sources = 8;
+#endif
 
 static bool should_log_mundo_texture_snapshot_event()
 {
@@ -86,6 +89,7 @@ void WebGLTexture::clear_hardware_video_backing()
     m_hardware_video_backing.clear();
 #ifdef USE_VULKAN_DMABUF_IMAGES
     m_cached_virtual_vulkan_video_source = nullptr;
+    m_retired_virtual_vulkan_video_sources.clear();
     m_cached_virtual_vulkan_video_source_frame_id = 0;
 #endif
 }
@@ -269,6 +273,11 @@ void WebGLTexture::mark_mundo_render_target_written(u32 viewport_width, u32 view
 #ifdef USE_VULKAN_DMABUF_IMAGES
 void WebGLTexture::set_cached_virtual_vulkan_video_source(u64 frame_id, NonnullOwnPtr<Gfx::ImportedVulkanNV12Image> source)
 {
+    if (m_cached_virtual_vulkan_video_source) {
+        m_retired_virtual_vulkan_video_sources.append(move(m_cached_virtual_vulkan_video_source));
+        while (m_retired_virtual_vulkan_video_sources.size() > max_retired_virtual_vulkan_video_sources)
+            m_retired_virtual_vulkan_video_sources.remove(0);
+    }
     m_cached_virtual_vulkan_video_source = move(source);
     m_cached_virtual_vulkan_video_source_frame_id = frame_id;
 }
