@@ -1195,7 +1195,27 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
     if (render_target_state.has_value() && (render_target_state->write_count <= 24 || render_target_state->write_count % 120 == 0)) {
         auto texture_handle = texture->handle(this).value_or(0);
         auto framebuffer_handle = m_framebuffer_binding->handle(this).value_or(0);
-        dbgln("MUNDO_WEBGL_FRAMEBUFFER_RENDER_TARGET_DRAW op={} framebuffer={} color_texture={} write_count={} program={} viewport={}x{}+{}+{} reason=draw_wrote_to_tracked_color_attachment",
+        GLuint sampled_texture_handle = 0;
+        bool sampled_texture_has_video_backing = false;
+        bool sampled_texture_render_target_written = false;
+        size_t sampled_texture_render_target_write_count = 0;
+        bool sampled_texture_snapshot = false;
+        bool sampled_texture_snapshot_complete = false;
+        u32 sampled_texture_snapshot_width = 0;
+        u32 sampled_texture_snapshot_height = 0;
+        if (m_texture_binding_2d) {
+            sampled_texture_handle = m_texture_binding_2d->handle(this).value_or(0);
+            sampled_texture_has_video_backing = m_texture_binding_2d->has_hardware_video_backing();
+            auto const& sampled_render_target_state = m_texture_binding_2d->mundo_render_target_write_state();
+            sampled_texture_render_target_written = sampled_render_target_state.has_value();
+            sampled_texture_render_target_write_count = sampled_render_target_state.has_value() ? sampled_render_target_state->write_count : 0;
+            auto const& sampled_snapshot = m_texture_binding_2d->mundo_texture_upload_snapshot();
+            sampled_texture_snapshot = sampled_snapshot.has_value();
+            sampled_texture_snapshot_complete = sampled_snapshot.has_value() ? sampled_snapshot->complete : false;
+            sampled_texture_snapshot_width = sampled_snapshot.has_value() ? sampled_snapshot->width : 0;
+            sampled_texture_snapshot_height = sampled_snapshot.has_value() ? sampled_snapshot->height : 0;
+        }
+        dbgln("MUNDO_WEBGL_FRAMEBUFFER_RENDER_TARGET_DRAW op={} framebuffer={} color_texture={} write_count={} program={} viewport={}x{}+{}+{} sampled_texture={} sampled_video_backing={} sampled_render_target_written={} sampled_render_target_write_count={} sampled_snapshot={} sampled_snapshot_complete={} sampled_snapshot_size={}x{} reason=draw_wrote_to_tracked_color_attachment next_step={}",
             operation,
             framebuffer_handle,
             texture_handle,
@@ -1204,7 +1224,16 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             viewport[2],
             viewport[3],
             viewport[0],
-            viewport[1]);
+            viewport[1],
+            sampled_texture_handle,
+            sampled_texture_has_video_backing,
+            sampled_texture_render_target_written,
+            sampled_texture_render_target_write_count,
+            sampled_texture_snapshot,
+            sampled_texture_snapshot_complete,
+            sampled_texture_snapshot_width,
+            sampled_texture_snapshot_height,
+            sampled_texture_has_video_backing ? "replay_render_target_producer_from_video_source"sv : sampled_texture_render_target_written ? "replay_render_target_chain"sv : "replay_or_import_generic_texture_source"sv);
     }
 }
 
