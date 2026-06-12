@@ -151,6 +151,19 @@ static bool mundo_webgl_env_flag_enabled(char const* name)
     return value && StringView { value, strlen(value) } == "1"sv;
 }
 
+static bool mundo_webgl_env_auto_enabled(char const* name)
+{
+    auto const* value = getenv(name);
+    if (!value)
+        return true;
+
+    auto view = StringView { value, strlen(value) };
+    if (view == "0"sv || view == "false"sv || view == "off"sv || view == "no"sv)
+        return false;
+
+    return view == "1"sv || view == "auto"sv || view == "true"sv || view == "on"sv || view == "yes"sv;
+}
+
 static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
 {
     auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
@@ -1477,8 +1490,8 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
 #ifdef USE_VULKAN_DMABUF_IMAGES
         static size_t s_colored_render_target_attempt_count { 0 };
         auto colored_attempt_count = ++s_colored_render_target_attempt_count;
-        auto colored_replay_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
-        auto colored_replay_to_texture_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
+        auto colored_replay_enabled = mundo_webgl_env_auto_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
+        auto colored_replay_to_texture_enabled = mundo_webgl_env_auto_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
         auto colored_replay_possible = !strcmp(operation, "drawElements")
             && mode == GL_TRIANGLES
             && active_attrib_count == 2
@@ -1526,7 +1539,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     : !element_shadow_complete ? "missing_index_shadow"sv
                     : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
                     : !destination_format.has_value() ? "missing_vulkan_target_format"sv
-                    : !colored_replay_enabled ? "colored_replay_waiting_for_explicit_opt_in"sv
+                    : !colored_replay_enabled ? "colored_replay_explicitly_disabled"sv
                     : "ready"sv,
                 colored_replay_possible && colored_replay_enabled ? (colored_replay_to_texture_enabled ? "execute_colored_vulkan_mesh_to_render_target_texture"sv : "execute_colored_vulkan_mesh_probe_to_painting_surface"sv) : "keep_collecting_colored_render_target_inputs"sv);
         }
