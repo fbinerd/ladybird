@@ -1636,17 +1636,19 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         static size_t s_solid_render_target_attempt_count { 0 };
         auto solid_attempt_count = ++s_solid_render_target_attempt_count;
         auto solid_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
+        auto solid_uniforms_supported = active_uniform_count <= 4;
         auto solid_replay_possible = !strcmp(operation, "drawElements")
             && replay_viewport_valid
             && mode == GL_TRIANGLES
             && active_attrib_count == 1
             && sampler_uniform_count == 0
+            && solid_uniforms_supported
             && has_position_attrib
             && position_layout_supported
             && element_shadow_complete
             && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
         if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
                 solid_attempt_count,
                 texture_handle,
                 render_target_state->write_count,
@@ -1659,7 +1661,9 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 type,
                 offset,
                 active_attrib_count,
+                active_uniform_count,
                 sampler_uniform_count,
+                solid_uniforms_supported,
                 has_position_attrib,
                 position_layout_supported,
                 position_data.size(),
@@ -1671,6 +1675,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                     : active_attrib_count != 1 ? "not_single_position_mesh"sv
                     : sampler_uniform_count != 0 ? "sampler_based_draw_not_solid_mesh"sv
+                    : !solid_uniforms_supported ? "unsupported_solid_shader_uniform_shape"sv
                     : !has_position_attrib ? "missing_position_attrib"sv
                     : !position_layout_supported ? "unsupported_position_layout"sv
                     : !element_shadow_complete ? "missing_index_shadow"sv
@@ -2819,13 +2824,15 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             glGetIntegervRobustANGLE(GL_BLEND_DST_ALPHA, 1, nullptr, &blend_dst_alpha);
             glGetIntegervRobustANGLE(GL_BLEND_EQUATION_RGB, 1, nullptr, &blend_equation_rgb);
             glGetIntegervRobustANGLE(GL_BLEND_EQUATION_ALPHA, 1, nullptr, &blend_equation_alpha);
+            auto solid_uniforms_supported = active_uniform_count <= 4;
             auto can_replay = position_layout_supported && position_ready && element_ready && destination_format.has_value()
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
                 && mode == GL_TRIANGLES
                 && replay_viewport_valid
+                && solid_uniforms_supported
                 && solid_replay_enabled;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} bound_texture={} bound_texture_video={} bound_texture_render_target={} bound_texture_render_target_write_count={} bound_texture_render_target_size={}x{} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} solid_uniforms_supported={} bound_texture={} bound_texture_video={} bound_texture_render_target={} bound_texture_render_target_write_count={} bound_texture_render_target_size={}x{} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
                     attempt_count,
                     program_handle,
                     count,
@@ -2833,6 +2840,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     offset,
                     active_attrib_count,
                     active_uniform_count,
+                    solid_uniforms_supported,
                     bound_texture_handle,
                     bound_texture_has_video_backing,
                     bound_texture_render_target_written,
@@ -2854,6 +2862,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
                         : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                         : !replay_viewport_valid ? "invalid_viewport"sv
+                        : !solid_uniforms_supported ? "unsupported_solid_shader_uniform_shape"sv
                         : !solid_replay_enabled ? "solid_replay_requires_explicit_opt_in_after_white_overlay_regression"sv
                         : "ready"sv,
                     can_replay ? "execute_solid_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
