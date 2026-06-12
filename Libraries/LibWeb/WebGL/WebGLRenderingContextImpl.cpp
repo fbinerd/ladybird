@@ -1510,11 +1510,13 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         auto colored_attempt_count = ++s_colored_render_target_attempt_count;
         auto colored_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
         auto colored_replay_to_texture_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
+        auto colored_uniforms_supported = active_uniform_count <= 4;
         auto colored_replay_possible = !strcmp(operation, "drawElements")
             && replay_viewport_valid
             && mode == GL_TRIANGLES
             && active_attrib_count == 2
             && sampler_uniform_count == 0
+            && colored_uniforms_supported
             && has_position_attrib
             && has_color_attrib
             && position_layout_supported
@@ -1523,7 +1525,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
         auto destination_format = m_context->vulkan_painting_surface_format();
         if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} has_position={} has_color={} position_layout_supported={} color_layout_supported={} position_bytes={} color_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} colored_uniforms_supported={} has_position={} has_color={} position_layout_supported={} color_layout_supported={} position_bytes={} color_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
                 colored_attempt_count,
                 texture_handle,
                 render_target_state->write_count,
@@ -1537,7 +1539,9 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 type,
                 offset,
                 active_attrib_count,
+                active_uniform_count,
                 sampler_uniform_count,
+                colored_uniforms_supported,
                 has_position_attrib,
                 has_color_attrib,
                 position_layout_supported,
@@ -1552,6 +1556,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                     : active_attrib_count != 2 ? "not_two_attrib_colored_mesh"sv
                     : sampler_uniform_count != 0 ? "sampler_based_draw_not_colored_mesh"sv
+                    : !colored_uniforms_supported ? "unsupported_colored_shader_uniform_shape"sv
                     : !has_position_attrib ? "missing_position_attrib"sv
                     : !has_color_attrib ? "missing_color_attrib"sv
                     : !position_layout_supported ? "unsupported_position_layout"sv
