@@ -18,6 +18,7 @@
 #include <LibWeb/WebGL/OpenGLContext.h>
 #ifdef USE_VULKAN_DMABUF_IMAGES
 #    include <LibWeb/WebGL/MundoSolidMeshShaders.inc>
+#    include <LibWeb/WebGL/MundoTexturedMeshShaders.inc>
 #endif
 
 #include <EGL/egl.h>
