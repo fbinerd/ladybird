@@ -1475,6 +1475,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         static size_t s_colored_render_target_attempt_count { 0 };
         auto colored_attempt_count = ++s_colored_render_target_attempt_count;
         auto colored_replay_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
+        auto colored_replay_to_texture_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
         auto colored_replay_possible = !strcmp(operation, "drawElements")
             && mode == GL_TRIANGLES
             && active_attrib_count == 2
@@ -1487,12 +1488,13 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
         auto destination_format = m_context->vulkan_painting_surface_format();
         if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} has_position={} has_color={} position_layout_supported={} color_layout_supported={} position_bytes={} color_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} has_position={} has_color={} position_layout_supported={} color_layout_supported={} position_bytes={} color_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
                 colored_attempt_count,
                 texture_handle,
                 render_target_state->write_count,
                 program_handle,
                 colored_replay_enabled,
+                colored_replay_to_texture_enabled,
                 colored_replay_possible,
                 operation,
                 mode,
@@ -1523,16 +1525,47 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     : !destination_format.has_value() ? "missing_vulkan_target_format"sv
                     : !colored_replay_enabled ? "colored_replay_waiting_for_explicit_opt_in"sv
                     : "ready"sv,
-                colored_replay_possible && colored_replay_enabled ? "execute_colored_vulkan_mesh_probe" : "keep_collecting_colored_render_target_inputs");
+                colored_replay_possible && colored_replay_enabled ? (colored_replay_to_texture_enabled ? "execute_colored_vulkan_mesh_to_render_target_texture"sv : "execute_colored_vulkan_mesh_probe_to_painting_surface"sv) : "keep_collecting_colored_render_target_inputs"sv);
         }
         if (colored_replay_enabled && colored_replay_possible && destination_format.has_value()) {
-            auto colored_pipeline_probe = m_context->probe_vulkan_colored_mesh_pipeline(destination_format.value(), uniform_snapshot, position_data, color_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], colored_attempt_count);
+            OpenGLContext::ImportedVideoOpaqueFDTexture* imported_render_target_texture = nullptr;
+            if (colored_replay_to_texture_enabled) {
+                auto imported_texture_or_error = m_context->get_or_create_imported_video_rgba_target_texture(texture_handle, viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 1, viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 1, colored_attempt_count);
+                if (imported_texture_or_error.is_error()) {
+                    if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
+                        dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=failed reason={} next_step=fix_texture_storage_import_before_colored_offscreen_replay",
+                            colored_attempt_count,
+                            texture_handle,
+                            render_target_state->write_count,
+                            program_handle,
+                            imported_texture_or_error.error().string_literal());
+                    }
+                } else {
+                    imported_render_target_texture = imported_texture_or_error.release_value();
+                    if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
+                        dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=ok imported_texture={} size={}x{} allocation_size={} next_step=draw_colored_mesh_into_imported_render_target_texture",
+                            colored_attempt_count,
+                            texture_handle,
+                            render_target_state->write_count,
+                            program_handle,
+                            imported_render_target_texture->texture,
+                            imported_render_target_texture->width,
+                            imported_render_target_texture->height,
+                            imported_render_target_texture->allocation_size);
+                    }
+                }
+            }
+            if (colored_replay_to_texture_enabled && !imported_render_target_texture)
+                return;
+            auto* target_image_override = imported_render_target_texture ? imported_render_target_texture->image.ptr() : nullptr;
+            auto colored_pipeline_probe = m_context->probe_vulkan_colored_mesh_pipeline(destination_format.value(), uniform_snapshot, position_data, color_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], colored_attempt_count, target_image_override);
             if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} program={} attempted={} supported={} executed={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} program={} to_texture={} attempted={} supported={} executed={} reason={} next_step={}",
                     colored_attempt_count,
                     texture_handle,
                     render_target_state->write_count,
                     program_handle,
+                    target_image_override != nullptr,
                     colored_pipeline_probe.attempted,
                     colored_pipeline_probe.supported,
                     colored_pipeline_probe.executed,
