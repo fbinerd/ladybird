@@ -4940,8 +4940,7 @@ void OpenGLContext::note_direct_vulkan_video_draw_submitted()
 bool OpenGLContext::has_direct_vulkan_video_draw_pending_gl_present() const
 {
 #ifdef USE_VULKAN_DMABUF_IMAGES
-    return mundo_webgl_video_direct_vulkan_mesh_enabled()
-        && m_impl->direct_vulkan_video_draw_serial > 0
+    return m_impl->direct_vulkan_video_draw_serial > 0
         && m_impl->gl_draw_serial == m_impl->direct_vulkan_video_draw_serial;
 #else
     return false;
@@ -4962,11 +4961,9 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
 #    elif defined(USE_VULKAN_DMABUF_IMAGES)
     // FIXME: CPU sync for now, but it would be better to export a fence and have Skia wait for it before reading from the surface.
     // MUNDO_WEBGL_PRESENT_SYNC_MODE lets the direct-video path validate lighter present synchronization without changing the default for non-direct video paths.
-    auto direct_vulkan_mesh_present = false;
-    direct_vulkan_mesh_present = mundo_webgl_video_direct_vulkan_mesh_enabled();
-    auto direct_vulkan_video_was_last_draw = direct_vulkan_mesh_present
-        && m_impl->direct_vulkan_video_draw_serial > 0
+    auto direct_vulkan_video_was_last_draw = m_impl->direct_vulkan_video_draw_serial > 0
         && m_impl->gl_draw_serial == m_impl->direct_vulkan_video_draw_serial;
+    auto direct_vulkan_mesh_present = m_impl->direct_vulkan_video_draw_serial > 0;
     auto present_sync_mode = direct_vulkan_mesh_present ? "auto"sv : "finish"sv;
     if (auto const* present_sync_mode_value = getenv("MUNDO_WEBGL_PRESENT_SYNC_MODE")) {
         auto value = StringView { present_sync_mode_value, strlen(present_sync_mode_value) };
