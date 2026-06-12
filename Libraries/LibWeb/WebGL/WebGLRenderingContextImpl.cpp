@@ -2639,8 +2639,6 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
         auto try_post_direct_vulkan_solid_mesh_replay = [&]() -> bool {
             if (!direct_vulkan_mesh_mode || !gl_after_direct_vulkan_video || vulkan_video_draw_used_sampler)
                 return false;
-            if (!(m_texture_binding_2d && m_texture_binding_2d->has_hardware_video_backing()))
-                return false;
 
             GLuint program_handle = 0;
             if (m_current_program) {
@@ -2748,6 +2746,23 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             static size_t s_post_direct_solid_attempt_count { 0 };
             auto attempt_count = ++s_post_direct_solid_attempt_count;
             auto solid_replay_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY");
+            GLuint bound_texture_handle = 0;
+            bool bound_texture_has_video_backing = false;
+            bool bound_texture_render_target_written = false;
+            size_t bound_texture_render_target_write_count = 0;
+            u32 bound_texture_render_target_width = 0;
+            u32 bound_texture_render_target_height = 0;
+            if (m_texture_binding_2d) {
+                bound_texture_handle = m_texture_binding_2d->handle(this).value_or(0);
+                bound_texture_has_video_backing = m_texture_binding_2d->has_hardware_video_backing();
+                auto const& bound_render_target_state = m_texture_binding_2d->mundo_render_target_write_state();
+                bound_texture_render_target_written = bound_render_target_state.has_value();
+                if (bound_render_target_state.has_value()) {
+                    bound_texture_render_target_write_count = bound_render_target_state->write_count;
+                    bound_texture_render_target_width = bound_render_target_state->last_viewport_width;
+                    bound_texture_render_target_height = bound_render_target_state->last_viewport_height;
+                }
+            }
             GLboolean color_write_mask[4] {};
             GLboolean depth_write_mask = GL_FALSE;
             GLint depth_func = 0;
@@ -2779,7 +2794,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && mode == GL_TRIANGLES
                 && solid_replay_enabled;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} bound_texture={} bound_texture_video={} bound_texture_render_target={} bound_texture_render_target_write_count={} bound_texture_render_target_size={}x{} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
                     attempt_count,
                     program_handle,
                     count,
@@ -2787,6 +2802,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     offset,
                     active_attrib_count,
                     active_uniform_count,
+                    bound_texture_handle,
+                    bound_texture_has_video_backing,
+                    bound_texture_render_target_written,
+                    bound_texture_render_target_write_count,
+                    bound_texture_render_target_width,
+                    bound_texture_render_target_height,
                     position_layout_supported,
                     position_ready,
                     position_data.size(),
