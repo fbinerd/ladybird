@@ -1730,6 +1730,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         return log_failure("missing_ycbcr_sampler"sv);
     if (source_image_view == VK_NULL_HANDLE)
         return log_failure("missing_ycbcr_image_view"sv);
+    if (viewport_width <= 0 || viewport_height <= 0)
+        return log_failure("invalid_viewport"sv);
 
     auto const& context = m_skia_backend_context->vulkan_context();
     auto format = static_cast<VkFormat>(destination_format);
@@ -2483,6 +2485,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         };
     };
 
+    if (viewport_width <= 0 || viewport_height <= 0)
+        return log_failure("invalid_viewport"sv);
     if (position_data.is_empty())
         return log_failure("missing_position_data"sv);
     if (index_data.is_empty())
@@ -3022,6 +3026,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
         };
     };
 
+    if (viewport_width <= 0 || viewport_height <= 0)
+        return log_failure("invalid_viewport"sv);
     if (position_data.is_empty())
         return log_failure("missing_position_data"sv);
     if (color_data.is_empty())
@@ -3566,6 +3572,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         };
     };
 
+    if (viewport_width <= 0 || viewport_height <= 0)
+        return log_failure("invalid_viewport"sv);
     if (position_data.is_empty())
         return log_failure("missing_position_data"sv);
     if (uv_data.is_empty())

@@ -1202,6 +1202,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
 
     GLint viewport[4] {};
     glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
+    auto replay_viewport_valid = viewport[2] > 0 && viewport[3] > 0;
     texture->mark_mundo_render_target_written(
         viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 0,
         viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 0,
@@ -1510,6 +1511,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         auto colored_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
         auto colored_replay_to_texture_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
         auto colored_replay_possible = !strcmp(operation, "drawElements")
+            && replay_viewport_valid
             && mode == GL_TRIANGLES
             && active_attrib_count == 2
             && sampler_uniform_count == 0
@@ -1546,6 +1548,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 element_data.size(),
                 destination_format.value_or(0),
                 strcmp(operation, "drawElements") ? "not_draw_elements"sv
+                    : !replay_viewport_valid ? "invalid_viewport"sv
                     : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                     : active_attrib_count != 2 ? "not_two_attrib_colored_mesh"sv
                     : sampler_uniform_count != 0 ? "sampler_based_draw_not_colored_mesh"sv
@@ -1563,7 +1566,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         if (colored_replay_enabled && colored_replay_possible && destination_format.has_value()) {
             OpenGLContext::ImportedVideoOpaqueFDTexture* imported_render_target_texture = nullptr;
             if (colored_replay_to_texture_enabled) {
-                auto imported_texture_or_error = m_context->get_or_create_vulkan_rgba_render_target_image(texture_handle, viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 1, viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 1, colored_attempt_count);
+                auto imported_texture_or_error = m_context->get_or_create_vulkan_rgba_render_target_image(texture_handle, static_cast<u32>(viewport[2]), static_cast<u32>(viewport[3]), colored_attempt_count);
                 if (imported_texture_or_error.is_error()) {
                     if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
                         dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=failed reason={} route=vulkan_offscreen_image next_step=fix_vulkan_offscreen_image_before_colored_replay",
@@ -1612,6 +1615,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         auto solid_attempt_count = ++s_solid_render_target_attempt_count;
         auto solid_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
         auto solid_replay_possible = !strcmp(operation, "drawElements")
+            && replay_viewport_valid
             && mode == GL_TRIANGLES
             && active_attrib_count == 1
             && sampler_uniform_count == 0
@@ -1641,6 +1645,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 element_data.size(),
                 destination_format.value_or(0),
                 strcmp(operation, "drawElements") ? "not_draw_elements"sv
+                    : !replay_viewport_valid ? "invalid_viewport"sv
                     : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                     : active_attrib_count != 1 ? "not_single_position_mesh"sv
                     : sampler_uniform_count != 0 ? "sampler_based_draw_not_solid_mesh"sv
@@ -1654,7 +1659,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 solid_replay_possible && solid_replay_enabled ? "execute_solid_vulkan_mesh_to_render_target_texture"sv : "keep_collecting_solid_render_target_inputs"sv);
         }
         if (solid_replay_enabled && solid_replay_possible && destination_format.has_value()) {
-            auto imported_texture_or_error = m_context->get_or_create_vulkan_rgba_render_target_image(texture_handle, viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 1, viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 1, solid_attempt_count);
+            auto imported_texture_or_error = m_context->get_or_create_vulkan_rgba_render_target_image(texture_handle, static_cast<u32>(viewport[2]), static_cast<u32>(viewport[3]), solid_attempt_count);
             if (imported_texture_or_error.is_error()) {
                 if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
                     dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=failed reason={} route=vulkan_offscreen_image next_step=fix_vulkan_offscreen_image_before_solid_replay",
@@ -1699,6 +1704,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         auto textured_attempt_count = ++s_textured_render_target_attempt_count;
         auto textured_consumer_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_TEXTURED_CONSUMER");
         auto textured_consumer_possible = !strcmp(operation, "drawElements")
+            && replay_viewport_valid
             && mode == GL_TRIANGLES
             && active_attrib_count == 2
             && sampler_uniform_count == 1
@@ -1739,6 +1745,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 element_data.size(),
                 destination_format.value_or(0),
                 strcmp(operation, "drawElements") ? "not_draw_elements"sv
+                    : !replay_viewport_valid ? "invalid_viewport"sv
                     : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                     : active_attrib_count != 2 ? "not_position_uv_mesh"sv
                     : sampler_uniform_count != 1 ? "not_single_sampler_consumer"sv
@@ -2746,6 +2753,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             static size_t s_post_direct_solid_attempt_count { 0 };
             auto attempt_count = ++s_post_direct_solid_attempt_count;
             auto solid_replay_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY");
+            auto replay_viewport_valid = viewport[2] > 0 && viewport[3] > 0;
             GLuint bound_texture_handle = 0;
             bool bound_texture_has_video_backing = false;
             bool bound_texture_render_target_written = false;
@@ -2792,6 +2800,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             auto can_replay = position_layout_supported && position_ready && element_ready && destination_format.has_value()
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
                 && mode == GL_TRIANGLES
+                && replay_viewport_valid
                 && solid_replay_enabled;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
                 dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} bound_texture={} bound_texture_video={} bound_texture_render_target={} bound_texture_render_target_write_count={} bound_texture_render_target_size={}x{} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
@@ -2822,6 +2831,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !destination_format.has_value() ? "missing_vulkan_target_format"sv
                         : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
                         : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
+                        : !replay_viewport_valid ? "invalid_viewport"sv
                         : !solid_replay_enabled ? "solid_replay_requires_explicit_opt_in_after_white_overlay_regression"sv
                         : "ready"sv,
                     can_replay ? "execute_solid_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
@@ -3097,6 +3107,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             auto textured_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_REPLAY");
             auto allow_extra_samplers = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALLOW_EXTRA_SAMPLERS");
             auto sampler_count_supported = sampler_uniform_count == 1 || (allow_extra_samplers && sampler_render_target_count >= 1 && sampler_unresolved_count == 0);
+            auto replay_viewport_valid = viewport[2] > 0 && viewport[3] > 0;
             auto can_replay = textured_replay_enabled
                 && active_attrib_count == 2
                 && sampler_count_supported
@@ -3109,6 +3120,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && element_ready
                 && destination_format.has_value()
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
+                && replay_viewport_valid
                 && mode == GL_TRIANGLES;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
                 dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ATTEMPT count={} program={} source_texture={} source_write_count={} source_viewport={}x{} source_program={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} sampler_render_targets={} sampler_videos={} sampler_snapshots={} sampler_unresolved={} allow_extra_samplers={} sampler_count_supported={} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_ready={} uv_ready={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
@@ -3155,6 +3167,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !element_ready ? "missing_index_shadow"sv
                         : !destination_format.has_value() ? "missing_vulkan_target_format"sv
                         : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
+                        : !replay_viewport_valid ? "invalid_viewport"sv
                         : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                         : "ready"sv,
                     can_replay ? "execute_textured_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
