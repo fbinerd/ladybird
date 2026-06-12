@@ -151,17 +151,17 @@ static bool mundo_webgl_env_flag_enabled(char const* name)
     return value && StringView { value, strlen(value) } == "1"sv;
 }
 
-static bool mundo_webgl_env_auto_enabled(char const* name)
+static bool mundo_webgl_env_opt_in_enabled(char const* name)
 {
     auto const* value = getenv(name);
     if (!value)
-        return true;
+        return false;
 
     auto view = StringView { value, strlen(value) };
     if (view == "0"sv || view == "false"sv || view == "off"sv || view == "no"sv)
         return false;
 
-    return view == "1"sv || view == "auto"sv || view == "true"sv || view == "on"sv || view == "yes"sv;
+    return view == "1"sv || view == "true"sv || view == "on"sv || view == "yes"sv;
 }
 
 static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
@@ -1490,8 +1490,8 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
 #ifdef USE_VULKAN_DMABUF_IMAGES
         static size_t s_colored_render_target_attempt_count { 0 };
         auto colored_attempt_count = ++s_colored_render_target_attempt_count;
-        auto colored_replay_enabled = mundo_webgl_env_auto_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
-        auto colored_replay_to_texture_enabled = mundo_webgl_env_auto_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
+        auto colored_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
+        auto colored_replay_to_texture_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
         auto colored_replay_possible = !strcmp(operation, "drawElements")
             && mode == GL_TRIANGLES
             && active_attrib_count == 2
@@ -1593,7 +1593,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
 
         static size_t s_solid_render_target_attempt_count { 0 };
         auto solid_attempt_count = ++s_solid_render_target_attempt_count;
-        auto solid_replay_enabled = mundo_webgl_env_auto_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
+        auto solid_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
         auto solid_replay_possible = !strcmp(operation, "drawElements")
             && mode == GL_TRIANGLES
             && active_attrib_count == 1
