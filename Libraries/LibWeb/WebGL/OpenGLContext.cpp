@@ -10,6 +10,7 @@
 #include <AK/ScopeGuard.h>
 #include <AK/String.h>
 #include <AK/Time.h>
+#include <AK/Vector.h>
 #include <LibGfx/PaintingSurface.h>
 #include <LibGfx/SharedImageBuffer.h>
 #ifdef USE_VULKAN_DMABUF_IMAGES
@@ -201,6 +202,14 @@ struct OpenGLContext::Impl {
     Optional<ImportedVideoOpaqueFDTexture> cached_video_uv_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_target_texture;
+    struct FailedVideoRGBATargetTextureImport {
+        u32 target_texture { 0 };
+        u32 width { 0 };
+        u32 height { 0 };
+        StringView reason {};
+        u32 gl_error { 0 };
+    };
+    Vector<FailedVideoRGBATargetTextureImport> failed_video_rgba_target_texture_imports;
     u64 gl_draw_serial { 0 };
     u64 direct_vulkan_video_draw_serial { 0 };
     struct CachedVulkanVideoReplayBuffers {
@@ -454,6 +463,7 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
                                                          .cached_video_uv_texture = {},
                                                          .cached_video_rgba_texture = {},
                                                          .cached_video_rgba_target_texture = {},
+                                                         .failed_video_rgba_target_texture_imports = {},
                                                          .cached_vulkan_video_replay_buffers = {},
                                                          .cached_vulkan_solid_mesh_replay_buffers = {},
                                                          .cached_vulkan_colored_mesh_replay_buffers = {},
@@ -3667,10 +3677,41 @@ ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture*> OpenGLContext::get_or_crea
         return texture.texture == expected_texture && texture.width == expected_width && texture.height == expected_height && texture.memory_object && texture.allocation_size;
     };
 
+    for (auto const& failed_import : m_impl->failed_video_rgba_target_texture_imports) {
+        if (failed_import.target_texture == target_texture && failed_import.width == width && failed_import.height == height) {
+            if (log_count <= 24 || log_count % 120 == 0) {
+                dbgln("MUNDO_WEBGL_VIDEO_TARGET_TEXTURE_STORAGE_IMPORT count={} status=failed reason=previous_import_failed original_reason={} original_gl_error={} target_texture={} size={}x{} vk_format={} gl_internal_format={} next_step=use_separate_vulkan_render_target_consumer_instead_of_rebinding_existing_webgl_texture_storage",
+                    log_count,
+                    failed_import.reason,
+                    failed_import.gl_error,
+                    target_texture,
+                    width,
+                    height,
+                    to_underlying(VK_FORMAT_R8G8B8A8_UNORM),
+                    GL_RGBA8);
+            }
+            return Error::from_string_literal("Previous WebGL target texture storage import failed");
+        }
+    }
+
     auto reused = m_impl->cached_video_rgba_target_texture.has_value() && texture_matches(m_impl->cached_video_rgba_target_texture.value(), target_texture, width, height);
     if (!reused) {
         if (m_impl->cached_video_rgba_target_texture.has_value())
             delete_imported_video_opaque_fd_texture(m_impl->cached_video_rgba_target_texture.value());
+
+        auto remember_failure = [&](StringView reason, u32 gl_error) {
+            for (auto const& failed_import : m_impl->failed_video_rgba_target_texture_imports) {
+                if (failed_import.target_texture == target_texture && failed_import.width == width && failed_import.height == height)
+                    return;
+            }
+            m_impl->failed_video_rgba_target_texture_imports.append(Impl::FailedVideoRGBATargetTextureImport {
+                .target_texture = target_texture,
+                .width = width,
+                .height = height,
+                .reason = reason,
+                .gl_error = gl_error,
+            });
+        };
 
         auto log_failure = [&](StringView reason, u32 gl_error = 0) {
             dbgln("MUNDO_WEBGL_VIDEO_TARGET_TEXTURE_STORAGE_IMPORT count={} status=failed reason={} gl_error={} target_texture={} size={}x{} vk_format={} gl_internal_format={}",
@@ -3749,6 +3790,7 @@ ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture*> OpenGLContext::get_or_crea
         auto storage_error = glGetError();
         if (storage_error != GL_NO_ERROR) {
             log_failure("gl_target_texture_storage_mem_failed"sv, storage_error);
+            remember_failure("gl_target_texture_storage_mem_failed"sv, storage_error);
             return Error::from_string_literal("Failed to bind WebGL target texture storage to imported video memory object");
         }
 
