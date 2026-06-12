@@ -155,9 +155,12 @@ static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
 {
     auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
     if (!value)
-        return false;
+        return true;
 
     auto view = StringView { value, strlen(value) };
+    if (view == "0"sv || view == "false"sv || view == "off"sv || view == "no"sv)
+        return false;
+
     return view == "1"sv || view == "auto"sv;
 }
 
