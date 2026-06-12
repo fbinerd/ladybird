@@ -146,6 +146,7 @@ public:
     ErrorOr<ImportedVideoOpaqueFDTexturePair> get_or_create_imported_video_opaque_fd_textures(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_imported_video_rgba_texture(u32 width, u32 height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_imported_video_rgba_target_texture(u32 target_texture, u32 width, u32 height, size_t log_count);
+    ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_vulkan_rgba_render_target_image(u32 target_texture, u32 width, u32 height, size_t log_count);
     ErrorOr<u64> copy_vulkan_nv12_external_memory_to_imported_video_textures(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexturePair const&, size_t log_count);
     ErrorOr<u64> render_vulkan_nv12_external_memory_to_imported_video_rgba_texture(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexture const&, size_t log_count, bool flip_y = false);
     SkiaVulkanYcbcrProbeResult probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const&, size_t log_count);

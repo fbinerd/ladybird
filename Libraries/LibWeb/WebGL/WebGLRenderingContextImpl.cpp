@@ -1546,10 +1546,10 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         if (colored_replay_enabled && colored_replay_possible && destination_format.has_value()) {
             OpenGLContext::ImportedVideoOpaqueFDTexture* imported_render_target_texture = nullptr;
             if (colored_replay_to_texture_enabled) {
-                auto imported_texture_or_error = m_context->get_or_create_imported_video_rgba_target_texture(texture_handle, viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 1, viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 1, colored_attempt_count);
+                auto imported_texture_or_error = m_context->get_or_create_vulkan_rgba_render_target_image(texture_handle, viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 1, viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 1, colored_attempt_count);
                 if (imported_texture_or_error.is_error()) {
                     if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
-                        dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=failed reason={} next_step=fix_texture_storage_import_before_colored_offscreen_replay",
+                        dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=failed reason={} route=vulkan_offscreen_image next_step=fix_vulkan_offscreen_image_before_colored_replay",
                             colored_attempt_count,
                             texture_handle,
                             render_target_state->write_count,
@@ -1559,7 +1559,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 } else {
                     imported_render_target_texture = imported_texture_or_error.release_value();
                     if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
-                        dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=ok imported_texture={} size={}x{} allocation_size={} next_step=draw_colored_mesh_into_imported_render_target_texture",
+                        dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=ok route=vulkan_offscreen_image imported_texture={} size={}x{} allocation_size={} next_step=draw_colored_mesh_into_vulkan_render_target_image",
                             colored_attempt_count,
                             texture_handle,
                             render_target_state->write_count,
@@ -1637,10 +1637,10 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 solid_replay_possible && solid_replay_enabled ? "execute_solid_vulkan_mesh_to_render_target_texture"sv : "keep_collecting_solid_render_target_inputs"sv);
         }
         if (solid_replay_enabled && solid_replay_possible && destination_format.has_value()) {
-            auto imported_texture_or_error = m_context->get_or_create_imported_video_rgba_target_texture(texture_handle, viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 1, viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 1, solid_attempt_count);
+            auto imported_texture_or_error = m_context->get_or_create_vulkan_rgba_render_target_image(texture_handle, viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 1, viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 1, solid_attempt_count);
             if (imported_texture_or_error.is_error()) {
                 if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
-                    dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=failed reason={} next_step=fix_texture_storage_import_before_solid_offscreen_replay",
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=failed reason={} route=vulkan_offscreen_image next_step=fix_vulkan_offscreen_image_before_solid_replay",
                         solid_attempt_count,
                         texture_handle,
                         render_target_state->write_count,
@@ -1650,7 +1650,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             } else {
                 auto* imported_render_target_texture = imported_texture_or_error.release_value();
                 if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
-                    dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=ok imported_texture={} size={}x{} allocation_size={} next_step=draw_solid_mesh_into_imported_render_target_texture",
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=ok route=vulkan_offscreen_image imported_texture={} size={}x{} allocation_size={} next_step=draw_solid_mesh_into_vulkan_render_target_image",
                         solid_attempt_count,
                         texture_handle,
                         render_target_state->write_count,

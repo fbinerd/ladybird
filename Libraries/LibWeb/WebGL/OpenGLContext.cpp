@@ -202,6 +202,7 @@ struct OpenGLContext::Impl {
     Optional<ImportedVideoOpaqueFDTexture> cached_video_uv_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_target_texture;
+    Vector<ImportedVideoOpaqueFDTexture> cached_vulkan_rgba_render_target_images;
     struct FailedVideoRGBATargetTextureImport {
         u32 target_texture { 0 };
         u32 width { 0 };
@@ -332,6 +333,7 @@ void OpenGLContext::free_surface_resources()
     if (m_impl->cached_video_rgba_target_texture.has_value())
         delete_imported_video_opaque_fd_texture(m_impl->cached_video_rgba_target_texture.value());
     m_impl->cached_video_rgba_target_texture.clear();
+    m_impl->cached_vulkan_rgba_render_target_images.clear();
     m_impl->cached_vulkan_video_replay_buffers = nullptr;
 
     if (m_impl->egl_image != EGL_NO_IMAGE) {
@@ -463,6 +465,7 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
                                                          .cached_video_uv_texture = {},
                                                          .cached_video_rgba_texture = {},
                                                          .cached_video_rgba_target_texture = {},
+                                                         .cached_vulkan_rgba_render_target_images = {},
                                                          .failed_video_rgba_target_texture_imports = {},
                                                          .cached_vulkan_video_replay_buffers = {},
                                                          .cached_vulkan_solid_mesh_replay_buffers = {},
@@ -3819,6 +3822,66 @@ ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture*> OpenGLContext::get_or_crea
     }
 
     return &m_impl->cached_video_rgba_target_texture.value();
+}
+
+ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture*> OpenGLContext::get_or_create_vulkan_rgba_render_target_image(u32 target_texture, u32 width, u32 height, size_t log_count)
+{
+    for (auto& cached_image : m_impl->cached_vulkan_rgba_render_target_images) {
+        if (cached_image.texture == target_texture && cached_image.width == width && cached_image.height == height) {
+            if (log_count <= 24 || log_count % 120 == 0) {
+                dbgln("MUNDO_WEBGL_VULKAN_RENDER_TARGET_IMAGE_CACHE count={} status=ok reused=true target_texture={} size={}x{} allocation_size={} vk_format={} usage={} layout={} next_step=sample_this_image_from_vulkan_consumer_without_gl_storage_rebind",
+                    log_count,
+                    target_texture,
+                    width,
+                    height,
+                    cached_image.allocation_size,
+                    to_underlying(cached_image.image->info.format),
+                    cached_image.image->info.usage,
+                    to_underlying(cached_image.image->info.layout));
+            }
+            return &cached_image;
+        }
+    }
+
+    m_impl->cached_vulkan_rgba_render_target_images.remove_first_matching([&](auto const& cached_image) {
+        return cached_image.texture == target_texture;
+    });
+
+    auto image_or_error = Gfx::create_opaque_fd_vulkan_image(m_skia_backend_context->vulkan_context(), width, height, VK_FORMAT_R8G8B8A8_UNORM);
+    if (image_or_error.is_error()) {
+        dbgln("MUNDO_WEBGL_VULKAN_RENDER_TARGET_IMAGE_CACHE count={} status=failed reason={} target_texture={} size={}x{} vk_format={} next_step=fix_vulkan_rgba_offscreen_render_target_allocation",
+            log_count,
+            image_or_error.error().string_literal(),
+            target_texture,
+            width,
+            height,
+            to_underlying(VK_FORMAT_R8G8B8A8_UNORM));
+        return image_or_error.release_error();
+    }
+
+    auto image = image_or_error.release_value();
+    m_impl->cached_vulkan_rgba_render_target_images.append(ImportedVideoOpaqueFDTexture {
+        .image = image,
+        .memory_object = 0,
+        .texture = target_texture,
+        .width = width,
+        .height = height,
+        .allocation_size = image->info.allocation_size,
+        .owns_texture = false,
+    });
+
+    auto& cached_image = m_impl->cached_vulkan_rgba_render_target_images.last();
+    dbgln("MUNDO_WEBGL_VULKAN_RENDER_TARGET_IMAGE_CACHE count={} status=ok reused=false target_texture={} size={}x{} allocation_size={} vk_format={} usage={} layout={} next_step=draw_render_target_producer_into_safe_vulkan_offscreen_image",
+        log_count,
+        target_texture,
+        width,
+        height,
+        cached_image.allocation_size,
+        to_underlying(cached_image.image->info.format),
+        cached_image.image->info.usage,
+        to_underlying(cached_image.image->info.layout));
+
+    return &cached_image;
 }
 
 ErrorOr<u64> OpenGLContext::copy_vulkan_nv12_external_memory_to_imported_video_textures(Media::HardwareVideoFrameExternalMemoryDescriptor const& external_memory, ImportedVideoOpaqueFDTexturePair const& texture_pair, size_t log_count)
