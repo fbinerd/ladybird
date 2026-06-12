@@ -1168,7 +1168,7 @@ void WebGLRenderingContextImpl::bind_framebuffer(WebIDL::UnsignedLong target, GC
     m_framebuffer_binding = framebuffer;
 }
 
-void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operation)
+void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operation, WebIDL::UnsignedLong mode, WebIDL::Long count, WebIDL::UnsignedLong type, WebIDL::LongLong offset)
 {
     if (!m_framebuffer_binding)
         return;
@@ -1250,6 +1250,13 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         size_t sampler_sources_snapshot_complete = 0;
         size_t sampler_sources_render_target = 0;
         size_t sampler_sources_video = 0;
+#ifdef USE_VULKAN_DMABUF_IMAGES
+        OpenGLContext::VulkanSolidMeshUniformSnapshot uniform_snapshot;
+        for (size_t i = 0; i < 16; ++i) {
+            uniform_snapshot.model_view_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
+            uniform_snapshot.projection_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
+        }
+#endif
         for (GLint uniform_index = 0; uniform_index < uniforms_to_log; ++uniform_index) {
             GLint size = 0;
             GLenum type = 0;
@@ -1261,6 +1268,26 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
 
             auto uniform_name = StringView { name, static_cast<size_t>(length) };
             auto is_sampler = type == GL_SAMPLER_2D || type == GL_SAMPLER_CUBE || type == GL_SAMPLER_3D || type == GL_SAMPLER_2D_ARRAY || type == GL_SAMPLER_2D_SHADOW || type == GL_SAMPLER_CUBE_SHADOW || type == GL_INT_SAMPLER_2D || type == GL_UNSIGNED_INT_SAMPLER_2D;
+            auto location = glGetUniformLocation(program_handle, name);
+#ifdef USE_VULKAN_DMABUF_IMAGES
+            if (location >= 0) {
+                if (type == GL_FLOAT_MAT4 && uniform_name == "modelViewMatrix"sv) {
+                    glGetUniformfv(program_handle, location, uniform_snapshot.model_view_matrix.data());
+                    uniform_snapshot.has_model_view_matrix = true;
+                } else if (type == GL_FLOAT_MAT4 && uniform_name == "projectionMatrix"sv) {
+                    glGetUniformfv(program_handle, location, uniform_snapshot.projection_matrix.data());
+                    uniform_snapshot.has_projection_matrix = true;
+                } else if (type == GL_FLOAT && (uniform_name == "opacity"sv || uniform_name == "uOpacity"sv)) {
+                    glGetUniformfv(program_handle, location, &uniform_snapshot.opacity);
+                } else if (type == GL_FLOAT && (uniform_name == "uOutputIntensity"sv || uniform_name == "outputIntensity"sv)) {
+                    glGetUniformfv(program_handle, location, &uniform_snapshot.output_intensity);
+                } else if ((type == GL_FLOAT_VEC3 || type == GL_FLOAT_VEC4) && (uniform_name == "diffuse"sv || uniform_name == "uTintColor"sv)) {
+                    Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
+                    glGetUniformfv(program_handle, location, diffuse.data());
+                    uniform_snapshot.diffuse = diffuse;
+                }
+            }
+#endif
             GLint sampler_unit = -1;
             GLuint sampler_texture_handle = 0;
             bool sampler_texture_has_video_backing = false;
@@ -1270,7 +1297,6 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             u32 sampler_texture_snapshot_height = 0;
             if (is_sampler) {
                 ++sampler_uniform_count;
-                auto location = glGetUniformLocation(program_handle, name);
                 if (location >= 0) {
                     glGetUniformiv(program_handle, location, &sampler_unit);
                     if (sampler_unit >= 0 && static_cast<size_t>(sampler_unit) < m_mundo_texture_binding_2d_by_unit.size()) {
@@ -1322,6 +1348,14 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         }
 
         auto attribs_to_log = active_attrib_count < 8 ? active_attrib_count : 8;
+#ifdef USE_VULKAN_DMABUF_IMAGES
+        bool has_position_attrib = false;
+        bool has_color_attrib = false;
+        bool position_layout_supported = false;
+        bool color_layout_supported = false;
+        ReadonlyBytes position_data;
+        ReadonlyBytes color_data;
+#endif
         for (GLint attrib_index = 0; attrib_index < attribs_to_log; ++attrib_index) {
             GLint size = 0;
             GLenum type = 0;
@@ -1332,6 +1366,12 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 continue;
 
             auto attribute_name = StringView { name, static_cast<size_t>(length) };
+#ifdef USE_VULKAN_DMABUF_IMAGES
+            if (attribute_name == "position"sv)
+                has_position_attrib = true;
+            else if (attribute_name == "color"sv)
+                has_color_attrib = true;
+#endif
             auto location = glGetAttribLocation(program_handle, name);
             GLint enabled = 0;
             GLint array_size = 0;
@@ -1353,6 +1393,20 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 if (auto webgl_buffer = mundo_buffer_for_handle(static_cast<GLuint>(buffer))) {
                     buffer_shadow_complete = webgl_buffer->has_complete_shadow_data();
                     buffer_shadow_bytes = webgl_buffer->shadow_byte_length();
+#ifdef USE_VULKAN_DMABUF_IMAGES
+                    if (buffer_shadow_complete) {
+                        auto layout_supported = enabled && array_size == 3 && array_type == GL_FLOAT && stride == static_cast<GLint>(sizeof(float) * 3) && reinterpret_cast<uintptr_t>(pointer) == 0;
+                        if (attribute_name == "position"sv) {
+                            position_layout_supported = layout_supported;
+                            if (layout_supported)
+                                position_data = webgl_buffer->shadow_data();
+                        } else if (attribute_name == "color"sv) {
+                            color_layout_supported = layout_supported;
+                            if (layout_supported)
+                                color_data = webgl_buffer->shadow_data();
+                        }
+                    }
+#endif
                 }
                 if (enabled) {
                     ++enabled_attrib_count;
@@ -1384,6 +1438,9 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         auto element_buffer_handle = m_element_array_buffer_binding ? m_element_array_buffer_binding->handle(this).value_or(0) : 0;
         auto element_shadow_complete = m_element_array_buffer_binding ? m_element_array_buffer_binding->has_complete_shadow_data() : false;
         auto element_shadow_bytes = m_element_array_buffer_binding ? m_element_array_buffer_binding->shadow_byte_length() : 0;
+        ReadonlyBytes element_data;
+        if (m_element_array_buffer_binding && element_shadow_complete)
+            element_data = m_element_array_buffer_binding->shadow_data();
         auto requires_element_buffer = !strcmp(operation, "drawElements");
         auto sampler_sources_ready = sampler_uniform_count == sampler_sources_resolved;
         auto generic_replay_inputs_ready = all_enabled_attrib_buffers_shadowed && sampler_sources_ready && (!requires_element_buffer || element_shadow_complete);
@@ -1414,6 +1471,76 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             element_shadow_complete,
             element_shadow_bytes,
             generic_replay_inputs_ready ? "build_generic_vulkan_render_target_pipeline" : "complete_missing_replay_prerequisites");
+#ifdef USE_VULKAN_DMABUF_IMAGES
+        static size_t s_colored_render_target_attempt_count { 0 };
+        auto colored_attempt_count = ++s_colored_render_target_attempt_count;
+        auto colored_replay_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
+        auto colored_replay_possible = !strcmp(operation, "drawElements")
+            && mode == GL_TRIANGLES
+            && active_attrib_count == 2
+            && sampler_uniform_count == 0
+            && has_position_attrib
+            && has_color_attrib
+            && position_layout_supported
+            && color_layout_supported
+            && element_shadow_complete
+            && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
+        auto destination_format = m_context->vulkan_painting_surface_format();
+        if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} has_position={} has_color={} position_layout_supported={} color_layout_supported={} position_bytes={} color_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+                colored_attempt_count,
+                texture_handle,
+                render_target_state->write_count,
+                program_handle,
+                colored_replay_enabled,
+                colored_replay_possible,
+                operation,
+                mode,
+                count,
+                type,
+                offset,
+                active_attrib_count,
+                sampler_uniform_count,
+                has_position_attrib,
+                has_color_attrib,
+                position_layout_supported,
+                color_layout_supported,
+                position_data.size(),
+                color_data.size(),
+                element_shadow_complete,
+                element_data.size(),
+                destination_format.value_or(0),
+                strcmp(operation, "drawElements") ? "not_draw_elements"sv
+                    : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
+                    : active_attrib_count != 2 ? "not_two_attrib_colored_mesh"sv
+                    : sampler_uniform_count != 0 ? "sampler_based_draw_not_colored_mesh"sv
+                    : !has_position_attrib ? "missing_position_attrib"sv
+                    : !has_color_attrib ? "missing_color_attrib"sv
+                    : !position_layout_supported ? "unsupported_position_layout"sv
+                    : !color_layout_supported ? "unsupported_color_layout"sv
+                    : !element_shadow_complete ? "missing_index_shadow"sv
+                    : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
+                    : !destination_format.has_value() ? "missing_vulkan_target_format"sv
+                    : !colored_replay_enabled ? "colored_replay_waiting_for_explicit_opt_in"sv
+                    : "ready"sv,
+                colored_replay_possible && colored_replay_enabled ? "execute_colored_vulkan_mesh_probe" : "keep_collecting_colored_render_target_inputs");
+        }
+        if (colored_replay_enabled && colored_replay_possible && destination_format.has_value()) {
+            auto colored_pipeline_probe = m_context->probe_vulkan_colored_mesh_pipeline(destination_format.value(), uniform_snapshot, position_data, color_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], colored_attempt_count);
+            if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
+                dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} program={} attempted={} supported={} executed={} reason={} next_step={}",
+                    colored_attempt_count,
+                    texture_handle,
+                    render_target_state->write_count,
+                    program_handle,
+                    colored_pipeline_probe.attempted,
+                    colored_pipeline_probe.supported,
+                    colored_pipeline_probe.executed,
+                    colored_pipeline_probe.reason,
+                    colored_pipeline_probe.executed ? "move_colored_mesh_output_from_painting_surface_probe_to_offscreen_render_target_image" : "fix_colored_mesh_probe_before_offscreen_target");
+            }
+        }
+#endif
     }
 }
 
@@ -1878,7 +2005,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
     auto start = MonotonicTime::now();
     glDrawArrays(mode, first, count);
     m_context->note_gl_draw_submitted();
-    note_mundo_framebuffer_draw("drawArrays");
+    note_mundo_framebuffer_draw("drawArrays", mode, count);
     if (gl_after_direct_vulkan_video) {
         static size_t s_gl_after_direct_vulkan_video_draw_arrays_count { 0 };
         auto log_count = ++s_gl_after_direct_vulkan_video_draw_arrays_count;
@@ -2508,7 +2635,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
 #endif
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
         m_context->note_gl_draw_submitted();
-        note_mundo_framebuffer_draw("drawElements");
+        note_mundo_framebuffer_draw("drawElements", mode, count, type, offset);
         if (gl_after_direct_vulkan_video) {
             static size_t s_gl_after_direct_vulkan_video_draw_elements_count { 0 };
             auto after_direct_log_count = ++s_gl_after_direct_vulkan_video_draw_elements_count;

@@ -152,7 +152,7 @@ protected:
     virtual void visit_edges(JS::Cell::Visitor&) override;
     virtual Optional<GLuint> current_bound_texture_handle_for_target(WebIDL::UnsignedLong target) const override;
     virtual GC::Ptr<WebGLTexture> current_bound_texture_for_target(WebIDL::UnsignedLong target) const override;
-    void note_mundo_framebuffer_draw(char const* operation);
+    void note_mundo_framebuffer_draw(char const* operation, WebIDL::UnsignedLong mode, WebIDL::Long count, WebIDL::UnsignedLong type = 0, WebIDL::LongLong offset = 0);
 
     GC::Ptr<WebGLBuffer> m_array_buffer_binding;
     GC::Ptr<WebGLBuffer> m_element_array_buffer_binding;
