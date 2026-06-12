@@ -847,7 +847,24 @@ static bool log_mundo_webgl_video_vulkan_direct_draw_plan(OpenGLContext& opengl_
                 : mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported ? "position_uv_mesh_with_vulkan_buffers_and_pipeline"sv
                 : "vulkan_mesh_pipeline_probe_failed"sv,
             simple_video_mesh_replay_possible && replay_buffer_probe.has_value() && replay_buffer_probe->supported && mesh_pipeline_probe.has_value() && mesh_pipeline_probe->supported ? "bind_replay_buffers_uniforms_and_execute_vulkan_mesh_draw" : "capture_more_shader_or_buffer_state");
-        if (mesh_pipeline_probe.has_value() && mesh_pipeline_probe->executed)
+        auto video_vulkan_mesh_executed = mesh_pipeline_probe.has_value() && mesh_pipeline_probe->executed;
+        if (should_log) {
+            dbgln("MUNDO_WEBGL_VIDEO_GPU_PIPELINE_EXECUTION_STATUS count={} frame_id={} program={} texture={} candidate_gpu_only={} candidate_direct_zero_copy={} mesh_probe_attempted={} mesh_probe_supported={} mesh_probe_executed={} reason={} final_gpu_only={} final_direct_zero_copy={} next_step={}",
+                draw_log_count,
+                backing.frame_id,
+                program_handle,
+                texture_handle,
+                backing.direct_zero_copy || backing.copied_on_gpu,
+                backing.direct_zero_copy,
+                mesh_pipeline_probe.has_value() ? mesh_pipeline_probe->attempted : false,
+                mesh_pipeline_probe.has_value() ? mesh_pipeline_probe->supported : false,
+                video_vulkan_mesh_executed,
+                mesh_pipeline_probe.has_value() ? mesh_pipeline_probe->reason : "mesh_pipeline_not_attempted"sv,
+                video_vulkan_mesh_executed,
+                video_vulkan_mesh_executed && backing.direct_zero_copy,
+                video_vulkan_mesh_executed ? "continue_virtualizing_post_video_consumers"sv : "fix_video_vulkan_mesh_probe_before_claiming_gpu_only_playback"sv);
+        }
+        if (video_vulkan_mesh_executed)
             return true;
     }
 
