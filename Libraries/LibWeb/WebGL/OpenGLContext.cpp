@@ -2392,7 +2392,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     };
 }
 
-OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_solid_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count)
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_solid_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* target_image_override)
 {
     struct SolidPushConstants {
         Array<float, 16> model_view_matrix {};
@@ -2709,13 +2709,18 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         }
     }
 
-    auto target_image = m_painting_surface ? m_painting_surface->vulkan_image() : nullptr;
+    RefPtr<Gfx::VulkanImage> painting_surface_target_image;
+    auto* target_image = target_image_override;
+    if (!target_image && m_painting_surface) {
+        painting_surface_target_image = m_painting_surface->vulkan_image();
+        target_image = painting_surface_target_image.ptr();
+    }
     if (!target_image)
-        return log_failure("missing_vulkan_painting_surface_target"sv);
+        return log_failure(target_image_override ? "missing_vulkan_solid_target_override"sv : "missing_vulkan_painting_surface_target"sv);
     if (target_image->info.format != format)
-        return log_failure("vulkan_painting_surface_format_mismatch"sv);
+        return log_failure(target_image_override ? "vulkan_solid_mesh_target_format_mismatch"sv : "vulkan_painting_surface_format_mismatch"sv);
     if (!(target_image->info.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
-        return log_failure("vulkan_painting_surface_not_color_attachment"sv);
+        return log_failure(target_image_override ? "vulkan_solid_mesh_target_not_color_attachment"sv : "vulkan_painting_surface_not_color_attachment"sv);
 
     if (target_image->cached_solid_mesh_color_attachment_view == VK_NULL_HANDLE) {
         VkImageViewCreateInfo target_image_view_info {
@@ -2888,7 +2893,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         return log_failure("submit_solid_draw_command_buffer_failed"sv, result);
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_SOLID_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} next_step=replace_matching_post_video_gl_draw_with_solid_vulkan_mesh",
+        dbgln("MUNDO_WEBGL_SOLID_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} next_step=replace_matching_post_video_gl_draw_with_solid_vulkan_mesh",
             log_count,
             probe_count,
             pipeline_cache_status,
@@ -2902,6 +2907,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             reinterpret_cast<uintptr_t>(target_image->cached_solid_mesh_framebuffer),
             target_image->info.extent.width,
             target_image->info.extent.height,
+            target_image_override != nullptr,
             draw_count,
             draw_type,
             draw_offset,

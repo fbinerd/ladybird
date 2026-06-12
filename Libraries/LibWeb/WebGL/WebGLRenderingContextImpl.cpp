@@ -1590,6 +1590,93 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     colored_pipeline_probe.executed ? "move_colored_mesh_output_from_painting_surface_probe_to_offscreen_render_target_image" : "fix_colored_mesh_probe_before_offscreen_target");
             }
         }
+
+        static size_t s_solid_render_target_attempt_count { 0 };
+        auto solid_attempt_count = ++s_solid_render_target_attempt_count;
+        auto solid_replay_enabled = mundo_webgl_env_auto_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
+        auto solid_replay_possible = !strcmp(operation, "drawElements")
+            && mode == GL_TRIANGLES
+            && active_attrib_count == 1
+            && sampler_uniform_count == 0
+            && has_position_attrib
+            && position_layout_supported
+            && element_shadow_complete
+            && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
+        if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+                solid_attempt_count,
+                texture_handle,
+                render_target_state->write_count,
+                program_handle,
+                solid_replay_enabled,
+                solid_replay_possible,
+                operation,
+                mode,
+                count,
+                type,
+                offset,
+                active_attrib_count,
+                sampler_uniform_count,
+                has_position_attrib,
+                position_layout_supported,
+                position_data.size(),
+                element_shadow_complete,
+                element_data.size(),
+                destination_format.value_or(0),
+                strcmp(operation, "drawElements") ? "not_draw_elements"sv
+                    : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
+                    : active_attrib_count != 1 ? "not_single_position_mesh"sv
+                    : sampler_uniform_count != 0 ? "sampler_based_draw_not_solid_mesh"sv
+                    : !has_position_attrib ? "missing_position_attrib"sv
+                    : !position_layout_supported ? "unsupported_position_layout"sv
+                    : !element_shadow_complete ? "missing_index_shadow"sv
+                    : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
+                    : !destination_format.has_value() ? "missing_vulkan_target_format"sv
+                    : !solid_replay_enabled ? "solid_replay_explicitly_disabled"sv
+                    : "ready"sv,
+                solid_replay_possible && solid_replay_enabled ? "execute_solid_vulkan_mesh_to_render_target_texture"sv : "keep_collecting_solid_render_target_inputs"sv);
+        }
+        if (solid_replay_enabled && solid_replay_possible && destination_format.has_value()) {
+            auto imported_texture_or_error = m_context->get_or_create_imported_video_rgba_target_texture(texture_handle, viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 1, viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 1, solid_attempt_count);
+            if (imported_texture_or_error.is_error()) {
+                if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=failed reason={} next_step=fix_texture_storage_import_before_solid_offscreen_replay",
+                        solid_attempt_count,
+                        texture_handle,
+                        render_target_state->write_count,
+                        program_handle,
+                        imported_texture_or_error.error().string_literal());
+                }
+            } else {
+                auto* imported_render_target_texture = imported_texture_or_error.release_value();
+                if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=ok imported_texture={} size={}x{} allocation_size={} next_step=draw_solid_mesh_into_imported_render_target_texture",
+                        solid_attempt_count,
+                        texture_handle,
+                        render_target_state->write_count,
+                        program_handle,
+                        imported_render_target_texture->texture,
+                        imported_render_target_texture->width,
+                        imported_render_target_texture->height,
+                        imported_render_target_texture->allocation_size);
+                }
+                auto* target_image_override = imported_render_target_texture->image.ptr();
+                auto target_format = to_underlying(target_image_override->info.format);
+                auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(target_format, uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], solid_attempt_count, target_image_override);
+                if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} program={} to_texture=true attempted={} supported={} executed={} reason={} next_step={}",
+                        solid_attempt_count,
+                        texture_handle,
+                        render_target_state->write_count,
+                        program_handle,
+                        solid_pipeline_probe.attempted,
+                        solid_pipeline_probe.supported,
+                        solid_pipeline_probe.executed,
+                        solid_pipeline_probe.reason,
+                        solid_pipeline_probe.executed ? "verify_solid_render_target_consumers_can_sample_imported_texture" : "fix_solid_mesh_probe_before_offscreen_target");
+                }
+            }
+        }
 #endif
     }
 }
