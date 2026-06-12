@@ -1746,7 +1746,10 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         pipeline_cache_status = "hit"sv;
     }
 
-    auto queue_sync_mode = "ring"sv;
+    // Keep the direct video path conservative by default: source images come
+    // from live decoder frames, and the async ring path can outlive them unless
+    // every submitted frame is explicitly retained per slot.
+    auto queue_sync_mode = "fence"sv;
     if (auto const* queue_sync_mode_value = getenv("MUNDO_WEBGL_VIDEO_VULKAN_MESH_QUEUE_SYNC_MODE")) {
         auto value = StringView { queue_sync_mode_value, strlen(queue_sync_mode_value) };
         if (value == "fence"sv)
