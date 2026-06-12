@@ -11,6 +11,8 @@
 
 namespace Web::WebGL {
 
+class WebGLTexture;
+
 class WebGLFramebuffer final : public WebGLObject {
     WEB_PLATFORM_OBJECT(WebGLFramebuffer, WebGLObject);
     GC_DECLARE_ALLOCATOR(WebGLFramebuffer);
@@ -20,10 +22,17 @@ public:
 
     virtual ~WebGLFramebuffer();
 
+    void set_mundo_color_attachment_texture(GC::Ptr<WebGLTexture> texture) { m_mundo_color_attachment_texture = texture; }
+    GC::Ptr<WebGLTexture> mundo_color_attachment_texture() const { return m_mundo_color_attachment_texture; }
+
 protected:
     explicit WebGLFramebuffer(JS::Realm&, GC::Ref<WebGLRenderingContextBase>, GLuint handle);
 
     virtual void initialize(JS::Realm&) override;
+    virtual void visit_edges(Visitor&) override;
+
+private:
+    GC::Ptr<WebGLTexture> m_mundo_color_attachment_texture;
 };
 
 }

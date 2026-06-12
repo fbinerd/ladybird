@@ -239,6 +239,26 @@ void WebGLTexture::clear_mundo_texture_upload_snapshot()
     m_mundo_texture_upload_snapshot.clear();
 }
 
+void WebGLTexture::mark_mundo_render_target_written(u32 viewport_width, u32 viewport_height, u32 program)
+{
+    if (!m_mundo_render_target_write_state.has_value())
+        m_mundo_render_target_write_state = MundoRenderTargetWriteState {};
+
+    auto& state = *m_mundo_render_target_write_state;
+    ++state.write_count;
+    state.last_viewport_width = viewport_width;
+    state.last_viewport_height = viewport_height;
+    state.last_program = program;
+
+    if (state.write_count <= 24 || state.write_count % 120 == 0)
+        dbgln("MUNDO_WEBGL_TEXTURE_RENDER_TARGET_WRITE texture={} count={} viewport={}x{} program={} reason=framebuffer_color_attachment_draw next_step=virtualize_render_target_texture_for_pure_vulkan_present",
+            handle(m_context.ptr()).value_or(0),
+            state.write_count,
+            viewport_width,
+            viewport_height,
+            program);
+}
+
 #ifdef USE_VULKAN_DMABUF_IMAGES
 void WebGLTexture::set_cached_virtual_vulkan_video_source(u64 frame_id, NonnullOwnPtr<Gfx::ImportedVulkanNV12Image> source)
 {

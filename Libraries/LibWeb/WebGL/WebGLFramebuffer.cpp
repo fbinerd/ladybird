@@ -9,6 +9,7 @@
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/Bindings/WebGLFramebuffer.h>
 #include <LibWeb/WebGL/WebGLFramebuffer.h>
+#include <LibWeb/WebGL/WebGLTexture.h>
 
 namespace Web::WebGL {
 
@@ -30,6 +31,12 @@ void WebGLFramebuffer::initialize(JS::Realm& realm)
 {
     WEB_SET_PROTOTYPE_FOR_INTERFACE(WebGLFramebuffer);
     Base::initialize(realm);
+}
+
+void WebGLFramebuffer::visit_edges(Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_mundo_color_attachment_texture);
 }
 
 }

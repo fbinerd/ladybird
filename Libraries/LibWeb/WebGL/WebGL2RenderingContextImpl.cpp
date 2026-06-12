@@ -124,6 +124,21 @@ void WebGL2RenderingContextImpl::framebuffer_texture_layer(WebIDL::UnsignedLong 
     }
 
     glFramebufferTextureLayer(target, attachment, texture_handle, level, layer);
+    if (attachment == GL_COLOR_ATTACHMENT0 && m_framebuffer_binding) {
+        m_framebuffer_binding->set_mundo_color_attachment_texture(texture.ptr());
+        auto framebuffer_handle = m_framebuffer_binding->handle(this).value_or(0);
+        static size_t s_mundo_framebuffer_texture_layer_count { 0 };
+        auto log_count = ++s_mundo_framebuffer_texture_layer_count;
+        if (log_count <= 80 || log_count % 240 == 0)
+            dbgln("MUNDO_WEBGL_FRAMEBUFFER_TEXTURE_LAYER count={} framebuffer={} target={} attachment={} texture={} level={} layer={} reason=track_color_attachment_texture_for_vulkan_replay",
+                log_count,
+                framebuffer_handle,
+                target,
+                attachment,
+                texture_handle,
+                level,
+                layer);
+    }
 }
 
 void WebGL2RenderingContextImpl::invalidate_framebuffer(WebIDL::UnsignedLong target, Vector<WebIDL::UnsignedLong> attachments)
@@ -181,6 +196,21 @@ void WebGL2RenderingContextImpl::tex_storage2d(WebIDL::UnsignedLong target, WebI
 {
     m_context->make_current();
 
+    if (auto texture = current_bound_texture_for_target(target)) {
+        texture->clear_hardware_video_backing();
+        texture->set_mundo_texture_upload_snapshot_incomplete(width, height, internalformat, internalformat, 0, 0);
+        static size_t s_mundo_tex_storage2d_count { 0 };
+        auto log_count = ++s_mundo_tex_storage2d_count;
+        if (log_count <= 80 || log_count % 240 == 0)
+            dbgln("MUNDO_WEBGL_TEX_STORAGE2D count={} texture={} target={} levels={} internal_format={} size={}x{} reason=storage_without_cpu_pixels_track_for_render_target_or_gpu_copy",
+                log_count,
+                texture->handle(this).value_or(0),
+                target,
+                levels,
+                internalformat,
+                width,
+                height);
+    }
     glTexStorage2D(target, levels, internalformat, width, height);
 }
 

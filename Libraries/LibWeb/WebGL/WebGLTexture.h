@@ -69,6 +69,16 @@ public:
     void mark_mundo_texture_upload_snapshot_incomplete();
     void clear_mundo_texture_upload_snapshot();
     Optional<MundoTextureUploadSnapshot> const& mundo_texture_upload_snapshot() const { return m_mundo_texture_upload_snapshot; }
+
+    struct MundoRenderTargetWriteState {
+        size_t write_count { 0 };
+        u32 last_viewport_width { 0 };
+        u32 last_viewport_height { 0 };
+        u32 last_program { 0 };
+    };
+
+    void mark_mundo_render_target_written(u32 viewport_width, u32 viewport_height, u32 program);
+    Optional<MundoRenderTargetWriteState> const& mundo_render_target_write_state() const { return m_mundo_render_target_write_state; }
 #ifdef USE_VULKAN_DMABUF_IMAGES
     void set_cached_virtual_vulkan_video_source(u64 frame_id, NonnullOwnPtr<Gfx::ImportedVulkanNV12Image>);
     Gfx::ImportedVulkanNV12Image const* cached_virtual_vulkan_video_source() const { return m_cached_virtual_vulkan_video_source.ptr(); }
@@ -83,6 +93,7 @@ protected:
 private:
     Optional<HardwareVideoBacking> m_hardware_video_backing;
     Optional<MundoTextureUploadSnapshot> m_mundo_texture_upload_snapshot;
+    Optional<MundoRenderTargetWriteState> m_mundo_render_target_write_state;
 #ifdef USE_VULKAN_DMABUF_IMAGES
     OwnPtr<Gfx::ImportedVulkanNV12Image> m_cached_virtual_vulkan_video_source;
     u64 m_cached_virtual_vulkan_video_source_frame_id { 0 };

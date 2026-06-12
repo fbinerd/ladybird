@@ -1168,6 +1168,46 @@ void WebGLRenderingContextImpl::bind_framebuffer(WebIDL::UnsignedLong target, GC
     m_framebuffer_binding = framebuffer;
 }
 
+void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operation)
+{
+    if (!m_framebuffer_binding)
+        return;
+
+    auto texture = m_framebuffer_binding->mundo_color_attachment_texture();
+    if (!texture)
+        return;
+
+    GLuint program_handle = 0;
+    if (m_current_program) {
+        auto program_handle_or_error = m_current_program->handle(this);
+        if (!program_handle_or_error.is_error())
+            program_handle = program_handle_or_error.release_value();
+    }
+
+    GLint viewport[4] {};
+    glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
+    texture->mark_mundo_render_target_written(
+        viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 0,
+        viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 0,
+        program_handle);
+
+    auto render_target_state = texture->mundo_render_target_write_state();
+    if (render_target_state.has_value() && (render_target_state->write_count <= 24 || render_target_state->write_count % 120 == 0)) {
+        auto texture_handle = texture->handle(this).value_or(0);
+        auto framebuffer_handle = m_framebuffer_binding->handle(this).value_or(0);
+        dbgln("MUNDO_WEBGL_FRAMEBUFFER_RENDER_TARGET_DRAW op={} framebuffer={} color_texture={} write_count={} program={} viewport={}x{}+{}+{} reason=draw_wrote_to_tracked_color_attachment",
+            operation,
+            framebuffer_handle,
+            texture_handle,
+            render_target_state->write_count,
+            program_handle,
+            viewport[2],
+            viewport[3],
+            viewport[0],
+            viewport[1]);
+    }
+}
+
 void WebGLRenderingContextImpl::bind_renderbuffer(WebIDL::UnsignedLong target, GC::Root<WebGLRenderbuffer> renderbuffer)
 {
     m_context->make_current();
@@ -1629,6 +1669,7 @@ void WebGLRenderingContextImpl::draw_arrays(WebIDL::UnsignedLong mode, WebIDL::L
     auto start = MonotonicTime::now();
     glDrawArrays(mode, first, count);
     m_context->note_gl_draw_submitted();
+    note_mundo_framebuffer_draw("drawArrays");
     if (gl_after_direct_vulkan_video) {
         static size_t s_gl_after_direct_vulkan_video_draw_arrays_count { 0 };
         auto log_count = ++s_gl_after_direct_vulkan_video_draw_arrays_count;
@@ -2258,6 +2299,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
 #endif
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
         m_context->note_gl_draw_submitted();
+        note_mundo_framebuffer_draw("drawElements");
         if (gl_after_direct_vulkan_video) {
             static size_t s_gl_after_direct_vulkan_video_draw_elements_count { 0 };
             auto after_direct_log_count = ++s_gl_after_direct_vulkan_video_draw_elements_count;
@@ -2323,7 +2365,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     video_sampler_direct_texture_call);
                 if (m_texture_binding_2d && !m_texture_binding_2d->has_hardware_video_backing()) {
                     auto const& texture_snapshot = m_texture_binding_2d->mundo_texture_upload_snapshot();
-                    dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_TEXTURE_STATE count={} texture={} snapshot={} complete={} size={}x{} internal_format={} format={} type={} bytes={} reason=post_direct_gl_draw_uses_generic_texture next_step={}",
+                    auto const& render_target_write_state = m_texture_binding_2d->mundo_render_target_write_state();
+                    dbgln("MUNDO_WEBGL_GL_AFTER_DIRECT_VULKAN_TEXTURE_STATE count={} texture={} snapshot={} complete={} size={}x{} internal_format={} format={} type={} bytes={} render_target_written={} render_target_write_count={} render_target_last_viewport={}x{} render_target_last_program={} reason=post_direct_gl_draw_uses_generic_texture next_step={}",
                         after_direct_log_count,
                         after_direct_texture_handle,
                         texture_snapshot.has_value(),
@@ -2334,7 +2377,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         texture_snapshot.has_value() ? texture_snapshot->format : 0,
                         texture_snapshot.has_value() ? texture_snapshot->type : 0,
                         texture_snapshot.has_value() ? texture_snapshot->byte_length : 0,
-                        texture_snapshot.has_value() && texture_snapshot->complete ? "build_vulkan_textured_replay_for_this_draw"sv : "capture_missing_texture_upload_or_support_subimage_updates"sv);
+                        render_target_write_state.has_value(),
+                        render_target_write_state.has_value() ? render_target_write_state->write_count : 0,
+                        render_target_write_state.has_value() ? render_target_write_state->last_viewport_width : 0,
+                        render_target_write_state.has_value() ? render_target_write_state->last_viewport_height : 0,
+                        render_target_write_state.has_value() ? render_target_write_state->last_program : 0,
+                        render_target_write_state.has_value() ? "virtualize_render_target_producer_or_import_gpu_texture"sv : (texture_snapshot.has_value() && texture_snapshot->complete ? "build_vulkan_textured_replay_for_this_draw"sv : "capture_missing_texture_upload_or_support_subimage_updates"sv));
                 }
                 if (after_direct_log_count <= 8 && after_direct_program_handle) {
                     auto uniforms_to_log = active_uniform_count < 8 ? active_uniform_count : 8;
@@ -2472,6 +2520,21 @@ void WebGLRenderingContextImpl::framebuffer_texture2d(WebIDL::UnsignedLong targe
         texture_handle = handle_or_error.release_value();
     }
     glFramebufferTexture2D(target, attachment, textarget, texture_handle, level);
+    if (attachment == GL_COLOR_ATTACHMENT0 && m_framebuffer_binding) {
+        m_framebuffer_binding->set_mundo_color_attachment_texture(texture.ptr());
+        auto framebuffer_handle = m_framebuffer_binding->handle(this).value_or(0);
+        static size_t s_mundo_framebuffer_texture2d_count { 0 };
+        auto log_count = ++s_mundo_framebuffer_texture2d_count;
+        if (log_count <= 80 || log_count % 240 == 0)
+            dbgln("MUNDO_WEBGL_FRAMEBUFFER_TEXTURE2D count={} framebuffer={} target={} attachment={} textarget={} texture={} level={} reason=track_color_attachment_texture_for_vulkan_replay",
+                log_count,
+                framebuffer_handle,
+                target,
+                attachment,
+                textarget,
+                texture_handle,
+                level);
+    }
 }
 
 void WebGLRenderingContextImpl::front_face(WebIDL::UnsignedLong mode)
