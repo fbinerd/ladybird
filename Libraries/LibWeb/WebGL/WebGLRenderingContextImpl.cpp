@@ -1558,7 +1558,8 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             if (colored_replay_to_texture_enabled && !imported_render_target_texture)
                 return;
             auto* target_image_override = imported_render_target_texture ? imported_render_target_texture->image.ptr() : nullptr;
-            auto colored_pipeline_probe = m_context->probe_vulkan_colored_mesh_pipeline(destination_format.value(), uniform_snapshot, position_data, color_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], colored_attempt_count, target_image_override);
+            auto target_format = target_image_override ? to_underlying(target_image_override->info.format) : destination_format.value();
+            auto colored_pipeline_probe = m_context->probe_vulkan_colored_mesh_pipeline(target_format, uniform_snapshot, position_data, color_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], colored_attempt_count, target_image_override);
             if (colored_attempt_count <= 24 || colored_attempt_count % 120 == 0) {
                 dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} program={} to_texture={} attempted={} supported={} executed={} reason={} next_step={}",
                     colored_attempt_count,
