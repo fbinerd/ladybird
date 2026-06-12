@@ -1234,6 +1234,186 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             sampled_texture_snapshot_width,
             sampled_texture_snapshot_height,
             sampled_texture_has_video_backing ? "replay_render_target_producer_from_video_source"sv : sampled_texture_render_target_written ? "replay_render_target_chain"sv : "replay_or_import_generic_texture_source"sv);
+
+        GLint active_uniform_count = 0;
+        GLint active_attrib_count = 0;
+        bool all_enabled_attrib_buffers_shadowed = true;
+        size_t enabled_attrib_count = 0;
+        if (program_handle) {
+            glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
+            glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_ATTRIBUTES, 1, nullptr, &active_attrib_count);
+        }
+
+        auto uniforms_to_log = active_uniform_count < 16 ? active_uniform_count : 16;
+        size_t sampler_uniform_count = 0;
+        size_t sampler_sources_resolved = 0;
+        size_t sampler_sources_snapshot_complete = 0;
+        size_t sampler_sources_render_target = 0;
+        size_t sampler_sources_video = 0;
+        for (GLint uniform_index = 0; uniform_index < uniforms_to_log; ++uniform_index) {
+            GLint size = 0;
+            GLenum type = 0;
+            GLsizei length = 0;
+            GLchar name[256];
+            glGetActiveUniform(program_handle, static_cast<GLuint>(uniform_index), sizeof(name), &length, &size, &type, name);
+            if (!length)
+                continue;
+
+            auto uniform_name = StringView { name, static_cast<size_t>(length) };
+            auto is_sampler = type == GL_SAMPLER_2D || type == GL_SAMPLER_CUBE || type == GL_SAMPLER_3D || type == GL_SAMPLER_2D_ARRAY || type == GL_SAMPLER_2D_SHADOW || type == GL_SAMPLER_CUBE_SHADOW || type == GL_INT_SAMPLER_2D || type == GL_UNSIGNED_INT_SAMPLER_2D;
+            GLint sampler_unit = -1;
+            GLuint sampler_texture_handle = 0;
+            bool sampler_texture_has_video_backing = false;
+            bool sampler_texture_render_target_written = false;
+            bool sampler_texture_snapshot_complete = false;
+            u32 sampler_texture_snapshot_width = 0;
+            u32 sampler_texture_snapshot_height = 0;
+            if (is_sampler) {
+                ++sampler_uniform_count;
+                auto location = glGetUniformLocation(program_handle, name);
+                if (location >= 0) {
+                    glGetUniformiv(program_handle, location, &sampler_unit);
+                    if (sampler_unit >= 0 && static_cast<size_t>(sampler_unit) < m_mundo_texture_binding_2d_by_unit.size()) {
+                        if (auto sampler_texture = m_mundo_texture_binding_2d_by_unit[static_cast<size_t>(sampler_unit)]) {
+                            sampler_texture_handle = sampler_texture->handle(this).value_or(0);
+                            sampler_texture_has_video_backing = sampler_texture->has_hardware_video_backing();
+                            auto const& sampler_render_target_state = sampler_texture->mundo_render_target_write_state();
+                            sampler_texture_render_target_written = sampler_render_target_state.has_value();
+                            auto const& sampler_snapshot = sampler_texture->mundo_texture_upload_snapshot();
+                            sampler_texture_snapshot_complete = sampler_snapshot.has_value() && sampler_snapshot->complete;
+                            sampler_texture_snapshot_width = sampler_snapshot.has_value() ? sampler_snapshot->width : 0;
+                            sampler_texture_snapshot_height = sampler_snapshot.has_value() ? sampler_snapshot->height : 0;
+                            if (sampler_texture_has_video_backing) {
+                                ++sampler_sources_resolved;
+                                ++sampler_sources_video;
+                            } else if (sampler_texture_render_target_written) {
+                                ++sampler_sources_resolved;
+                                ++sampler_sources_render_target;
+                            } else if (sampler_texture_snapshot_complete) {
+                                ++sampler_sources_resolved;
+                                ++sampler_sources_snapshot_complete;
+                            }
+                        }
+                    }
+                }
+            }
+
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_REPLAY_UNIFORM color_texture={} write_count={} program={} index={} name={} type={} size={} sampler={} sampler_unit={} sampler_texture={} sampler_video_backing={} sampler_render_target_written={} sampler_snapshot_complete={} sampler_snapshot_size={}x{} next_step={}",
+                texture_handle,
+                render_target_state->write_count,
+                program_handle,
+                uniform_index,
+                uniform_name,
+                type,
+                size,
+                is_sampler,
+                sampler_unit,
+                sampler_texture_handle,
+                sampler_texture_has_video_backing,
+                sampler_texture_render_target_written,
+                sampler_texture_snapshot_complete,
+                sampler_texture_snapshot_width,
+                sampler_texture_snapshot_height,
+                !is_sampler ? "preserve_uniform_for_generic_vulkan_replay"sv
+                    : sampler_texture_has_video_backing ? "bind_vulkan_ycbcr_video_source"sv
+                    : sampler_texture_render_target_written ? "resolve_prior_render_target_chain"sv
+                    : sampler_texture_snapshot_complete ? "upload_or_import_static_texture_snapshot"sv
+                    : "capture_missing_sampler_texture_source"sv);
+        }
+
+        auto attribs_to_log = active_attrib_count < 8 ? active_attrib_count : 8;
+        for (GLint attrib_index = 0; attrib_index < attribs_to_log; ++attrib_index) {
+            GLint size = 0;
+            GLenum type = 0;
+            GLsizei length = 0;
+            GLchar name[256];
+            glGetActiveAttrib(program_handle, static_cast<GLuint>(attrib_index), sizeof(name), &length, &size, &type, name);
+            if (!length)
+                continue;
+
+            auto attribute_name = StringView { name, static_cast<size_t>(length) };
+            auto location = glGetAttribLocation(program_handle, name);
+            GLint enabled = 0;
+            GLint array_size = 0;
+            GLint array_type = 0;
+            GLint normalized = 0;
+            GLint stride = 0;
+            GLint buffer = 0;
+            void* pointer = nullptr;
+            bool buffer_shadow_complete = false;
+            size_t buffer_shadow_bytes = 0;
+            if (location >= 0) {
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_ENABLED, 1, nullptr, &enabled);
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_SIZE, 1, nullptr, &array_size);
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_TYPE, 1, nullptr, &array_type);
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, 1, nullptr, &normalized);
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_STRIDE, 1, nullptr, &stride);
+                glGetVertexAttribivRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, 1, nullptr, &buffer);
+                glGetVertexAttribPointervRobustANGLE(static_cast<GLuint>(location), GL_VERTEX_ATTRIB_ARRAY_POINTER, 1, nullptr, &pointer);
+                if (auto webgl_buffer = mundo_buffer_for_handle(static_cast<GLuint>(buffer))) {
+                    buffer_shadow_complete = webgl_buffer->has_complete_shadow_data();
+                    buffer_shadow_bytes = webgl_buffer->shadow_byte_length();
+                }
+                if (enabled) {
+                    ++enabled_attrib_count;
+                    all_enabled_attrib_buffers_shadowed &= buffer_shadow_complete;
+                }
+            }
+
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_REPLAY_ATTRIB color_texture={} write_count={} program={} index={} name={} location={} declared_size={} declared_type={} enabled={} array_size={} array_type={} normalized={} stride={} pointer_offset={} buffer={} buffer_shadow_complete={} buffer_shadow_bytes={} next_step={}",
+                texture_handle,
+                render_target_state->write_count,
+                program_handle,
+                attrib_index,
+                attribute_name,
+                location,
+                size,
+                type,
+                enabled,
+                array_size,
+                array_type,
+                normalized,
+                stride,
+                reinterpret_cast<uintptr_t>(pointer),
+                buffer,
+                buffer_shadow_complete,
+                buffer_shadow_bytes,
+                buffer_shadow_complete ? "map_shadowed_vertex_input_to_generic_vulkan_replay" : "capture_or_share_vertex_buffer_before_generic_replay");
+        }
+
+        auto element_buffer_handle = m_element_array_buffer_binding ? m_element_array_buffer_binding->handle(this).value_or(0) : 0;
+        auto element_shadow_complete = m_element_array_buffer_binding ? m_element_array_buffer_binding->has_complete_shadow_data() : false;
+        auto element_shadow_bytes = m_element_array_buffer_binding ? m_element_array_buffer_binding->shadow_byte_length() : 0;
+        auto requires_element_buffer = !strcmp(operation, "drawElements");
+        auto sampler_sources_ready = sampler_uniform_count == sampler_sources_resolved;
+        auto generic_replay_inputs_ready = all_enabled_attrib_buffers_shadowed && sampler_sources_ready && (!requires_element_buffer || element_shadow_complete);
+        dbgln("MUNDO_WEBGL_RENDER_TARGET_REPLAY_INPUTS_READY op={} color_texture={} write_count={} program={} ready={} reason={} active_uniforms={} logged_uniforms={} sampler_uniforms={} sampler_sources_resolved={} sampler_sources_snapshot_complete={} sampler_sources_render_target={} sampler_sources_video={} active_attribs={} enabled_attribs={} attrib_buffers_shadowed={} requires_element_buffer={} element_buffer={} element_shadow_complete={} element_shadow_bytes={} next_step={}",
+            operation,
+            texture_handle,
+            render_target_state->write_count,
+            program_handle,
+            generic_replay_inputs_ready,
+            !all_enabled_attrib_buffers_shadowed ? "missing_vertex_buffer_shadow"sv
+                : !sampler_sources_ready ? "missing_sampler_texture_source"sv
+                : requires_element_buffer && !element_shadow_complete ? "missing_index_buffer_shadow"sv
+                : sampler_sources_render_target > 0 ? "resolve_render_target_dependency_chain"sv
+                : sampler_sources_video > 0 ? "generic_replay_can_bind_video_source"sv
+                : "ready_for_static_texture_generic_vulkan_replay"sv,
+            active_uniform_count,
+            uniforms_to_log,
+            sampler_uniform_count,
+            sampler_sources_resolved,
+            sampler_sources_snapshot_complete,
+            sampler_sources_render_target,
+            sampler_sources_video,
+            active_attrib_count,
+            enabled_attrib_count,
+            all_enabled_attrib_buffers_shadowed,
+            requires_element_buffer,
+            element_buffer_handle,
+            element_shadow_complete,
+            element_shadow_bytes,
+            generic_replay_inputs_ready ? "build_generic_vulkan_render_target_pipeline" : "complete_missing_replay_prerequisites");
     }
 }
 
