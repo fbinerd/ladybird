@@ -1538,8 +1538,8 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
 #ifdef USE_VULKAN_DMABUF_IMAGES
         static size_t s_colored_render_target_attempt_count { 0 };
         auto colored_attempt_count = ++s_colored_render_target_attempt_count;
-        auto colored_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
-        auto colored_replay_to_texture_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
+        auto colored_replay_to_texture_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
+        auto colored_replay_enabled = colored_replay_to_texture_enabled && mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
         auto colored_uniforms_supported = active_uniform_count <= 12;
         auto colored_replay_possible = !strcmp(operation, "drawElements")
             && replay_viewport_valid
