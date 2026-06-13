@@ -3712,13 +3712,59 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     auto const& replay_buffers = *m_impl->cached_vulkan_textured_mesh_replay_buffers;
 
     auto pipeline_cache_status = "hit"sv;
+    auto reset_textured_pipeline_resources = [&](TexturedPipelineResources& resources) {
+        auto device = resources.device;
+        if (device == VK_NULL_HANDLE)
+            return;
+
+        for (auto fence : resources.ring_fences) {
+            if (fence == VK_NULL_HANDLE)
+                continue;
+            vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+            vkDestroyFence(device, fence, nullptr);
+        }
+        if (resources.ring_command_pool != VK_NULL_HANDLE)
+            vkDestroyCommandPool(device, resources.ring_command_pool, nullptr);
+        if (resources.target_framebuffer != VK_NULL_HANDLE)
+            vkDestroyFramebuffer(device, resources.target_framebuffer, nullptr);
+        if (resources.descriptor_pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device, resources.descriptor_pool, nullptr);
+        if (resources.sampler != VK_NULL_HANDLE)
+            vkDestroySampler(device, resources.sampler, nullptr);
+        if (resources.pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, resources.pipeline, nullptr);
+        if (resources.pipeline_layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device, resources.pipeline_layout, nullptr);
+        if (resources.descriptor_set_layout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device, resources.descriptor_set_layout, nullptr);
+        if (resources.fragment_shader != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, resources.fragment_shader, nullptr);
+        if (resources.vertex_shader != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, resources.vertex_shader, nullptr);
+        resources = {};
+    };
+    auto reset_shared_textured_render_pass = [&] {
+        auto device = s_shared_textured_render_pass_device;
+        if (device == VK_NULL_HANDLE || s_shared_textured_render_pass == VK_NULL_HANDLE)
+            return;
+        reset_textured_pipeline_resources(s_single_sampler_resources);
+        reset_textured_pipeline_resources(s_alpha_sampler_resources);
+        vkDestroyRenderPass(device, s_shared_textured_render_pass, nullptr);
+        s_shared_textured_render_pass = VK_NULL_HANDLE;
+        s_shared_textured_render_pass_device = VK_NULL_HANDLE;
+        s_shared_textured_render_pass_format = VK_FORMAT_UNDEFINED;
+    };
     if (s_resources.pipeline != VK_NULL_HANDLE) {
         auto matches = s_resources.device == context.logical_device
             && s_resources.destination_format == format;
-        if (!matches)
-            return log_failure("multiple_textured_pipeline_configurations_not_supported_yet"sv);
-    } else {
-        pipeline_cache_status = "filled"sv;
+        if (!matches) {
+            reset_textured_pipeline_resources(s_resources);
+            pipeline_cache_status = "recreated"sv;
+        }
+    }
+    if (s_resources.pipeline == VK_NULL_HANDLE) {
+        if (pipeline_cache_status != "recreated"sv)
+            pipeline_cache_status = "filled"sv;
         auto vertex_shader_or_error = create_mundo_vulkan_video_shader_module(context, s_mundo_textured_mesh_vertex_shader_spirv);
         if (vertex_shader_or_error.is_error())
             return log_failure(vertex_shader_or_error.error().string_literal());
@@ -3759,8 +3805,12 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             return log_failure("create_textured_descriptor_set_layout_failed"sv, result);
 
         if (s_shared_textured_render_pass != VK_NULL_HANDLE) {
-            if (s_shared_textured_render_pass_device != context.logical_device || s_shared_textured_render_pass_format != format)
-                return log_failure("multiple_textured_render_pass_configurations_not_supported_yet"sv);
+            if (s_shared_textured_render_pass_device != context.logical_device || s_shared_textured_render_pass_format != format) {
+                reset_shared_textured_render_pass();
+                pipeline_cache_status = "recreated"sv;
+            }
+        }
+        if (s_shared_textured_render_pass != VK_NULL_HANDLE) {
             s_resources.render_pass = s_shared_textured_render_pass;
         } else {
             VkAttachmentDescription color_attachment {
