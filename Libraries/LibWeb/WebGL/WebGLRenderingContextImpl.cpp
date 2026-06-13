@@ -1224,14 +1224,14 @@ void WebGLRenderingContextImpl::bind_framebuffer(WebIDL::UnsignedLong target, GC
     m_framebuffer_binding = framebuffer;
 }
 
-void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operation, WebIDL::UnsignedLong mode, WebIDL::Long count, WebIDL::UnsignedLong type, WebIDL::LongLong offset)
+bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operation, WebIDL::UnsignedLong mode, WebIDL::Long count, WebIDL::UnsignedLong type, WebIDL::LongLong offset, bool allow_vulkan_skip_gl_draw)
 {
     if (!m_framebuffer_binding)
-        return;
+        return false;
 
     auto texture = m_framebuffer_binding->mundo_color_attachment_texture();
     if (!texture)
-        return;
+        return false;
 
     GLuint program_handle = 0;
     if (m_current_program) {
@@ -1651,7 +1651,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 }
             }
             if (colored_replay_to_texture_enabled && !imported_render_target_texture)
-                return;
+                return false;
             auto* target_image_override = imported_render_target_texture ? imported_render_target_texture->image.ptr() : nullptr;
             auto target_format = target_image_override ? to_underlying(target_image_override->info.format) : destination_format.value();
             auto colored_pipeline_probe = m_context->probe_vulkan_colored_mesh_pipeline(target_format, uniform_snapshot, position_data, color_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], colored_attempt_count, target_image_override);
@@ -1671,6 +1671,8 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             }
             if (target_image_override && colored_pipeline_probe.executed) {
                 texture->mark_mundo_render_target_vulkan_backed();
+                if (allow_vulkan_skip_gl_draw)
+                    return true;
             }
         }
 
@@ -1778,6 +1780,8 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 }
                 if (solid_pipeline_probe.executed) {
                     texture->mark_mundo_render_target_vulkan_backed();
+                    if (allow_vulkan_skip_gl_draw)
+                        return true;
                 }
             }
         }
@@ -1874,6 +1878,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         }
 #endif
     }
+    return false;
 }
 
 void WebGLRenderingContextImpl::bind_renderbuffer(WebIDL::UnsignedLong target, GC::Root<WebGLRenderbuffer> renderbuffer)
@@ -3376,9 +3381,30 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
         if (try_post_direct_vulkan_textured_render_target_replay())
             return;
 #endif
+        if (gl_after_direct_vulkan_video && note_mundo_framebuffer_draw("drawElements", mode, count, type, offset, true)) {
+            static size_t s_post_direct_render_target_replay_skip_count { 0 };
+            auto skip_count = ++s_post_direct_render_target_replay_skip_count;
+            if (skip_count <= 24 || skip_count % 120 == 0) {
+                GLuint program_handle = 0;
+                if (m_current_program) {
+                    auto handle_or_error = m_current_program->handle(this);
+                    if (!handle_or_error.is_error())
+                        program_handle = handle_or_error.value();
+                }
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_RENDER_TARGET_REPLAY_REPLACE_GL count={} program={} draw_count={} type={} offset={} reason=render_target_vulkan_replay_executed next_step=verify_remaining_post_video_gl_draws",
+                    skip_count,
+                    program_handle,
+                    count,
+                    type,
+                    offset);
+            }
+            m_context->note_direct_vulkan_video_draw_submitted();
+            return;
+        }
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
         m_context->note_gl_draw_submitted();
-        note_mundo_framebuffer_draw("drawElements", mode, count, type, offset);
+        if (!gl_after_direct_vulkan_video)
+            note_mundo_framebuffer_draw("drawElements", mode, count, type, offset);
         if (gl_after_direct_vulkan_video) {
             static size_t s_gl_after_direct_vulkan_video_draw_elements_count { 0 };
             auto after_direct_log_count = ++s_gl_after_direct_vulkan_video_draw_elements_count;
