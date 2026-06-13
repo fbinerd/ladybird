@@ -519,6 +519,8 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
 void OpenGLContext::notify_content_will_change()
 {
 #ifdef ENABLE_WEBGL
+    if (!m_painting_surface)
+        return;
     m_painting_surface->notify_content_will_change();
 #endif
 }
@@ -3546,6 +3548,11 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         VkSampler sampler { VK_NULL_HANDLE };
         VkImageView last_source_image_view { VK_NULL_HANDLE };
         VkImageView last_alpha_image_view { VK_NULL_HANDLE };
+        VkImage target_framebuffer_image { VK_NULL_HANDLE };
+        VkFramebuffer target_framebuffer { VK_NULL_HANDLE };
+        VkRenderPass target_framebuffer_render_pass { VK_NULL_HANDLE };
+        u32 target_framebuffer_width { 0 };
+        u32 target_framebuffer_height { 0 };
         bool uses_alpha { false };
         VkCommandPool ring_command_pool { VK_NULL_HANDLE };
         Array<VkCommandBuffer, textured_ring_slot_count> ring_command_buffers {};
@@ -3982,12 +3989,19 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         if (result != VK_SUCCESS)
             return log_failure("create_textured_alpha_image_view_failed"sv, result);
     }
-    if (target_image->cached_solid_mesh_framebuffer == VK_NULL_HANDLE
-        || target_image->cached_solid_mesh_framebuffer_render_pass != s_resources.render_pass
-        || target_image->cached_solid_mesh_framebuffer_width != target_image->info.extent.width
-        || target_image->cached_solid_mesh_framebuffer_height != target_image->info.extent.height) {
-        if (target_image->cached_solid_mesh_framebuffer != VK_NULL_HANDLE)
-            vkDestroyFramebuffer(context.logical_device, target_image->cached_solid_mesh_framebuffer, nullptr);
+    if (s_resources.target_framebuffer == VK_NULL_HANDLE
+        || s_resources.target_framebuffer_image != target_image->image
+        || s_resources.target_framebuffer_render_pass != s_resources.render_pass
+        || s_resources.target_framebuffer_width != target_image->info.extent.width
+        || s_resources.target_framebuffer_height != target_image->info.extent.height) {
+        if (s_resources.target_framebuffer != VK_NULL_HANDLE) {
+            for (auto fence : s_resources.ring_fences) {
+                if (fence != VK_NULL_HANDLE)
+                    vkWaitForFences(context.logical_device, 1, &fence, VK_TRUE, UINT64_MAX);
+            }
+            vkDestroyFramebuffer(context.logical_device, s_resources.target_framebuffer, nullptr);
+            s_resources.target_framebuffer = VK_NULL_HANDLE;
+        }
         VkFramebufferCreateInfo framebuffer_info {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext = nullptr,
@@ -3999,12 +4013,13 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             .height = target_image->info.extent.height,
             .layers = 1,
         };
-        result = vkCreateFramebuffer(context.logical_device, &framebuffer_info, nullptr, &target_image->cached_solid_mesh_framebuffer);
+        result = vkCreateFramebuffer(context.logical_device, &framebuffer_info, nullptr, &s_resources.target_framebuffer);
         if (result != VK_SUCCESS)
             return log_failure("create_textured_target_framebuffer_failed"sv, result);
-        target_image->cached_solid_mesh_framebuffer_render_pass = s_resources.render_pass;
-        target_image->cached_solid_mesh_framebuffer_width = target_image->info.extent.width;
-        target_image->cached_solid_mesh_framebuffer_height = target_image->info.extent.height;
+        s_resources.target_framebuffer_image = target_image->image;
+        s_resources.target_framebuffer_render_pass = s_resources.render_pass;
+        s_resources.target_framebuffer_width = target_image->info.extent.width;
+        s_resources.target_framebuffer_height = target_image->info.extent.height;
     }
 
     auto alpha_image_view = alpha_image ? alpha_image->cached_solid_mesh_color_attachment_view : VK_NULL_HANDLE;
@@ -4161,7 +4176,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .pNext = nullptr,
         .renderPass = s_resources.render_pass,
-        .framebuffer = target_image->cached_solid_mesh_framebuffer,
+        .framebuffer = s_resources.target_framebuffer,
         .renderArea = { .offset = { 0, 0 }, .extent = { target_image->info.extent.width, target_image->info.extent.height } },
         .clearValueCount = 0,
         .pClearValues = nullptr,
@@ -4282,7 +4297,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             to_underlying(source_image.info.layout),
             reinterpret_cast<uintptr_t>(target_image->image),
             reinterpret_cast<uintptr_t>(target_image->cached_solid_mesh_color_attachment_view),
-            reinterpret_cast<uintptr_t>(target_image->cached_solid_mesh_framebuffer),
+            reinterpret_cast<uintptr_t>(s_resources.target_framebuffer),
             target_image->info.extent.width,
             target_image->info.extent.height,
             draw_count,
@@ -5187,6 +5202,9 @@ void OpenGLContext::allocate_painting_surface_if_needed()
 void OpenGLContext::set_size(Gfx::IntSize const& size)
 {
     if (m_size != size) {
+#ifdef ENABLE_WEBGL
+        free_surface_resources();
+#endif
         m_painting_surface = nullptr;
     }
     m_size = size;
