@@ -1666,8 +1666,9 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
 
         static size_t s_solid_render_target_attempt_count { 0 };
         auto solid_attempt_count = ++s_solid_render_target_attempt_count;
-        auto solid_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
-        auto solid_uniforms_supported = active_uniform_count <= 4;
+        auto solid_replay_to_texture_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY_TO_TEXTURE");
+        auto solid_replay_enabled = solid_replay_to_texture_enabled && mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
+        auto solid_uniforms_supported = active_uniform_count <= 5;
         auto solid_replay_possible = !strcmp(operation, "drawElements")
             && replay_viewport_valid
             && mode == GL_TRIANGLES
@@ -1679,12 +1680,13 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             && element_shadow_complete
             && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
         if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
                 solid_attempt_count,
                 texture_handle,
                 render_target_state->write_count,
                 program_handle,
                 solid_replay_enabled,
+                solid_replay_to_texture_enabled,
                 solid_replay_possible,
                 operation,
                 mode,
