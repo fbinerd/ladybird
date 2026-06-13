@@ -2399,7 +2399,7 @@ public:
             static size_t s_vulkan_optimal_multiplanar_export_count { 0 };
             auto optimal_count = ++s_vulkan_optimal_multiplanar_export_count;
             if (optimal_count <= 8 || optimal_count % 120 == 0) {
-                dbgln("MUNDO_MEDIA_FFMPEG vulkan_zero_copy_blocker count={} frame_id={} reason=single_optimal_multiplanar_image_without_drm_prime size={}x{} sw_format={} vk_format={} allocation_size={} y_offset={} inferred_uv_offset={} next_step=gpu_to_gpu_multiplanar_conversion",
+                dbgln("MUNDO_MEDIA_FFMPEG vulkan_zero_copy_layout_notice count={} frame_id={} reason=single_optimal_multiplanar_image_without_drm_prime size={}x{} sw_format={} vk_format={} allocation_size={} y_offset={} inferred_uv_offset={} zero_copy_capable=true requires_cpu_transfer=false next_step=gpu_to_gpu_multiplanar_conversion",
                     optimal_count,
                     descriptor().frame_id,
                     m_frame->width,
@@ -3382,9 +3382,12 @@ DecoderErrorOr<NonnullOwnPtr<FFmpegVideoDecoder>> FFmpegVideoDecoder::try_create
         auto result = av_hwdevice_ctx_create(&hw_device_context, hw_device_type_for_backend(hardware_backend), nullptr, nullptr, 0);
         if (result >= 0) {
             codec_context->hw_device_ctx = av_buffer_ref(hw_device_context);
-            if (codec_context->hw_device_ctx)
-                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend={} codec={} status=enabled transfer=cpu", video_decoder_backend_name(hardware_backend), codec_id);
-            else
+            if (codec_context->hw_device_ctx) {
+                auto const* transfer_mode = hardware_backend == VideoDecoderBackend::Vulkan && lazy_hardware_frame_transfer_enabled()
+                    ? "deferred_hw_frame"
+                    : "cpu_on_demand";
+                dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend={} codec={} status=enabled transfer={}", video_decoder_backend_name(hardware_backend), codec_id, transfer_mode);
+            } else
                 dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend={} codec={} status=failed reason=av_buffer_ref", video_decoder_backend_name(hardware_backend), codec_id);
         } else {
             dbgln("MUNDO_MEDIA_FFMPEG hwaccel_enable backend={} codec={} status=failed error={} fallback=software", video_decoder_backend_name(hardware_backend), codec_id, av_error_code_to_string(result));
