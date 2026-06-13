@@ -20,6 +20,7 @@
 #ifdef USE_VULKAN_DMABUF_IMAGES
 #    include <LibWeb/WebGL/MundoColoredMeshShaders.inc>
 #    include <LibWeb/WebGL/MundoSolidMeshShaders.inc>
+#    include <LibWeb/WebGL/MundoTexturedAlphaMeshShaders.inc>
 #    include <LibWeb/WebGL/MundoTexturedMeshShaders.inc>
 #endif
 
@@ -203,6 +204,14 @@ struct OpenGLContext::Impl {
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_texture;
     Optional<ImportedVideoOpaqueFDTexture> cached_video_rgba_target_texture;
     Vector<ImportedVideoOpaqueFDTexture> cached_vulkan_rgba_render_target_images;
+    struct CachedVulkanRGBAStaticTextureImage {
+        u32 texture { 0 };
+        u32 width { 0 };
+        u32 height { 0 };
+        unsigned signature { 0 };
+        ImportedVideoOpaqueFDTexture imported_texture;
+    };
+    Vector<CachedVulkanRGBAStaticTextureImage> cached_vulkan_rgba_static_texture_images;
     struct FailedVideoRGBATargetTextureImport {
         u32 target_texture { 0 };
         u32 width { 0 };
@@ -487,6 +496,7 @@ OwnPtr<OpenGLContext> OpenGLContext::create(NonnullRefPtr<Gfx::SkiaBackendContex
                                                          .cached_video_rgba_texture = {},
                                                          .cached_video_rgba_target_texture = {},
                                                          .cached_vulkan_rgba_render_target_images = {},
+                                                         .cached_vulkan_rgba_static_texture_images = {},
                                                          .failed_video_rgba_target_texture_imports = {},
                                                          .cached_vulkan_video_replay_buffers = {},
                                                          .cached_vulkan_solid_mesh_replay_buffers = {},
@@ -3510,7 +3520,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
     };
 }
 
-OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage& source_image, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count)
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage& source_image, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* alpha_image)
 {
     struct TexturedPushConstants {
         Array<float, 16> model_view_matrix {};
@@ -3535,12 +3545,17 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         VkDescriptorSet descriptor_set { VK_NULL_HANDLE };
         VkSampler sampler { VK_NULL_HANDLE };
         VkImageView last_source_image_view { VK_NULL_HANDLE };
+        VkImageView last_alpha_image_view { VK_NULL_HANDLE };
+        bool uses_alpha { false };
         VkCommandPool ring_command_pool { VK_NULL_HANDLE };
         Array<VkCommandBuffer, textured_ring_slot_count> ring_command_buffers {};
         Array<VkFence, textured_ring_slot_count> ring_fences {};
         size_t ring_cursor { 0 };
     };
-    static TexturedPipelineResources s_resources;
+    static TexturedPipelineResources s_single_sampler_resources;
+    static TexturedPipelineResources s_alpha_sampler_resources;
+    auto uses_alpha = alpha_image != nullptr;
+    auto& s_resources = uses_alpha ? s_alpha_sampler_resources : s_single_sampler_resources;
     static size_t s_probe_count { 0 };
     auto probe_count = ++s_probe_count;
     auto should_log = probe_count <= 12 || probe_count % 120 == 0;
@@ -3585,6 +3600,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         return log_failure("missing_index_data"sv);
     if (!(source_image.info.usage & VK_IMAGE_USAGE_SAMPLED_BIT))
         return log_failure("source_image_not_sampled_usage"sv);
+    if (alpha_image && !(alpha_image->info.usage & VK_IMAGE_USAGE_SAMPLED_BIT))
+        return log_failure("alpha_image_not_sampled_usage"sv);
 
     RefPtr<Gfx::VulkanImage> target_image;
     if (m_painting_surface)
@@ -3646,24 +3663,35 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             return log_failure(vertex_shader_or_error.error().string_literal());
         s_resources.vertex_shader = vertex_shader_or_error.release_value();
 
-        auto fragment_shader_or_error = create_mundo_vulkan_video_shader_module(context, s_mundo_textured_mesh_fragment_shader_spirv);
+        auto fragment_shader_or_error = uses_alpha
+            ? create_mundo_vulkan_video_shader_module(context, s_mundo_textured_alpha_mesh_fragment_shader_spirv)
+            : create_mundo_vulkan_video_shader_module(context, s_mundo_textured_mesh_fragment_shader_spirv);
         if (fragment_shader_or_error.is_error())
             return log_failure(fragment_shader_or_error.error().string_literal());
         s_resources.fragment_shader = fragment_shader_or_error.release_value();
 
-        VkDescriptorSetLayoutBinding sampler_binding {
-            .binding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = nullptr,
+        Array<VkDescriptorSetLayoutBinding, 2> sampler_bindings {
+            VkDescriptorSetLayoutBinding {
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .pImmutableSamplers = nullptr,
+            },
+            VkDescriptorSetLayoutBinding {
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .pImmutableSamplers = nullptr,
+            },
         };
         VkDescriptorSetLayoutCreateInfo descriptor_set_layout_info {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
-            .bindingCount = 1,
-            .pBindings = &sampler_binding,
+            .bindingCount = uses_alpha ? 2u : 1u,
+            .pBindings = sampler_bindings.data(),
         };
         result = vkCreateDescriptorSetLayout(context.logical_device, &descriptor_set_layout_info, nullptr, &s_resources.descriptor_set_layout);
         if (result != VK_SUCCESS)
@@ -3844,7 +3872,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         if (result != VK_SUCCESS)
             return log_failure("create_textured_graphics_pipeline_failed"sv, result);
 
-        VkDescriptorPoolSize pool_size { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1 };
+        VkDescriptorPoolSize pool_size { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = uses_alpha ? 2u : 1u };
         VkDescriptorPoolCreateInfo descriptor_pool_info {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .pNext = nullptr,
@@ -3894,6 +3922,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
 
         s_resources.device = context.logical_device;
         s_resources.destination_format = format;
+        s_resources.uses_alpha = uses_alpha;
     }
 
     if (source_image.cached_solid_mesh_color_attachment_view == VK_NULL_HANDLE) {
@@ -3926,6 +3955,21 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         if (result != VK_SUCCESS)
             return log_failure("create_textured_target_image_view_failed"sv, result);
     }
+    if (alpha_image && alpha_image->cached_solid_mesh_color_attachment_view == VK_NULL_HANDLE) {
+        VkImageViewCreateInfo alpha_image_view_info {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = alpha_image->image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = alpha_image->info.format,
+            .components = { .r = VK_COMPONENT_SWIZZLE_IDENTITY, .g = VK_COMPONENT_SWIZZLE_IDENTITY, .b = VK_COMPONENT_SWIZZLE_IDENTITY, .a = VK_COMPONENT_SWIZZLE_IDENTITY },
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        result = vkCreateImageView(context.logical_device, &alpha_image_view_info, nullptr, &alpha_image->cached_solid_mesh_color_attachment_view);
+        if (result != VK_SUCCESS)
+            return log_failure("create_textured_alpha_image_view_failed"sv, result);
+    }
     if (target_image->cached_solid_mesh_framebuffer == VK_NULL_HANDLE
         || target_image->cached_solid_mesh_framebuffer_render_pass != s_resources.render_pass
         || target_image->cached_solid_mesh_framebuffer_width != target_image->info.extent.width
@@ -3951,26 +3995,50 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         target_image->cached_solid_mesh_framebuffer_height = target_image->info.extent.height;
     }
 
-    if (s_resources.last_source_image_view != source_image.cached_solid_mesh_color_attachment_view) {
-        VkDescriptorImageInfo image_info {
-            .sampler = s_resources.sampler,
-            .imageView = source_image.cached_solid_mesh_color_attachment_view,
-            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    auto alpha_image_view = alpha_image ? alpha_image->cached_solid_mesh_color_attachment_view : VK_NULL_HANDLE;
+    if (s_resources.last_source_image_view != source_image.cached_solid_mesh_color_attachment_view
+        || s_resources.last_alpha_image_view != alpha_image_view) {
+        Array<VkDescriptorImageInfo, 2> image_infos {
+            VkDescriptorImageInfo {
+                .sampler = s_resources.sampler,
+                .imageView = source_image.cached_solid_mesh_color_attachment_view,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            },
+            VkDescriptorImageInfo {
+                .sampler = s_resources.sampler,
+                .imageView = alpha_image_view,
+                .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            },
         };
-        VkWriteDescriptorSet descriptor_write {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext = nullptr,
-            .dstSet = s_resources.descriptor_set,
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorCount = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo = &image_info,
-            .pBufferInfo = nullptr,
-            .pTexelBufferView = nullptr,
+        Array<VkWriteDescriptorSet, 2> descriptor_writes {
+            VkWriteDescriptorSet {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = s_resources.descriptor_set,
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &image_infos[0],
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            },
+            VkWriteDescriptorSet {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext = nullptr,
+                .dstSet = s_resources.descriptor_set,
+                .dstBinding = 1,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &image_infos[1],
+                .pBufferInfo = nullptr,
+                .pTexelBufferView = nullptr,
+            },
         };
-        vkUpdateDescriptorSets(context.logical_device, 1, &descriptor_write, 0, nullptr);
+        vkUpdateDescriptorSets(context.logical_device, uses_alpha ? 2u : 1u, descriptor_writes.data(), 0, nullptr);
         s_resources.last_source_image_view = source_image.cached_solid_mesh_color_attachment_view;
+        s_resources.last_alpha_image_view = alpha_image_view;
     }
 
     if (s_resources.ring_command_pool == VK_NULL_HANDLE) {
@@ -4032,7 +4100,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     if (result != VK_SUCCESS)
         return log_failure("begin_textured_draw_command_buffer_failed"sv, result);
 
-    Array<VkImageMemoryBarrier, 2> pre_barriers {
+    Array<VkImageMemoryBarrier, 3> pre_barriers {
         VkImageMemoryBarrier {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext = nullptr,
@@ -4049,6 +4117,18 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext = nullptr,
             .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = alpha_image ? alpha_image->info.layout : VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = alpha_image ? alpha_image->image : VK_NULL_HANDLE,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        },
+        VkImageMemoryBarrier {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
             .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
             .oldLayout = target_image->info.layout,
             .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -4058,7 +4138,12 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
         },
     };
-    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, pre_barriers.size(), pre_barriers.data());
+    if (uses_alpha)
+        vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, pre_barriers.size(), pre_barriers.data());
+    else {
+        vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, pre_barriers.data());
+        vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &pre_barriers[2]);
+    }
 
     VkRenderPassBeginInfo render_pass_begin {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -4103,7 +4188,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     vkCmdDrawIndexed(command_buffer, draw_count, 1, 0, 0, 0);
     vkCmdEndRenderPass(command_buffer);
 
-    Array<VkImageMemoryBarrier, 2> post_barriers {
+    Array<VkImageMemoryBarrier, 3> post_barriers {
         VkImageMemoryBarrier {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext = nullptr,
@@ -4119,6 +4204,18 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         VkImageMemoryBarrier {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = alpha_image ? alpha_image->info.layout : VK_IMAGE_LAYOUT_UNDEFINED,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = alpha_image ? alpha_image->image : VK_NULL_HANDLE,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        },
+        VkImageMemoryBarrier {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
             .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
             .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -4129,7 +4226,12 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
         },
     };
-    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, post_barriers.size(), post_barriers.data());
+    if (uses_alpha)
+        vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, post_barriers.size(), post_barriers.data());
+    else {
+        vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, post_barriers.data());
+        vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &post_barriers[2]);
+    }
     result = vkEndCommandBuffer(command_buffer);
     if (result != VK_SUCCESS)
         return log_failure("end_textured_draw_command_buffer_failed"sv, result);
@@ -4597,6 +4699,166 @@ ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture*> OpenGLContext::get_or_crea
         to_underlying(cached_image.image->info.layout));
 
     return &cached_image;
+}
+
+ErrorOr<OpenGLContext::ImportedVideoOpaqueFDTexture*> OpenGLContext::get_or_create_vulkan_rgba_static_texture_image(u32 source_texture, u32 width, u32 height, unsigned signature, ReadonlyBytes rgba_pixels, size_t log_count)
+{
+    auto expected_size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    if (!width || !height || rgba_pixels.size() < expected_size)
+        return Error::from_string_literal("invalid static RGBA texture snapshot");
+
+    for (auto& cached_image : m_impl->cached_vulkan_rgba_static_texture_images) {
+        if (cached_image.texture == source_texture && cached_image.width == width && cached_image.height == height && cached_image.signature == signature) {
+            if (log_count <= 24 || log_count % 120 == 0) {
+                dbgln("MUNDO_WEBGL_VULKAN_STATIC_TEXTURE_IMAGE_CACHE count={} status=ok reused=true source_texture={} size={}x{} signature={} allocation_size={} vk_format={} usage={} layout={} next_step=sample_static_texture_from_multisampler_vulkan_replay",
+                    log_count,
+                    source_texture,
+                    width,
+                    height,
+                    signature,
+                    cached_image.imported_texture.allocation_size,
+                    to_underlying(cached_image.imported_texture.image->info.format),
+                    cached_image.imported_texture.image->info.usage,
+                    to_underlying(cached_image.imported_texture.image->info.layout));
+            }
+            return &cached_image.imported_texture;
+        }
+    }
+
+    m_impl->cached_vulkan_rgba_static_texture_images.remove_first_matching([&](auto const& cached_image) {
+        return cached_image.texture == source_texture;
+    });
+
+    auto image_or_error = Gfx::create_opaque_fd_vulkan_image(m_skia_backend_context->vulkan_context(), width, height, VK_FORMAT_R8G8B8A8_UNORM);
+    if (image_or_error.is_error()) {
+        dbgln("MUNDO_WEBGL_VULKAN_STATIC_TEXTURE_IMAGE_CACHE count={} status=failed reason={} source_texture={} size={}x{} signature={} next_step=fix_static_texture_vulkan_allocation",
+            log_count,
+            image_or_error.error().string_literal(),
+            source_texture,
+            width,
+            height,
+            signature);
+        return image_or_error.release_error();
+    }
+    auto image = image_or_error.release_value();
+    auto const& context = m_skia_backend_context->vulkan_context();
+
+    auto staging_buffer_or_error = Gfx::create_host_visible_vulkan_buffer_from_bytes(context, rgba_pixels.trim(expected_size), VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    if (staging_buffer_or_error.is_error()) {
+        dbgln("MUNDO_WEBGL_VULKAN_STATIC_TEXTURE_IMAGE_CACHE count={} status=failed reason={} source_texture={} size={}x{} signature={} next_step=fix_static_texture_staging_upload",
+            log_count,
+            staging_buffer_or_error.error().string_literal(),
+            source_texture,
+            width,
+            height,
+            signature);
+        return staging_buffer_or_error.release_error();
+    }
+    auto staging_buffer = staging_buffer_or_error.release_value();
+
+    vkQueueWaitIdle(context.graphics_queue);
+    vkResetCommandBuffer(context.command_buffer, 0);
+    VkCommandBufferBeginInfo begin_info {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = nullptr,
+    };
+    auto result = vkBeginCommandBuffer(context.command_buffer, &begin_info);
+    if (result != VK_SUCCESS)
+        return Error::from_string_literal("failed to begin static texture upload command buffer");
+
+    VkImageMemoryBarrier pre_copy_barrier {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .oldLayout = image->info.layout,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(context.command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &pre_copy_barrier);
+
+    VkBufferImageCopy copy_region {
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .imageOffset = { 0, 0, 0 },
+        .imageExtent = { width, height, 1 },
+    };
+    vkCmdCopyBufferToImage(context.command_buffer, staging_buffer->buffer, image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+    VkImageMemoryBarrier post_copy_barrier {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(context.command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &post_copy_barrier);
+
+    result = vkEndCommandBuffer(context.command_buffer);
+    if (result != VK_SUCCESS)
+        return Error::from_string_literal("failed to end static texture upload command buffer");
+
+    VkSubmitInfo submit_info {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = nullptr,
+        .waitSemaphoreCount = 0,
+        .pWaitSemaphores = nullptr,
+        .pWaitDstStageMask = nullptr,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &context.command_buffer,
+        .signalSemaphoreCount = 0,
+        .pSignalSemaphores = nullptr,
+    };
+    result = vkQueueSubmit(context.graphics_queue, 1, &submit_info, nullptr);
+    if (result != VK_SUCCESS)
+        return Error::from_string_literal("failed to submit static texture upload command buffer");
+    result = vkQueueWaitIdle(context.graphics_queue);
+    if (result != VK_SUCCESS)
+        return Error::from_string_literal("failed to wait static texture upload queue");
+    image->info.layout = VK_IMAGE_LAYOUT_GENERAL;
+
+    m_impl->cached_vulkan_rgba_static_texture_images.append(Impl::CachedVulkanRGBAStaticTextureImage {
+        .texture = source_texture,
+        .width = width,
+        .height = height,
+        .signature = signature,
+        .imported_texture = ImportedVideoOpaqueFDTexture {
+            .image = image,
+            .memory_object = 0,
+            .texture = source_texture,
+            .width = width,
+            .height = height,
+            .allocation_size = image->info.allocation_size,
+            .owns_texture = false,
+        },
+    });
+
+    auto& cached_image = m_impl->cached_vulkan_rgba_static_texture_images.last();
+    dbgln("MUNDO_WEBGL_VULKAN_STATIC_TEXTURE_IMAGE_CACHE count={} status=ok reused=false source_texture={} size={}x{} signature={} byte_length={} allocation_size={} vk_format={} usage={} layout={} next_step=sample_static_texture_from_multisampler_vulkan_replay",
+        log_count,
+        source_texture,
+        width,
+        height,
+        signature,
+        expected_size,
+        cached_image.imported_texture.allocation_size,
+        to_underlying(cached_image.imported_texture.image->info.format),
+        cached_image.imported_texture.image->info.usage,
+        to_underlying(cached_image.imported_texture.image->info.layout));
+
+    return &cached_image.imported_texture;
 }
 
 ErrorOr<u64> OpenGLContext::copy_vulkan_nv12_external_memory_to_imported_video_textures(Media::HardwareVideoFrameExternalMemoryDescriptor const& external_memory, ImportedVideoOpaqueFDTexturePair const& texture_pair, size_t log_count)

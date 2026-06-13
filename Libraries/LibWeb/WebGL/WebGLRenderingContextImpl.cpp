@@ -2997,6 +2997,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             size_t sampler_video_count = 0;
             size_t sampler_snapshot_complete_count = 0;
             size_t sampler_unresolved_count = 0;
+            GC::Ptr<WebGLTexture> static_sampler_texture;
+            GLuint static_sampler_texture_handle = 0;
             auto uniforms_to_scan = active_uniform_count < 16 ? active_uniform_count : 16;
             for (GLint index = 0; index < uniforms_to_scan; ++index) {
                 GLint uniform_size = 0;
@@ -3058,8 +3060,13 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         ++sampler_video_count;
                     else if (sampler_texture_render_target_written)
                         ++sampler_render_target_count;
-                    else if (sampler_texture_snapshot_complete)
+                    else if (sampler_texture_snapshot_complete) {
                         ++sampler_snapshot_complete_count;
+                        if (!static_sampler_texture) {
+                            static_sampler_texture = m_mundo_texture_binding_2d_by_unit[static_cast<size_t>(sampler_unit)];
+                            static_sampler_texture_handle = sampler_texture_handle;
+                        }
+                    }
                     else
                         ++sampler_unresolved_count;
                     if (attempt_count <= 24 || attempt_count % 120 == 0) {
@@ -3228,7 +3235,61 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             if (source_image_or_error.is_error())
                 return false;
             auto* source_image_texture = source_image_or_error.release_value();
-            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count);
+            Gfx::VulkanImage* alpha_image = nullptr;
+            if (static_sampler_texture) {
+                auto const& snapshot = static_sampler_texture->mundo_texture_upload_snapshot();
+                if (!snapshot.has_value() || !snapshot->complete) {
+                    if (attempt_count <= 24 || attempt_count % 120 == 0) {
+                        dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ALPHA_UPLOAD count={} program={} status=failed reason=static_sampler_snapshot_missing source_texture={} alpha_texture={} next_step=capture_complete_static_sampler_before_multisampler_replay",
+                            attempt_count,
+                            program_handle,
+                            source_texture_handle,
+                            static_sampler_texture_handle);
+                    }
+                    return false;
+                }
+
+                Optional<ByteBuffer> converted_rgba_pixels;
+                ReadonlyBytes rgba_pixels;
+                auto const expected_rgba_size = static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height) * 4;
+                if (snapshot->format == GL_RGBA && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= expected_rgba_size) {
+                    rgba_pixels = snapshot->pixels.bytes().slice(0, expected_rgba_size);
+                } else if ((snapshot->format == GL_ALPHA || snapshot->format == GL_LUMINANCE) && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height)) {
+                    converted_rgba_pixels = ByteBuffer::create_uninitialized(expected_rgba_size).release_value_but_fixme_should_propagate_errors();
+                    auto source_pixels = snapshot->pixels.bytes();
+                    auto destination_pixels = converted_rgba_pixels->bytes();
+                    for (size_t i = 0; i < static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height); ++i) {
+                        auto value = source_pixels[i];
+                        destination_pixels[i * 4 + 0] = value;
+                        destination_pixels[i * 4 + 1] = value;
+                        destination_pixels[i * 4 + 2] = value;
+                        destination_pixels[i * 4 + 3] = value;
+                    }
+                    rgba_pixels = converted_rgba_pixels->bytes();
+                } else {
+                    if (attempt_count <= 24 || attempt_count % 120 == 0) {
+                        dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ALPHA_UPLOAD count={} program={} status=failed reason=unsupported_static_sampler_snapshot_format source_texture={} alpha_texture={} snapshot_size={}x{} internal_format={} format={} type={} byte_length={} next_step=add_snapshot_format_conversion_for_multisampler_vulkan_replay",
+                            attempt_count,
+                            program_handle,
+                            source_texture_handle,
+                            static_sampler_texture_handle,
+                            snapshot->width,
+                            snapshot->height,
+                            snapshot->internal_format,
+                            snapshot->format,
+                            snapshot->type,
+                            snapshot->byte_length);
+                    }
+                    return false;
+                }
+
+                auto signature = pair_int_hash(Traits<ReadonlyBytes>::hash(rgba_pixels), pair_int_hash(u32_hash(snapshot->width), pair_int_hash(u32_hash(snapshot->height), u32_hash(rgba_pixels.size()))));
+                auto alpha_image_or_error = m_context->get_or_create_vulkan_rgba_static_texture_image(static_sampler_texture_handle, snapshot->width, snapshot->height, signature, rgba_pixels, attempt_count);
+                if (alpha_image_or_error.is_error())
+                    return false;
+                alpha_image = alpha_image_or_error.release_value()->image.ptr();
+            }
+            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, alpha_image);
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
                 dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_PROBE_RESULT count={} program={} source_texture={} attempted={} supported={} executed={} reason={} next_step={}",
                     attempt_count,

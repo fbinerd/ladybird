@@ -147,6 +147,7 @@ public:
     ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_imported_video_rgba_texture(u32 width, u32 height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_imported_video_rgba_target_texture(u32 target_texture, u32 width, u32 height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_vulkan_rgba_render_target_image(u32 target_texture, u32 width, u32 height, size_t log_count);
+    ErrorOr<ImportedVideoOpaqueFDTexture*> get_or_create_vulkan_rgba_static_texture_image(u32 source_texture, u32 width, u32 height, unsigned signature, ReadonlyBytes rgba_pixels, size_t log_count);
     ErrorOr<u64> copy_vulkan_nv12_external_memory_to_imported_video_textures(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexturePair const&, size_t log_count);
     ErrorOr<u64> render_vulkan_nv12_external_memory_to_imported_video_rgba_texture(Media::HardwareVideoFrameExternalMemoryDescriptor const&, ImportedVideoOpaqueFDTexture const&, size_t log_count, bool flip_y = false);
     SkiaVulkanYcbcrProbeResult probe_skia_vulkan_ycbcr_texture_import(Media::HardwareVideoFrameExternalMemoryDescriptor const&, size_t log_count);
@@ -157,7 +158,7 @@ public:
     VulkanVideoMeshPipelineProbeResult probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImage source_image, VkImageView source_image_view, VkSampler immutable_sampler, u32 source_layout, VulkanVideoMeshUniformSnapshot const&, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count);
     VulkanVideoMeshPipelineProbeResult probe_vulkan_solid_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const&, ReadonlyBytes position_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* target_image_override = nullptr);
     VulkanVideoMeshPipelineProbeResult probe_vulkan_colored_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const&, ReadonlyBytes position_data, ReadonlyBytes color_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* target_image_override = nullptr);
-    VulkanVideoMeshPipelineProbeResult probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage&, VulkanSolidMeshUniformSnapshot const&, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count);
+    VulkanVideoMeshPipelineProbeResult probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage&, VulkanSolidMeshUniformSnapshot const&, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* alpha_image = nullptr);
     Optional<u32> vulkan_painting_surface_format() const;
     void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif
