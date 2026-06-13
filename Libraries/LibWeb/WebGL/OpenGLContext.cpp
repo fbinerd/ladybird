@@ -3554,6 +3554,9 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     };
     static TexturedPipelineResources s_single_sampler_resources;
     static TexturedPipelineResources s_alpha_sampler_resources;
+    static VkDevice s_shared_textured_render_pass_device { VK_NULL_HANDLE };
+    static VkFormat s_shared_textured_render_pass_format { VK_FORMAT_UNDEFINED };
+    static VkRenderPass s_shared_textured_render_pass { VK_NULL_HANDLE };
     auto uses_alpha = alpha_image != nullptr;
     auto& s_resources = uses_alpha ? s_alpha_sampler_resources : s_single_sampler_resources;
     static size_t s_probe_count { 0 };
@@ -3697,44 +3700,53 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         if (result != VK_SUCCESS)
             return log_failure("create_textured_descriptor_set_layout_failed"sv, result);
 
-        VkAttachmentDescription color_attachment {
-            .flags = 0,
-            .format = format,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        };
-        VkAttachmentReference color_attachment_ref { .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-        VkSubpassDescription subpass {
-            .flags = 0,
-            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-            .inputAttachmentCount = 0,
-            .pInputAttachments = nullptr,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &color_attachment_ref,
-            .pResolveAttachments = nullptr,
-            .pDepthStencilAttachment = nullptr,
-            .preserveAttachmentCount = 0,
-            .pPreserveAttachments = nullptr,
-        };
-        VkRenderPassCreateInfo render_pass_info {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .attachmentCount = 1,
-            .pAttachments = &color_attachment,
-            .subpassCount = 1,
-            .pSubpasses = &subpass,
-            .dependencyCount = 0,
-            .pDependencies = nullptr,
-        };
-        result = vkCreateRenderPass(context.logical_device, &render_pass_info, nullptr, &s_resources.render_pass);
-        if (result != VK_SUCCESS)
-            return log_failure("create_textured_render_pass_failed"sv, result);
+        if (s_shared_textured_render_pass != VK_NULL_HANDLE) {
+            if (s_shared_textured_render_pass_device != context.logical_device || s_shared_textured_render_pass_format != format)
+                return log_failure("multiple_textured_render_pass_configurations_not_supported_yet"sv);
+            s_resources.render_pass = s_shared_textured_render_pass;
+        } else {
+            VkAttachmentDescription color_attachment {
+                .flags = 0,
+                .format = format,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            };
+            VkAttachmentReference color_attachment_ref { .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+            VkSubpassDescription subpass {
+                .flags = 0,
+                .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                .inputAttachmentCount = 0,
+                .pInputAttachments = nullptr,
+                .colorAttachmentCount = 1,
+                .pColorAttachments = &color_attachment_ref,
+                .pResolveAttachments = nullptr,
+                .pDepthStencilAttachment = nullptr,
+                .preserveAttachmentCount = 0,
+                .pPreserveAttachments = nullptr,
+            };
+            VkRenderPassCreateInfo render_pass_info {
+                .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .attachmentCount = 1,
+                .pAttachments = &color_attachment,
+                .subpassCount = 1,
+                .pSubpasses = &subpass,
+                .dependencyCount = 0,
+                .pDependencies = nullptr,
+            };
+            result = vkCreateRenderPass(context.logical_device, &render_pass_info, nullptr, &s_shared_textured_render_pass);
+            if (result != VK_SUCCESS)
+                return log_failure("create_textured_render_pass_failed"sv, result);
+            s_shared_textured_render_pass_device = context.logical_device;
+            s_shared_textured_render_pass_format = format;
+            s_resources.render_pass = s_shared_textured_render_pass;
+        }
 
         VkPushConstantRange push_constant_range {
             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
