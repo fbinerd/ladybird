@@ -2834,7 +2834,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             auto destination_format = m_context->vulkan_painting_surface_format();
             static size_t s_post_direct_solid_attempt_count { 0 };
             auto attempt_count = ++s_post_direct_solid_attempt_count;
-            auto solid_replay_enabled = mundo_webgl_env_flag_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY");
+            auto solid_replay_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY");
             auto replay_viewport_valid = viewport[2] > 0 && viewport[3] > 0;
             GLuint bound_texture_handle = 0;
             bool bound_texture_has_video_backing = false;
@@ -2879,12 +2879,26 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             glGetIntegervRobustANGLE(GL_BLEND_DST_ALPHA, 1, nullptr, &blend_dst_alpha);
             glGetIntegervRobustANGLE(GL_BLEND_EQUATION_RGB, 1, nullptr, &blend_equation_rgb);
             glGetIntegervRobustANGLE(GL_BLEND_EQUATION_ALPHA, 1, nullptr, &blend_equation_alpha);
+            auto color_mask_supported = color_write_mask[0] == GL_TRUE
+                && color_write_mask[1] == GL_TRUE
+                && color_write_mask[2] == GL_TRUE
+                && color_write_mask[3] == GL_TRUE;
+            auto blend_state_supported = glIsEnabled(GL_BLEND) == GL_TRUE
+                && blend_src_rgb == GL_SRC_ALPHA
+                && blend_dst_rgb == GL_ONE_MINUS_SRC_ALPHA
+                && blend_equation_rgb == GL_FUNC_ADD;
             auto solid_uniforms_supported = active_uniform_count <= 4;
+            auto solid_gl_state_supported = color_mask_supported
+                && blend_state_supported
+                && !depth_test_enabled
+                && !stencil_test_enabled
+                && !scissor_test_enabled;
             auto can_replay = position_layout_supported && position_ready && element_ready && destination_format.has_value()
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
                 && mode == GL_TRIANGLES
                 && replay_viewport_valid
                 && solid_uniforms_supported
+                && solid_gl_state_supported
                 && solid_replay_enabled;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
                 dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} solid_uniforms_supported={} bound_texture={} bound_texture_video={} bound_texture_render_target={} bound_texture_render_target_write_count={} bound_texture_render_target_size={}x{} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
@@ -2918,7 +2932,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                         : !replay_viewport_valid ? "invalid_viewport"sv
                         : !solid_uniforms_supported ? "unsupported_solid_shader_uniform_shape"sv
-                        : !solid_replay_enabled ? "solid_replay_requires_explicit_opt_in_after_white_overlay_regression"sv
+                        : !color_mask_supported ? "unsupported_color_mask_state"sv
+                        : !blend_state_supported ? "unsupported_blend_state"sv
+                        : depth_test_enabled ? "unsupported_depth_state"sv
+                        : stencil_test_enabled ? "unsupported_stencil_state"sv
+                        : scissor_test_enabled ? "unsupported_scissor_state"sv
+                        : !solid_replay_enabled ? "solid_replay_disabled_by_environment"sv
                         : "ready"sv,
                     can_replay ? "execute_solid_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
                 dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_GL_STATE count={} program={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} depth_test={} depth_func={} depth_write={} stencil_test={} cull_face={} cull_face_mode={} front_face={} scissor_test={} color_mask=({},{},{},{}) diffuse=({}, {}, {}, {}) opacity={} output_intensity={} reason=solid_replay_needs_matching_gl_state next_step=map_blend_depth_cull_color_mask_before_enabling_solid_vulkan_replay",
