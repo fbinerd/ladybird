@@ -3149,8 +3149,13 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
 
             auto destination_format = m_context->vulkan_painting_surface_format();
             auto textured_replay_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_REPLAY");
-            auto allow_extra_samplers = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALLOW_EXTRA_SAMPLERS");
-            auto sampler_count_supported = sampler_uniform_count == 1 || (allow_extra_samplers && sampler_render_target_count >= 1 && sampler_unresolved_count == 0);
+            auto allow_extra_samplers = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALLOW_EXTRA_SAMPLERS");
+            auto sampler_count_supported = sampler_uniform_count == 1
+                || (allow_extra_samplers
+                    && sampler_render_target_count == 1
+                    && sampler_video_count == 0
+                    && sampler_unresolved_count == 0
+                    && sampler_render_target_count + sampler_snapshot_complete_count == sampler_uniform_count);
             auto replay_viewport_valid = viewport[2] > 0 && viewport[3] > 0;
             auto can_replay = textured_replay_enabled
                 && active_attrib_count == 2
