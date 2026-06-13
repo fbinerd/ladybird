@@ -2545,13 +2545,42 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
     auto const& replay_buffers = *m_impl->cached_vulkan_solid_mesh_replay_buffers;
 
     auto pipeline_cache_status = "hit"sv;
+    auto reset_solid_pipeline_resources = [&] {
+        auto device = s_resources.device;
+        if (device == VK_NULL_HANDLE)
+            return;
+
+        for (auto fence : s_resources.ring_fences) {
+            if (fence == VK_NULL_HANDLE)
+                continue;
+            vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+            vkDestroyFence(device, fence, nullptr);
+        }
+        if (s_resources.ring_command_pool != VK_NULL_HANDLE)
+            vkDestroyCommandPool(device, s_resources.ring_command_pool, nullptr);
+        if (s_resources.pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, s_resources.pipeline, nullptr);
+        if (s_resources.pipeline_layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device, s_resources.pipeline_layout, nullptr);
+        if (s_resources.render_pass != VK_NULL_HANDLE)
+            vkDestroyRenderPass(device, s_resources.render_pass, nullptr);
+        if (s_resources.fragment_shader != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, s_resources.fragment_shader, nullptr);
+        if (s_resources.vertex_shader != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, s_resources.vertex_shader, nullptr);
+        s_resources = {};
+    };
     if (s_resources.pipeline != VK_NULL_HANDLE) {
         auto matches = s_resources.device == context.logical_device
             && s_resources.destination_format == format;
-        if (!matches)
-            return log_failure("multiple_solid_pipeline_configurations_not_supported_yet"sv);
-    } else {
-        pipeline_cache_status = "filled"sv;
+        if (!matches) {
+            reset_solid_pipeline_resources();
+            pipeline_cache_status = "recreated"sv;
+        }
+    }
+    if (s_resources.pipeline == VK_NULL_HANDLE) {
+        if (pipeline_cache_status != "recreated"sv)
+            pipeline_cache_status = "filled"sv;
         auto vertex_shader_or_error = create_mundo_vulkan_video_shader_module(context, s_mundo_solid_mesh_vertex_shader_spirv);
         if (vertex_shader_or_error.is_error())
             return log_failure(vertex_shader_or_error.error().string_literal());
