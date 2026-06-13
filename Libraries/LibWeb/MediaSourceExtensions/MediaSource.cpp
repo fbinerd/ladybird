@@ -472,6 +472,12 @@ bool MediaSource::is_type_supported(String const& type)
             return true;
         if (mime_type->type() == "audio" && mime_type->subtype() == "webm")
             return true;
+        if (mime_type->type() == "video" && mime_type->subtype() == "mp4")
+            return true;
+        if (mime_type->type() == "audio" && mime_type->subtype() == "mp4")
+            return true;
+        if (mime_type->type() == "application" && mime_type->subtype() == "mp4")
+            return true;
         return false;
     }();
     if (!type_and_subtype_are_supported) {
