@@ -1676,8 +1676,8 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
 
         static size_t s_solid_render_target_attempt_count { 0 };
         auto solid_attempt_count = ++s_solid_render_target_attempt_count;
-        auto solid_replay_to_texture_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY_TO_TEXTURE");
-        auto solid_replay_enabled = solid_replay_to_texture_enabled && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
+        auto solid_replay_to_texture_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY_TO_TEXTURE");
+        auto solid_replay_enabled = solid_replay_to_texture_enabled && mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
         auto solid_uniforms_supported = active_uniform_count <= 5;
         auto solid_replay_max_default_area = mundo_webgl_env_size_value("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY_MAX_DEFAULT_PIXELS", 1024 * 1024);
         auto solid_replay_area = replay_viewport_valid ? static_cast<size_t>(viewport[2]) * static_cast<size_t>(viewport[3]) : 0;
@@ -1733,7 +1733,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     : !element_shadow_complete ? "missing_index_shadow"sv
                     : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
                     : !destination_format.has_value() ? "missing_vulkan_target_format"sv
-                    : !solid_replay_enabled ? "solid_replay_requires_explicit_opt_in_after_device_lost"sv
+                    : !solid_replay_enabled ? "solid_replay_explicitly_disabled"sv
                     : "ready"sv,
                 solid_replay_possible && solid_replay_enabled ? "execute_solid_vulkan_mesh_to_render_target_texture"sv : "keep_collecting_solid_render_target_inputs"sv);
         }

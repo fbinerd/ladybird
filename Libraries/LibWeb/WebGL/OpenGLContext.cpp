@@ -2954,6 +2954,11 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
     auto queue_submit_us = (MonotonicTime::now() - submit_started_at).to_microseconds();
     if (result != VK_SUCCESS)
         return log_failure("submit_solid_draw_command_buffer_failed"sv, result);
+    auto post_submit_wait_started_at = MonotonicTime::now();
+    result = vkWaitForFences(context.logical_device, 1, &s_resources.ring_fences[queue_ring_slot], VK_TRUE, UINT64_MAX);
+    queue_wait_us += (MonotonicTime::now() - post_submit_wait_started_at).to_microseconds();
+    if (result != VK_SUCCESS)
+        return log_failure("wait_solid_draw_command_buffer_failed"sv, result);
 
     if (should_log) {
         dbgln("MUNDO_WEBGL_SOLID_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} next_step=replace_matching_post_video_gl_draw_with_solid_vulkan_mesh",
