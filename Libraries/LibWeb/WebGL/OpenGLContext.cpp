@@ -1709,6 +1709,11 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         VkDescriptorPool descriptor_pool { VK_NULL_HANDLE };
         VkDescriptorSet descriptor_set { VK_NULL_HANDLE };
         Array<VkDescriptorSet, mesh_ring_slot_count> ring_descriptor_sets {};
+        VkImage target_framebuffer_image { VK_NULL_HANDLE };
+        VkFramebuffer target_framebuffer { VK_NULL_HANDLE };
+        VkRenderPass target_framebuffer_render_pass { VK_NULL_HANDLE };
+        u32 target_framebuffer_width { 0 };
+        u32 target_framebuffer_height { 0 };
         VkCommandPool ring_command_pool { VK_NULL_HANDLE };
         Array<VkCommandBuffer, mesh_ring_slot_count> ring_command_buffers {};
         Array<VkFence, mesh_ring_slot_count> ring_fences {};
@@ -2132,11 +2137,6 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     if (!(target_image->info.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
         return log_failure("vulkan_painting_surface_not_color_attachment"sv);
 
-    if (target_image->cached_video_framebuffer != VK_NULL_HANDLE
-        && target_image->cached_video_framebuffer_render_pass != s_resources.render_pass) {
-        vkDestroyFramebuffer(context.logical_device, target_image->cached_video_framebuffer, nullptr);
-        target_image->cached_video_framebuffer = VK_NULL_HANDLE;
-    }
     if (target_image->cached_video_color_attachment_view == VK_NULL_HANDLE) {
         VkImageViewCreateInfo target_image_view_info {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -2157,11 +2157,19 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
         if (result != VK_SUCCESS)
             return log_failure("create_target_image_view_failed"sv, result);
     }
-    if (target_image->cached_video_framebuffer == VK_NULL_HANDLE
-        || target_image->cached_video_framebuffer_width != target_image->info.extent.width
-        || target_image->cached_video_framebuffer_height != target_image->info.extent.height) {
-        if (target_image->cached_video_framebuffer != VK_NULL_HANDLE)
-            vkDestroyFramebuffer(context.logical_device, target_image->cached_video_framebuffer, nullptr);
+    if (s_resources.target_framebuffer == VK_NULL_HANDLE
+        || s_resources.target_framebuffer_image != target_image->image
+        || s_resources.target_framebuffer_render_pass != s_resources.render_pass
+        || s_resources.target_framebuffer_width != target_image->info.extent.width
+        || s_resources.target_framebuffer_height != target_image->info.extent.height) {
+        if (s_resources.target_framebuffer != VK_NULL_HANDLE) {
+            for (auto fence : s_resources.ring_fences) {
+                if (fence != VK_NULL_HANDLE)
+                    vkWaitForFences(context.logical_device, 1, &fence, VK_TRUE, UINT64_MAX);
+            }
+            vkDestroyFramebuffer(context.logical_device, s_resources.target_framebuffer, nullptr);
+            s_resources.target_framebuffer = VK_NULL_HANDLE;
+        }
         VkFramebufferCreateInfo framebuffer_info {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext = nullptr,
@@ -2173,12 +2181,13 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             .height = target_image->info.extent.height,
             .layers = 1,
         };
-        result = vkCreateFramebuffer(context.logical_device, &framebuffer_info, nullptr, &target_image->cached_video_framebuffer);
+        result = vkCreateFramebuffer(context.logical_device, &framebuffer_info, nullptr, &s_resources.target_framebuffer);
         if (result != VK_SUCCESS)
             return log_failure("create_target_framebuffer_failed"sv, result);
-        target_image->cached_video_framebuffer_render_pass = s_resources.render_pass;
-        target_image->cached_video_framebuffer_width = target_image->info.extent.width;
-        target_image->cached_video_framebuffer_height = target_image->info.extent.height;
+        s_resources.target_framebuffer_image = target_image->image;
+        s_resources.target_framebuffer_render_pass = s_resources.render_pass;
+        s_resources.target_framebuffer_width = target_image->info.extent.width;
+        s_resources.target_framebuffer_height = target_image->info.extent.height;
     }
 
     auto direct_vulkan_mesh_mode = mundo_webgl_video_direct_vulkan_mesh_enabled();
@@ -2271,7 +2280,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             .pNext = nullptr,
             .renderPass = s_resources.render_pass,
-            .framebuffer = target_image->cached_video_framebuffer,
+            .framebuffer = s_resources.target_framebuffer,
             .renderArea = {
                 .offset = { 0, 0 },
                 .extent = { target_image->info.extent.width, target_image->info.extent.height },
@@ -2421,7 +2430,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
             reinterpret_cast<uintptr_t>(descriptor_set_for_draw),
             reinterpret_cast<uintptr_t>(target_image->image),
             reinterpret_cast<uintptr_t>(target_image->cached_video_color_attachment_view),
-            reinterpret_cast<uintptr_t>(target_image->cached_video_framebuffer),
+            reinterpret_cast<uintptr_t>(s_resources.target_framebuffer),
             target_image->info.extent.width,
             target_image->info.extent.height,
             draw_count,
