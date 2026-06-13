@@ -73,12 +73,15 @@ public:
 
     struct MundoRenderTargetWriteState {
         size_t write_count { 0 };
+        size_t vulkan_write_count { 0 };
         u32 last_viewport_width { 0 };
         u32 last_viewport_height { 0 };
         u32 last_program { 0 };
+        bool current_contents_vulkan_backed { false };
     };
 
     void mark_mundo_render_target_written(u32 viewport_width, u32 viewport_height, u32 program);
+    void mark_mundo_render_target_vulkan_backed();
     Optional<MundoRenderTargetWriteState> const& mundo_render_target_write_state() const { return m_mundo_render_target_write_state; }
 #ifdef USE_VULKAN_DMABUF_IMAGES
     void set_cached_virtual_vulkan_video_source(u64 frame_id, NonnullOwnPtr<Gfx::ImportedVulkanNV12Image>);

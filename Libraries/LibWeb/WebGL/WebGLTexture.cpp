@@ -260,14 +260,35 @@ void WebGLTexture::mark_mundo_render_target_written(u32 viewport_width, u32 view
     state.last_viewport_width = viewport_width;
     state.last_viewport_height = viewport_height;
     state.last_program = program;
+    state.current_contents_vulkan_backed = false;
 
     if (state.write_count <= 24 || state.write_count % 120 == 0)
-        dbgln("MUNDO_WEBGL_TEXTURE_RENDER_TARGET_WRITE texture={} count={} viewport={}x{} program={} reason=framebuffer_color_attachment_draw next_step=virtualize_render_target_texture_for_pure_vulkan_present",
+        dbgln("MUNDO_WEBGL_TEXTURE_RENDER_TARGET_WRITE texture={} count={} viewport={}x{} program={} vulkan_backed={} reason=framebuffer_color_attachment_draw next_step=virtualize_render_target_texture_for_pure_vulkan_present",
             handle(m_context.ptr()).value_or(0),
             state.write_count,
             viewport_width,
             viewport_height,
-            program);
+            program,
+            state.current_contents_vulkan_backed);
+}
+
+void WebGLTexture::mark_mundo_render_target_vulkan_backed()
+{
+    if (!m_mundo_render_target_write_state.has_value())
+        return;
+
+    auto& state = *m_mundo_render_target_write_state;
+    state.current_contents_vulkan_backed = true;
+    state.vulkan_write_count = state.write_count;
+
+    if (state.write_count <= 24 || state.write_count % 120 == 0)
+        dbgln("MUNDO_WEBGL_TEXTURE_RENDER_TARGET_VULKAN_BACKED texture={} count={} vulkan_write_count={} viewport={}x{} program={} reason=vulkan_render_target_replay_executed next_step=allow_vulkan_consumers_to_skip_matching_gl_draw",
+            handle(m_context.ptr()).value_or(0),
+            state.write_count,
+            state.vulkan_write_count,
+            state.last_viewport_width,
+            state.last_viewport_height,
+            state.last_program);
 }
 
 #ifdef USE_VULKAN_DMABUF_IMAGES
