@@ -194,9 +194,14 @@ void SourceBuffer::set_content_type(String const& type)
     auto mime_type = MimeSniff::MimeType::parse(type);
     VERIFY(mime_type.has_value());
 
+    dbgln("MUNDO_SOURCE_BUFFER set_content_type buffer={} type={} mime_type={}/{}", static_cast<void const*>(this), type, mime_type->type(), mime_type->subtype());
+
     NonnullOwnPtr<ByteStreamParser> parser = [&]() -> NonnullOwnPtr<ByteStreamParser> {
-        if (mime_type->subtype() == "webm")
+        if (mime_type->subtype() == "webm") {
+            dbgln("MUNDO_SOURCE_BUFFER set_content_type parser=webm buffer={} type={}", static_cast<void const*>(this), type);
             return make<WebMByteStreamParser>();
+        }
+        dbgln("MUNDO_SOURCE_BUFFER set_content_type unsupported_parser buffer={} type={} subtype={}", static_cast<void const*>(this), type, mime_type->subtype());
         VERIFY_NOT_REACHED();
     }();
 
@@ -274,18 +279,26 @@ WebIDL::ExceptionOr<void> SourceBuffer::set_mode(Bindings::AppendMode mode)
 // https://w3c.github.io/media-source/#sourcebuffer-prepare-append
 WebIDL::ExceptionOr<void> SourceBuffer::prepare_append()
 {
+    dbgln("MUNDO_SOURCE_BUFFER prepare_append begin buffer={} updating={} removed={} ready_state={}", static_cast<void const*>(this), updating(), !m_media_source->source_buffers()->contains(*this), to_underlying(m_media_source->ready_state()));
+
     // FIXME: Support MediaSourceExtensions in workers.
-    if (!m_media_source->media_element_assigned_to())
+    if (!m_media_source->media_element_assigned_to()) {
+        dbgln("MUNDO_SOURCE_BUFFER prepare_append failed buffer={} reason=no_media_element", static_cast<void const*>(this));
         return WebIDL::InvalidStateError::create(realm(), "Unsupported in workers"_utf16);
+    }
 
     // 1. If the SourceBuffer has been removed from the sourceBuffers attribute of the parent media source then throw an
     //    InvalidStateError exception and abort these steps.
-    if (!m_media_source->source_buffers()->contains(*this))
+    if (!m_media_source->source_buffers()->contains(*this)) {
+        dbgln("MUNDO_SOURCE_BUFFER prepare_append failed buffer={} reason=removed", static_cast<void const*>(this));
         return WebIDL::InvalidStateError::create(realm(), "SourceBuffer has been removed"_utf16);
+    }
 
     // 2. If the updating attribute equals true, then throw an InvalidStateError exception and abort these steps.
-    if (updating())
+    if (updating()) {
+        dbgln("MUNDO_SOURCE_BUFFER prepare_append failed buffer={} reason=updating", static_cast<void const*>(this));
         return WebIDL::InvalidStateError::create(realm(), "SourceBuffer is already updating"_utf16);
+    }
 
     // 3. Let recent element error be determined as follows:
     auto recent_element_error = [&] {
@@ -304,8 +317,10 @@ WebIDL::ExceptionOr<void> SourceBuffer::prepare_append()
     }();
 
     // 4. If recent element error is true, then throw an InvalidStateError exception and abort these steps.
-    if (recent_element_error)
+    if (recent_element_error) {
+        dbgln("MUNDO_SOURCE_BUFFER prepare_append failed buffer={} reason=recent_element_error", static_cast<void const*>(this));
         return WebIDL::InvalidStateError::create(realm(), "Element has a recent error"_utf16);
+    }
 
     // 5. If the readyState attribute of the parent media source is in the "ended" state then run the following steps:
     if (m_media_source->ready_state() == Bindings::ReadyState::Ended) {
@@ -318,15 +333,20 @@ WebIDL::ExceptionOr<void> SourceBuffer::prepare_append()
     m_processor->run_coded_frame_eviction();
 
     // 7. If the [[buffer full flag]] equals true, then throw a QuotaExceededError exception and abort these steps.
-    if (m_processor->is_buffer_full())
+    if (m_processor->is_buffer_full()) {
+        dbgln("MUNDO_SOURCE_BUFFER prepare_append failed buffer={} reason=buffer_full", static_cast<void const*>(this));
         return WebIDL::QuotaExceededError::create(realm(), "Buffer is full"_utf16);
+    }
 
+    dbgln("MUNDO_SOURCE_BUFFER prepare_append ok buffer={}", static_cast<void const*>(this));
     return {};
 }
 
 // https://w3c.github.io/media-source/#dom-sourcebuffer-appendbuffer
 WebIDL::ExceptionOr<void> SourceBuffer::append_buffer(GC::Root<WebIDL::BufferSource> const& data)
 {
+    dbgln("MUNDO_SOURCE_BUFFER append_buffer begin buffer={} byte_offset={} byte_length={}", static_cast<void const*>(this), data->byte_offset(), data->byte_length());
+
     // 1. Run the prepare append algorithm.
     TRY(prepare_append());
 
@@ -334,6 +354,7 @@ WebIDL::ExceptionOr<void> SourceBuffer::append_buffer(GC::Root<WebIDL::BufferSou
     if (auto array_buffer = data->viewed_array_buffer(); array_buffer && !array_buffer->is_detached()) {
         auto bytes = array_buffer->buffer().bytes().slice(data->byte_offset(), data->byte_length());
         m_processor->append_to_input_buffer(bytes);
+        dbgln("MUNDO_SOURCE_BUFFER append_buffer appended buffer={} bytes={}", static_cast<void const*>(this), bytes.size());
     }
 
     // 3. Set the updating attribute to true.
@@ -518,6 +539,8 @@ void SourceBuffer::clear_reached_end_of_stream(Badge<MediaSource>)
 // https://w3c.github.io/media-source/#sourcebuffer-buffer-append
 void SourceBuffer::run_buffer_append_algorithm()
 {
+    dbgln("MUNDO_SOURCE_BUFFER run_buffer_append_algorithm buffer={}", static_cast<void const*>(this));
+
     // 1. Run the segment parser loop algorithm.
     // NB: SourceBufferProcessor's append done callback invokes finish_buffer_append for the rest of this algorithm.
     m_processor->run_segment_parser_loop();
@@ -526,6 +549,8 @@ void SourceBuffer::run_buffer_append_algorithm()
 // https://w3c.github.io/media-source/#sourcebuffer-append-error
 void SourceBuffer::run_append_error_algorithm()
 {
+    dbgln("MUNDO_SOURCE_BUFFER append_error buffer={}", static_cast<void const*>(this));
+
     // 1. Run the reset parser state algorithm.
     m_processor->reset_parser_state();
 

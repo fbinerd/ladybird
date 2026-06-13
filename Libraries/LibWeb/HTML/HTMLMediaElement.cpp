@@ -1752,6 +1752,7 @@ void HTMLMediaElement::load_url_resource(URL::URL const& url_record, Function<vo
     // NB: We invoke load_local_resource() directly when a media provider object is being loaded.
 
     auto serialized_url = url_record.serialize();
+    dbgln("MUNDO_MEDIA_ELEMENT element={} load_url_resource url={} current_src={} blob_entry={}", static_cast<void const*>(this), serialized_url, m_current_src, url_record.blob_url_entry().has_value());
     if (m_current_src != serialized_url) {
         dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring stale remote resource url={} current_src={}", static_cast<void const*>(this), serialized_url, m_current_src);
         return;
@@ -1790,12 +1791,14 @@ void HTMLMediaElement::load_url_resource(URL::URL const& url_record, Function<vo
 
         // 6. Let object be the result of obtaining a blob object using the URL record's blob URL entry and stringOrEnvironment.
         auto object = FileAPI::obtain_a_blob_object(*url_record.blob_url_entry(), string_or_environment);
+        dbgln("MUNDO_MEDIA_ELEMENT element={} blob_url_obtain url={} object={} media_source={} blob={}", static_cast<void const*>(this), serialized_url, object.has_value(), object.has_value() && object->has<URL::BlobURLEntry::MediaSource>(), object.has_value() && object->has<URL::BlobURLEntry::Blob>());
         // 7. If object is a media provider object,
         if (object.has_value() && object->has<URL::BlobURLEntry::MediaSource>()) {
             // then set mode to local.
 
             // NB: The subsequent steps for local resources are contained in load_local_resource().
             auto const& blob_entry = FileAPI::resolve_a_blob_url(url_record).value();
+            dbgln("MUNDO_MEDIA_ELEMENT element={} blob_url_media_source_resolved url={} media_source={}", static_cast<void const*>(this), serialized_url, static_cast<void const*>(blob_entry.object.get<GC::Root<MediaSourceExtensions::MediaSource>>().ptr()));
             load_local_resource(GC::Ref(*blob_entry.object.get<GC::Root<MediaSourceExtensions::MediaSource>>()), move(failure_callback));
             return;
         }
@@ -1988,6 +1991,8 @@ void HTMLMediaElement::load_remote_resource(ByteRange const& byte_range)
 // https://html.spec.whatwg.org/multipage/media.html#concept-media-load-resource
 void HTMLMediaElement::load_local_resource(MediaProviderObject const& media_provider, Function<void(String)> failure_callback)
 {
+    dbgln("MUNDO_MEDIA_ELEMENT element={} load_local_resource begin media_source={} blob={} current_src={} network_state={} ready_state={}", static_cast<void const*>(this), media_provider.has<GC::Ref<MediaSourceExtensions::MediaSource>>(), media_provider.has<GC::Ref<FileAPI::Blob>>(), m_current_src, to_underlying(m_network_state), to_underlying(m_ready_state));
+
     // 1. Let mode be remote.
     // 2. If the algorithm was invoked with media provider object, then set mode to local.
     // 3. If mode is remote, then let the current media resource be the resource given by the URL record passed to this
@@ -2009,6 +2014,7 @@ void HTMLMediaElement::load_local_resource(MediaProviderObject const& media_prov
     //    MediaSourceHandle object or a URL record whose object is a MediaSource object, then:
     if (media_provider.has<GC::Ref<MediaSourceExtensions::MediaSource>>()) {
         auto const& media_source = media_provider.get<GC::Ref<MediaSourceExtensions::MediaSource>>();
+        dbgln("MUNDO_MEDIA_ELEMENT element={} media_source_attach begin media_source={} ready_state_closed={}", static_cast<void const*>(this), static_cast<void const*>(&media_source), media_source->ready_state_is_closed());
 
         // FIXME: -> If the media provider object is a URL record whose object is a MediaSource that was constructed in
         //           a DedicatedWorkerGlobalScope, such as would occur if attempting to use a MediaSource object URL
@@ -2030,6 +2036,7 @@ void HTMLMediaElement::load_local_resource(MediaProviderObject const& media_prov
 
         // -> If readyState is NOT set to "closed"
         if (!media_source->ready_state_is_closed()) {
+            dbgln("MUNDO_MEDIA_ELEMENT element={} media_source_attach failed media_source={} reason=not_closed", static_cast<void const*>(this), static_cast<void const*>(&media_source));
             // Run the "If the media data cannot be fetched at all, due to network errors, causing the user agent to
             // give up trying to fetch the resource" steps of the resource fetch algorithm's media data processing
             // steps list.
@@ -2067,6 +2074,7 @@ void HTMLMediaElement::load_local_resource(MediaProviderObject const& media_prov
             // 4. Set the readyState attribute to "open".
             // 5. Queue a task to fire an event named sourceopen at the MediaSource.
             media_source->set_ready_state_to_open_and_fire_sourceopen_event();
+            dbgln("MUNDO_MEDIA_ELEMENT element={} media_source_attach open_queued media_source={}", static_cast<void const*>(this), static_cast<void const*>(&media_source));
 
             // FIXME: 4. Continue the resource fetch algorithm by running the remaining "Otherwise (mode is local)"
             //           steps, with these requirements:

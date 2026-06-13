@@ -189,11 +189,13 @@ bool MediaSource::ready_state_is_closed() const
 
 void MediaSource::set_has_ever_been_attached()
 {
+    dbgln("MUNDO_MEDIA_SOURCE set_has_ever_been_attached media_source={}", static_cast<void const*>(this));
     m_has_ever_been_attached = true;
 }
 
 void MediaSource::set_ready_state_to_open_and_fire_sourceopen_event()
 {
+    dbgln("MUNDO_MEDIA_SOURCE set_ready_state_open media_source={} source_buffers={} assigned_element={}", static_cast<void const*>(this), m_source_buffers->length(), static_cast<void const*>(m_media_element_assigned_to.ptr()));
     m_ready_state = ReadyState::Open;
 
     // AD-HOC: Notify all demuxers that we have new data coming in and cannot consider the end of the buffer to be
@@ -204,6 +206,7 @@ void MediaSource::set_ready_state_to_open_and_fire_sourceopen_event()
     }
 
     queue_a_media_source_task(GC::create_function(heap(), [this] {
+        dbgln("MUNDO_MEDIA_SOURCE dispatch_sourceopen media_source={} source_buffers={} assigned_element={}", static_cast<void const*>(this), m_source_buffers->length(), static_cast<void const*>(m_media_element_assigned_to.ptr()));
         auto event = DOM::Event::create(realm(), EventNames::sourceopen);
         dispatch_event(event);
     }));
@@ -211,11 +214,13 @@ void MediaSource::set_ready_state_to_open_and_fire_sourceopen_event()
 
 void MediaSource::set_assigned_to_media_element(Badge<HTML::HTMLMediaElement>, HTML::HTMLMediaElement& media_element)
 {
+    dbgln("MUNDO_MEDIA_SOURCE set_assigned_to_media_element media_source={} element={}", static_cast<void const*>(this), static_cast<void const*>(&media_element));
     m_media_element_assigned_to = media_element;
 }
 
 void MediaSource::unassign_from_media_element(Badge<HTML::HTMLMediaElement>)
 {
+    dbgln("MUNDO_MEDIA_SOURCE unassign_from_media_element media_source={} old_element={}", static_cast<void const*>(this), static_cast<void const*>(m_media_element_assigned_to.ptr()));
     m_media_element_assigned_to = nullptr;
 }
 
@@ -273,8 +278,11 @@ GC::Ptr<WebIDL::CallbackType> MediaSource::onsourceclose()
 // https://w3c.github.io/media-source/#addsourcebuffer-method
 WebIDL::ExceptionOr<GC::Ref<SourceBuffer>> MediaSource::add_source_buffer(String const& type)
 {
+    dbgln("MUNDO_MEDIA_SOURCE add_source_buffer requested type={} ready_state={} source_buffers={}", type, to_underlying(ready_state()), m_source_buffers->length());
+
     // 1. If type is an empty string then throw a TypeError exception and abort these steps.
     if (type.is_empty()) {
+        dbgln("MUNDO_MEDIA_SOURCE add_source_buffer failed type={} reason=empty_type", type);
         return WebIDL::SimpleException {
             WebIDL::SimpleExceptionType::TypeError,
             "SourceBuffer type must not be empty"sv
@@ -285,6 +293,7 @@ WebIDL::ExceptionOr<GC::Ref<SourceBuffer>> MediaSource::add_source_buffer(String
     //    supported with the types specified for the other SourceBuffer objects in sourceBuffers,
     //    then throw a NotSupportedError exception and abort these steps.
     if (!is_type_supported(type)) {
+        dbgln("MUNDO_MEDIA_SOURCE add_source_buffer failed type={} reason=unsupported_type", type);
         return WebIDL::NotSupportedError::create(realm(), "Unsupported MIME type"_utf16);
     }
 
@@ -293,8 +302,10 @@ WebIDL::ExceptionOr<GC::Ref<SourceBuffer>> MediaSource::add_source_buffer(String
     //           QuotaExceededError exception and abort these steps.
 
     // 4. If the readyState attribute is not in the "open" state then throw an InvalidStateError exception and abort these steps.
-    if (ready_state() != ReadyState::Open)
+    if (ready_state() != ReadyState::Open) {
+        dbgln("MUNDO_MEDIA_SOURCE add_source_buffer failed type={} reason=not_open ready_state={}", type, to_underlying(ready_state()));
         return WebIDL::InvalidStateError::create(realm(), "MediaSource is not open"_utf16);
+    }
 
     // 5. Let buffer be a new instance of a ManagedSourceBuffer if this is a ManagedMediaSource, or
     //    a SourceBuffer otherwise, with their respective associated resources.
@@ -309,6 +320,8 @@ WebIDL::ExceptionOr<GC::Ref<SourceBuffer>> MediaSource::add_source_buffer(String
     // 8. Append buffer to this's sourceBuffers.
     // 9. Queue a task to fire an event named addsourcebuffer at this's sourceBuffers.
     m_source_buffers->append(buffer);
+
+    dbgln("MUNDO_MEDIA_SOURCE add_source_buffer created type={} buffer={} source_buffers={}", type, static_cast<void const*>(&buffer), m_source_buffers->length());
 
     // 10. Return buffer.
     return buffer;
@@ -472,16 +485,13 @@ bool MediaSource::is_type_supported(String const& type)
             return true;
         if (mime_type->type() == "audio" && mime_type->subtype() == "webm")
             return true;
-        if (mime_type->type() == "video" && mime_type->subtype() == "mp4")
-            return true;
-        if (mime_type->type() == "audio" && mime_type->subtype() == "mp4")
-            return true;
-        if (mime_type->type() == "application" && mime_type->subtype() == "mp4")
-            return true;
         return false;
     }();
     if (!type_and_subtype_are_supported) {
-        dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=false reason=unsupported_mse_container", type);
+        if (mime_type->subtype() == "mp4")
+            dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=false reason=unsupported_mse_mp4_parser", type);
+        else
+            dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=false reason=unsupported_mse_container", type);
         return false;
     }
 
