@@ -1319,6 +1319,8 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         u32 render_target_sampler_width = 0;
         u32 render_target_sampler_height = 0;
 #ifdef USE_VULKAN_DMABUF_IMAGES
+        GC::Ptr<WebGLTexture> snapshot_sampler_texture;
+        GLuint snapshot_sampler_texture_handle = 0;
         OpenGLContext::VulkanSolidMeshUniformSnapshot uniform_snapshot;
         for (size_t i = 0; i < 16; ++i) {
             uniform_snapshot.model_view_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
@@ -1391,6 +1393,10 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                             } else if (sampler_texture_snapshot_complete) {
                                 ++sampler_sources_resolved;
                                 ++sampler_sources_snapshot_complete;
+                                if (!snapshot_sampler_texture) {
+                                    snapshot_sampler_texture = sampler_texture;
+                                    snapshot_sampler_texture_handle = sampler_texture_handle;
+                                }
                             }
                         }
                     }
@@ -1673,6 +1679,176 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 texture->mark_mundo_render_target_vulkan_backed();
                 if (allow_vulkan_skip_gl_draw)
                     return true;
+            }
+        }
+
+        static size_t s_static_textured_render_target_attempt_count { 0 };
+        auto static_textured_attempt_count = ++s_static_textured_render_target_attempt_count;
+        auto static_textured_replay_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_STATIC_TEXTURED_REPLAY");
+        auto static_textured_replay_possible = !strcmp(operation, "drawElements")
+            && replay_viewport_valid
+            && mode == GL_TRIANGLES
+            && active_attrib_count == 2
+            && sampler_uniform_count == 1
+            && sampler_sources_snapshot_complete == 1
+            && snapshot_sampler_texture
+            && snapshot_sampler_texture_handle
+            && has_position_attrib
+            && has_uv_attrib
+            && position_layout_supported
+            && uv_layout_supported
+            && element_shadow_complete
+            && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
+        auto should_log_static_textured_replay = static_textured_attempt_count <= 24 || static_textured_attempt_count % 120 == 0 || render_target_vulkan_stale;
+        if (should_log_static_textured_replay) {
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_STATIC_TEXTURED_REPLAY_ATTEMPT count={} color_texture={} write_count={} vulkan_backed={} vulkan_write_count={} vulkan_stale={} program={} enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} sampler_sources_snapshot_complete={} snapshot_texture={} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+                static_textured_attempt_count,
+                texture_handle,
+                render_target_state->write_count,
+                render_target_state->current_contents_vulkan_backed,
+                render_target_state->vulkan_write_count,
+                render_target_vulkan_stale,
+                program_handle,
+                static_textured_replay_enabled,
+                static_textured_replay_possible,
+                operation,
+                mode,
+                count,
+                type,
+                offset,
+                active_attrib_count,
+                active_uniform_count,
+                sampler_uniform_count,
+                sampler_sources_snapshot_complete,
+                snapshot_sampler_texture_handle,
+                has_position_attrib,
+                has_uv_attrib,
+                position_layout_supported,
+                uv_layout_supported,
+                position_data.size(),
+                uv_data.size(),
+                element_shadow_complete,
+                element_data.size(),
+                destination_format.value_or(0),
+                strcmp(operation, "drawElements") ? "not_draw_elements"sv
+                    : !replay_viewport_valid ? "invalid_viewport"sv
+                    : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
+                    : active_attrib_count != 2 ? "not_position_uv_mesh"sv
+                    : sampler_uniform_count != 1 ? "not_single_sampler_producer"sv
+                    : sampler_sources_snapshot_complete != 1 ? "sampler_not_single_static_snapshot_source"sv
+                    : !snapshot_sampler_texture ? "missing_snapshot_sampler_texture"sv
+                    : !snapshot_sampler_texture_handle ? "missing_snapshot_sampler_texture_handle"sv
+                    : !has_position_attrib ? "missing_position_attrib"sv
+                    : !has_uv_attrib ? "missing_uv_attrib"sv
+                    : !position_layout_supported ? "unsupported_position_layout"sv
+                    : !uv_layout_supported ? "unsupported_uv_layout"sv
+                    : !element_shadow_complete ? "missing_index_shadow"sv
+                    : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
+                    : !destination_format.has_value() ? "missing_vulkan_target_format"sv
+                    : !static_textured_replay_enabled ? "static_textured_replay_explicitly_disabled"sv
+                    : "ready"sv,
+                static_textured_replay_possible && static_textured_replay_enabled ? "execute_static_textured_vulkan_mesh_to_render_target_texture"sv : "keep_collecting_static_textured_render_target_inputs"sv);
+        }
+        if (static_textured_replay_enabled && static_textured_replay_possible && destination_format.has_value()) {
+            auto const& snapshot = snapshot_sampler_texture->mundo_texture_upload_snapshot();
+            if (!snapshot.has_value() || !snapshot->complete) {
+                if (should_log_static_textured_replay) {
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_STATIC_TEXTURED_REPLAY_SOURCE_IMPORT count={} color_texture={} write_count={} program={} snapshot_texture={} status=failed reason=static_sampler_snapshot_missing route=static_texture_snapshot next_step=capture_complete_static_sampler_snapshot_before_replay",
+                        static_textured_attempt_count,
+                        texture_handle,
+                        render_target_state->write_count,
+                        program_handle,
+                        snapshot_sampler_texture_handle);
+                }
+            } else {
+                Optional<ByteBuffer> converted_rgba_pixels;
+                ReadonlyBytes rgba_pixels;
+                auto const expected_rgba_size = static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height) * 4;
+                if (snapshot->format == GL_RGBA && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= expected_rgba_size) {
+                    rgba_pixels = snapshot->pixels.bytes().slice(0, expected_rgba_size);
+                } else if ((snapshot->format == GL_ALPHA || snapshot->format == GL_LUMINANCE) && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height)) {
+                    converted_rgba_pixels = ByteBuffer::create_uninitialized(expected_rgba_size).release_value_but_fixme_should_propagate_errors();
+                    auto source_pixels = snapshot->pixels.bytes();
+                    auto destination_pixels = converted_rgba_pixels->bytes();
+                    for (size_t i = 0; i < static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height); ++i) {
+                        auto value = source_pixels[i];
+                        destination_pixels[i * 4 + 0] = value;
+                        destination_pixels[i * 4 + 1] = value;
+                        destination_pixels[i * 4 + 2] = value;
+                        destination_pixels[i * 4 + 3] = value;
+                    }
+                    rgba_pixels = converted_rgba_pixels->bytes();
+                } else if (should_log_static_textured_replay) {
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_STATIC_TEXTURED_REPLAY_SOURCE_IMPORT count={} color_texture={} write_count={} program={} snapshot_texture={} status=failed reason=unsupported_static_sampler_snapshot_format snapshot_size={}x{} internal_format={} format={} type={} byte_length={} route=static_texture_snapshot next_step=add_snapshot_format_conversion_for_static_textured_render_target_replay",
+                        static_textured_attempt_count,
+                        texture_handle,
+                        render_target_state->write_count,
+                        program_handle,
+                        snapshot_sampler_texture_handle,
+                        snapshot->width,
+                        snapshot->height,
+                        snapshot->internal_format,
+                        snapshot->format,
+                        snapshot->type,
+                        snapshot->byte_length);
+                }
+
+                if (!rgba_pixels.is_empty()) {
+                    auto signature = pair_int_hash(Traits<ReadonlyBytes>::hash(rgba_pixels), pair_int_hash(u32_hash(snapshot->width), pair_int_hash(u32_hash(snapshot->height), u32_hash(rgba_pixels.size()))));
+                    auto source_image_or_error = m_context->get_or_create_vulkan_rgba_static_texture_image(snapshot_sampler_texture_handle, snapshot->width, snapshot->height, signature, rgba_pixels, static_textured_attempt_count);
+                    if (source_image_or_error.is_error()) {
+                        if (should_log_static_textured_replay) {
+                            dbgln("MUNDO_WEBGL_RENDER_TARGET_STATIC_TEXTURED_REPLAY_SOURCE_IMPORT count={} color_texture={} write_count={} program={} snapshot_texture={} status=failed reason={} route=static_texture_snapshot next_step=fix_static_texture_vulkan_upload_before_replay",
+                                static_textured_attempt_count,
+                                texture_handle,
+                                render_target_state->write_count,
+                                program_handle,
+                                snapshot_sampler_texture_handle,
+                                source_image_or_error.error().string_literal());
+                        }
+                    } else {
+                        auto target_image_or_error = m_context->get_or_create_vulkan_rgba_render_target_image(texture_handle, static_cast<u32>(viewport[2]), static_cast<u32>(viewport[3]), static_textured_attempt_count);
+                        if (target_image_or_error.is_error()) {
+                            if (should_log_static_textured_replay) {
+                                dbgln("MUNDO_WEBGL_RENDER_TARGET_STATIC_TEXTURED_REPLAY_TARGET_IMPORT count={} color_texture={} write_count={} program={} status=failed reason={} route=vulkan_offscreen_image next_step=fix_vulkan_offscreen_target_before_static_textured_replay",
+                                    static_textured_attempt_count,
+                                    texture_handle,
+                                    render_target_state->write_count,
+                                    program_handle,
+                                    target_image_or_error.error().string_literal());
+                            }
+                        } else {
+                            auto* source_image_texture = source_image_or_error.release_value();
+                            auto* target_image_texture = target_image_or_error.release_value();
+                            auto* target_image_override = target_image_texture->image.ptr();
+                            auto target_format = to_underlying(target_image_override->info.format);
+                            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(target_format, *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], static_textured_attempt_count, nullptr, target_image_override);
+                            if (should_log_static_textured_replay) {
+                                dbgln("MUNDO_WEBGL_RENDER_TARGET_STATIC_TEXTURED_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} vulkan_write_count={} program={} snapshot_texture={} source_size={}x{} target_size={}x{} attempted={} supported={} executed={} reason={} next_step={}",
+                                    static_textured_attempt_count,
+                                    texture_handle,
+                                    render_target_state->write_count,
+                                    render_target_state->vulkan_write_count,
+                                    program_handle,
+                                    snapshot_sampler_texture_handle,
+                                    snapshot->width,
+                                    snapshot->height,
+                                    target_image_texture->width,
+                                    target_image_texture->height,
+                                    textured_pipeline_probe.attempted,
+                                    textured_pipeline_probe.supported,
+                                    textured_pipeline_probe.executed,
+                                    textured_pipeline_probe.reason,
+                                    textured_pipeline_probe.executed ? "verify_static_textured_render_target_consumers_can_stay_vulkan_backed" : "fix_static_textured_mesh_probe_before_replacing_gl_draw");
+                            }
+                            if (textured_pipeline_probe.executed) {
+                                texture->mark_mundo_render_target_vulkan_backed();
+                                if (allow_vulkan_skip_gl_draw)
+                                    return true;
+                            }
+                        }
+                    }
+                }
             }
         }
 

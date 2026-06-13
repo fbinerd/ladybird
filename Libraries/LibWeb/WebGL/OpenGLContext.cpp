@@ -3570,7 +3570,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
     };
 }
 
-OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage& source_image, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* alpha_image)
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage& source_image, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* alpha_image, Gfx::VulkanImage* target_image_override)
 {
     struct TexturedPushConstants {
         Array<float, 16> model_view_matrix {};
@@ -3661,12 +3661,15 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     if (alpha_image && !(alpha_image->info.usage & VK_IMAGE_USAGE_SAMPLED_BIT))
         return log_failure("alpha_image_not_sampled_usage"sv);
 
-    RefPtr<Gfx::VulkanImage> target_image;
-    if (m_painting_surface)
-        target_image = m_painting_surface->vulkan_image();
+    RefPtr<Gfx::VulkanImage> painting_surface_target_image;
+    auto* target_image = target_image_override;
+    if (!target_image && m_painting_surface) {
+        painting_surface_target_image = m_painting_surface->vulkan_image();
+        target_image = painting_surface_target_image.ptr();
+    }
     if (!target_image)
         return log_failure("missing_vulkan_textured_target"sv);
-    if (target_image.ptr() == &source_image)
+    if (target_image == &source_image)
         return log_failure("source_and_target_are_same_image"sv);
     if (target_image->info.format != format)
         return log_failure("vulkan_textured_mesh_target_format_mismatch"sv);
