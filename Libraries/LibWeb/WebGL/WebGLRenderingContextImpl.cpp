@@ -177,6 +177,16 @@ static bool mundo_webgl_env_enabled_by_default(char const* name)
     return true;
 }
 
+static size_t mundo_webgl_env_size_value(char const* name, size_t default_value)
+{
+    auto const* value = getenv(name);
+    if (!value || value[0] == '\0')
+        return default_value;
+
+    auto parsed_value = strtoull(value, nullptr, 10);
+    return parsed_value > 0 ? static_cast<size_t>(parsed_value) : default_value;
+}
+
 static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
 {
     auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
@@ -1243,7 +1253,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         && render_target_state->vulkan_write_count > 0
         && render_target_state->vulkan_write_count < render_target_state->write_count;
     auto should_log_render_target_draw = render_target_state.has_value()
-        && (render_target_state->write_count <= 24 || render_target_state->write_count % 120 == 0 || render_target_vulkan_stale);
+        && (render_target_state->write_count <= 24 || render_target_state->write_count % 120 == 0 || (render_target_vulkan_stale && render_target_state->write_count <= render_target_state->vulkan_write_count + 8));
     if (render_target_state.has_value() && should_log_render_target_draw) {
         auto texture_handle = texture->handle(this).value_or(0);
         auto framebuffer_handle = m_framebuffer_binding->handle(this).value_or(0);
@@ -1669,18 +1679,23 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         auto solid_replay_to_texture_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY_TO_TEXTURE");
         auto solid_replay_enabled = solid_replay_to_texture_enabled && mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY");
         auto solid_uniforms_supported = active_uniform_count <= 5;
+        auto solid_replay_max_default_area = mundo_webgl_env_size_value("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY_MAX_DEFAULT_PIXELS", 1024 * 1024);
+        auto solid_replay_area = replay_viewport_valid ? static_cast<size_t>(viewport[2]) * static_cast<size_t>(viewport[3]) : 0;
+        auto solid_replay_area_supported = solid_replay_area <= solid_replay_max_default_area
+            || mundo_webgl_env_flag_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY_ALLOW_LARGE_TARGETS");
         auto solid_replay_possible = !strcmp(operation, "drawElements")
             && replay_viewport_valid
             && mode == GL_TRIANGLES
             && active_attrib_count == 1
             && sampler_uniform_count == 0
             && solid_uniforms_supported
+            && solid_replay_area_supported
             && has_position_attrib
             && position_layout_supported
             && element_shadow_complete
             && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
         if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} solid_area={} solid_max_default_area={} solid_area_supported={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
                 solid_attempt_count,
                 texture_handle,
                 render_target_state->write_count,
@@ -1697,6 +1712,9 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 active_uniform_count,
                 sampler_uniform_count,
                 solid_uniforms_supported,
+                solid_replay_area,
+                solid_replay_max_default_area,
+                solid_replay_area_supported,
                 has_position_attrib,
                 position_layout_supported,
                 position_data.size(),
@@ -1709,6 +1727,7 @@ void WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     : active_attrib_count != 1 ? "not_single_position_mesh"sv
                     : sampler_uniform_count != 0 ? "sampler_based_draw_not_solid_mesh"sv
                     : !solid_uniforms_supported ? "unsupported_solid_shader_uniform_shape"sv
+                    : !solid_replay_area_supported ? "solid_target_too_large_for_default_replay"sv
                     : !has_position_attrib ? "missing_position_attrib"sv
                     : !position_layout_supported ? "unsupported_position_layout"sv
                     : !element_shadow_complete ? "missing_index_shadow"sv
