@@ -164,6 +164,19 @@ static bool mundo_webgl_env_opt_in_enabled(char const* name)
     return view == "1"sv || view == "true"sv || view == "on"sv || view == "yes"sv;
 }
 
+static bool mundo_webgl_env_enabled_by_default(char const* name)
+{
+    auto const* value = getenv(name);
+    if (!value)
+        return true;
+
+    auto view = StringView { value, strlen(value) };
+    if (view == "0"sv || view == "false"sv || view == "off"sv || view == "no"sv)
+        return false;
+
+    return true;
+}
+
 static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
 {
     auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
@@ -3135,7 +3148,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             }
 
             auto destination_format = m_context->vulkan_painting_surface_format();
-            auto textured_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_REPLAY");
+            auto textured_replay_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_REPLAY");
             auto allow_extra_samplers = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALLOW_EXTRA_SAMPLERS");
             auto sampler_count_supported = sampler_uniform_count == 1 || (allow_extra_samplers && sampler_render_target_count >= 1 && sampler_unresolved_count == 0);
             auto replay_viewport_valid = viewport[2] > 0 && viewport[3] > 0;
