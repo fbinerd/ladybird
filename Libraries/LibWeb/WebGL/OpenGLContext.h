@@ -155,6 +155,9 @@ public:
         u32 blend_dst_alpha { 0 };
         u32 blend_equation_rgb { 0 };
         u32 blend_equation_alpha { 0 };
+        bool depth_test_enabled { false };
+        bool depth_write_enabled { false };
+        u32 depth_func { 0 };
     };
 
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);

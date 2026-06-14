@@ -3592,7 +3592,16 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && blend_factor_supported(blend_dst_alpha)
                 && blend_equation_supported(blend_equation_rgb)
                 && blend_equation_supported(blend_equation_alpha);
-            auto depth_state_supported = !depth_test_enabled;
+            auto depth_func_supported = !depth_test_enabled
+                || depth_func == GL_NEVER
+                || depth_func == GL_LESS
+                || depth_func == GL_EQUAL
+                || depth_func == GL_LEQUAL
+                || depth_func == GL_GREATER
+                || depth_func == GL_NOTEQUAL
+                || depth_func == GL_GEQUAL
+                || depth_func == GL_ALWAYS;
+            auto depth_state_supported = depth_func_supported;
             auto cull_state_supported = !cull_face_enabled
                 || ((cull_face_mode == GL_BACK || cull_face_mode == GL_FRONT || cull_face_mode == GL_FRONT_AND_BACK)
                     && (front_face == GL_CCW || front_face == GL_CW));
@@ -3788,6 +3797,9 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 .blend_dst_alpha = static_cast<u32>(blend_dst_alpha),
                 .blend_equation_rgb = static_cast<u32>(blend_equation_rgb),
                 .blend_equation_alpha = static_cast<u32>(blend_equation_alpha),
+                .depth_test_enabled = depth_test_enabled,
+                .depth_write_enabled = depth_write_mask == GL_TRUE,
+                .depth_func = static_cast<u32>(depth_func),
             };
             auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, alpha_image, nullptr, pipeline_state);
             if (attempt_count <= 24 || attempt_count % 120 == 0) {

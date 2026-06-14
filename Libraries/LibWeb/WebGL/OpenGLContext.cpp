@@ -3701,6 +3701,13 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         u32 target_framebuffer_width { 0 };
         u32 target_framebuffer_height { 0 };
         bool uses_alpha { false };
+        bool uses_depth { false };
+        VkFormat depth_format { VK_FORMAT_UNDEFINED };
+        VkImage depth_image { VK_NULL_HANDLE };
+        VkDeviceMemory depth_memory { VK_NULL_HANDLE };
+        VkImageView depth_image_view { VK_NULL_HANDLE };
+        u32 depth_width { 0 };
+        u32 depth_height { 0 };
         unsigned pipeline_state_signature { 0 };
         VkCommandPool ring_command_pool { VK_NULL_HANDLE };
         Array<VkCommandBuffer, textured_ring_slot_count> ring_command_buffers {};
@@ -3711,6 +3718,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     static TexturedPipelineResources s_alpha_sampler_resources;
     static VkDevice s_shared_textured_render_pass_device { VK_NULL_HANDLE };
     static VkFormat s_shared_textured_render_pass_format { VK_FORMAT_UNDEFINED };
+    static bool s_shared_textured_render_pass_uses_depth { false };
     static VkRenderPass s_shared_textured_render_pass { VK_NULL_HANDLE };
     auto uses_alpha = alpha_image != nullptr;
     auto& s_resources = uses_alpha ? s_alpha_sampler_resources : s_single_sampler_resources;
@@ -3740,6 +3748,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         pipeline_state.cull_face_mode = GL_BACK;
     if (pipeline_state.cull_face_enabled && pipeline_state.front_face == 0)
         pipeline_state.front_face = GL_CCW;
+    if (pipeline_state.depth_test_enabled && pipeline_state.depth_func == 0)
+        pipeline_state.depth_func = GL_LEQUAL;
 
     auto map_blend_factor = [](u32 factor) -> Optional<VkBlendFactor> {
         switch (factor) {
@@ -3805,11 +3815,35 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             return {};
         }
     };
+    auto map_depth_compare_op = [](bool enabled, u32 depth_func) -> Optional<VkCompareOp> {
+        if (!enabled)
+            return VK_COMPARE_OP_ALWAYS;
+        switch (depth_func) {
+        case GL_NEVER:
+            return VK_COMPARE_OP_NEVER;
+        case GL_LESS:
+            return VK_COMPARE_OP_LESS;
+        case GL_EQUAL:
+            return VK_COMPARE_OP_EQUAL;
+        case GL_LEQUAL:
+            return VK_COMPARE_OP_LESS_OR_EQUAL;
+        case GL_GREATER:
+            return VK_COMPARE_OP_GREATER;
+        case GL_NOTEQUAL:
+            return VK_COMPARE_OP_NOT_EQUAL;
+        case GL_GEQUAL:
+            return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        case GL_ALWAYS:
+            return VK_COMPARE_OP_ALWAYS;
+        default:
+            return {};
+        }
+    };
     auto pipeline_state_signature = pair_int_hash(
         u32_hash(pipeline_state.blend_enabled ? 1 : 0),
         pair_int_hash(
             pair_int_hash(pipeline_state.blend_src_rgb, pair_int_hash(pipeline_state.blend_dst_rgb, pipeline_state.blend_src_alpha)),
-            pair_int_hash(pair_int_hash(pipeline_state.blend_dst_alpha, pipeline_state.blend_equation_rgb), pair_int_hash(pipeline_state.blend_equation_alpha, pair_int_hash(pipeline_state.cull_face_enabled ? 1 : 0, pair_int_hash(pipeline_state.cull_face_mode, pipeline_state.front_face))))));
+            pair_int_hash(pair_int_hash(pipeline_state.blend_dst_alpha, pipeline_state.blend_equation_rgb), pair_int_hash(pipeline_state.blend_equation_alpha, pair_int_hash(pipeline_state.cull_face_enabled ? 1 : 0, pair_int_hash(pipeline_state.cull_face_mode, pair_int_hash(pipeline_state.front_face, pair_int_hash(pipeline_state.depth_test_enabled ? 1 : 0, pair_int_hash(pipeline_state.depth_write_enabled ? 1 : 0, pipeline_state.depth_func)))))))));
 
     auto read_float = [](ReadonlyBytes bytes, size_t offset) {
         float value { 0.0f };
@@ -3925,6 +3959,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     auto vk_alpha_blend_op = map_blend_op(pipeline_state.blend_equation_alpha);
     auto vk_cull_mode = map_cull_mode(pipeline_state.cull_face_enabled, pipeline_state.cull_face_mode);
     auto vk_front_face = map_front_face(pipeline_state.cull_face_enabled, pipeline_state.front_face);
+    auto vk_depth_compare_op = map_depth_compare_op(pipeline_state.depth_test_enabled, pipeline_state.depth_func);
     if (!vk_src_color_factor.has_value()
         || !vk_dst_color_factor.has_value()
         || !vk_src_alpha_factor.has_value()
@@ -3934,6 +3969,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         return log_failure("unsupported_textured_blend_state"sv);
     if (!vk_cull_mode.has_value() || !vk_front_face.has_value())
         return log_failure("unsupported_textured_cull_state"sv);
+    if (!vk_depth_compare_op.has_value())
+        return log_failure("unsupported_textured_depth_state"sv);
 
     RefPtr<Gfx::VulkanImage> painting_surface_target_image;
     auto* target_image = target_image_override;
@@ -4001,6 +4038,12 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             vkDestroyCommandPool(device, resources.ring_command_pool, nullptr);
         if (resources.target_framebuffer != VK_NULL_HANDLE)
             vkDestroyFramebuffer(device, resources.target_framebuffer, nullptr);
+        if (resources.depth_image_view != VK_NULL_HANDLE)
+            vkDestroyImageView(device, resources.depth_image_view, nullptr);
+        if (resources.depth_image != VK_NULL_HANDLE)
+            vkDestroyImage(device, resources.depth_image, nullptr);
+        if (resources.depth_memory != VK_NULL_HANDLE)
+            vkFreeMemory(device, resources.depth_memory, nullptr);
         if (resources.descriptor_pool != VK_NULL_HANDLE)
             vkDestroyDescriptorPool(device, resources.descriptor_pool, nullptr);
         if (resources.sampler != VK_NULL_HANDLE)
@@ -4027,6 +4070,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         s_shared_textured_render_pass = VK_NULL_HANDLE;
         s_shared_textured_render_pass_device = VK_NULL_HANDLE;
         s_shared_textured_render_pass_format = VK_FORMAT_UNDEFINED;
+        s_shared_textured_render_pass_uses_depth = false;
     };
     if (s_resources.pipeline != VK_NULL_HANDLE) {
         auto matches = s_resources.device == context.logical_device
@@ -4079,8 +4123,10 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         if (result != VK_SUCCESS)
             return log_failure("create_textured_descriptor_set_layout_failed"sv, result);
 
+        auto const uses_depth = pipeline_state.depth_test_enabled;
+        auto const depth_format = VK_FORMAT_D32_SFLOAT;
         if (s_shared_textured_render_pass != VK_NULL_HANDLE) {
-            if (s_shared_textured_render_pass_device != context.logical_device || s_shared_textured_render_pass_format != format) {
+            if (s_shared_textured_render_pass_device != context.logical_device || s_shared_textured_render_pass_format != format || s_shared_textured_render_pass_uses_depth != uses_depth) {
                 reset_shared_textured_render_pass();
                 pipeline_cache_status = "recreated"sv;
             }
@@ -4099,7 +4145,20 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
                 .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             };
+            VkAttachmentDescription depth_attachment {
+                .flags = 0,
+                .format = depth_format,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            };
+            Array<VkAttachmentDescription, 2> attachments { color_attachment, depth_attachment };
             VkAttachmentReference color_attachment_ref { .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+            VkAttachmentReference depth_attachment_ref { .attachment = 1, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
             VkSubpassDescription subpass {
                 .flags = 0,
                 .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -4108,7 +4167,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
                 .colorAttachmentCount = 1,
                 .pColorAttachments = &color_attachment_ref,
                 .pResolveAttachments = nullptr,
-                .pDepthStencilAttachment = nullptr,
+                .pDepthStencilAttachment = uses_depth ? &depth_attachment_ref : nullptr,
                 .preserveAttachmentCount = 0,
                 .pPreserveAttachments = nullptr,
             };
@@ -4116,8 +4175,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
                 .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
                 .pNext = nullptr,
                 .flags = 0,
-                .attachmentCount = 1,
-                .pAttachments = &color_attachment,
+                .attachmentCount = uses_depth ? 2u : 1u,
+                .pAttachments = attachments.data(),
                 .subpassCount = 1,
                 .pSubpasses = &subpass,
                 .dependencyCount = 0,
@@ -4128,6 +4187,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
                 return log_failure("create_textured_render_pass_failed"sv, result);
             s_shared_textured_render_pass_device = context.logical_device;
             s_shared_textured_render_pass_format = format;
+            s_shared_textured_render_pass_uses_depth = uses_depth;
             s_resources.render_pass = s_shared_textured_render_pass;
         }
 
@@ -4195,8 +4255,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             .depthClampEnable = VK_FALSE,
             .rasterizerDiscardEnable = VK_FALSE,
             .polygonMode = VK_POLYGON_MODE_FILL,
-            .cullMode = VK_CULL_MODE_NONE,
-            .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            .cullMode = vk_cull_mode.value(),
+            .frontFace = vk_front_face.value(),
             .depthBiasEnable = VK_FALSE,
             .depthBiasConstantFactor = 0.0f,
             .depthBiasClamp = 0.0f,
@@ -4215,13 +4275,13 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             .alphaToOneEnable = VK_FALSE,
         };
         VkPipelineColorBlendAttachmentState color_blend_attachment {
-            .blendEnable = VK_TRUE,
-            .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-            .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .colorBlendOp = VK_BLEND_OP_ADD,
-            .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-            .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .alphaBlendOp = VK_BLEND_OP_ADD,
+            .blendEnable = pipeline_state.blend_enabled ? VK_TRUE : VK_FALSE,
+            .srcColorBlendFactor = vk_src_color_factor.value(),
+            .dstColorBlendFactor = vk_dst_color_factor.value(),
+            .colorBlendOp = vk_color_blend_op.value(),
+            .srcAlphaBlendFactor = vk_src_alpha_factor.value(),
+            .dstAlphaBlendFactor = vk_dst_alpha_factor.value(),
+            .alphaBlendOp = vk_alpha_blend_op.value(),
             .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
         };
         VkPipelineColorBlendStateCreateInfo color_blending {
@@ -4233,6 +4293,20 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             .attachmentCount = 1,
             .pAttachments = &color_blend_attachment,
             .blendConstants = { 0, 0, 0, 0 },
+        };
+        VkPipelineDepthStencilStateCreateInfo depth_stencil_state {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .depthTestEnable = uses_depth ? VK_TRUE : VK_FALSE,
+            .depthWriteEnable = pipeline_state.depth_write_enabled ? VK_TRUE : VK_FALSE,
+            .depthCompareOp = vk_depth_compare_op.value(),
+            .depthBoundsTestEnable = VK_FALSE,
+            .stencilTestEnable = VK_FALSE,
+            .front = {},
+            .back = {},
+            .minDepthBounds = 0.0f,
+            .maxDepthBounds = 1.0f,
         };
         VkDynamicState dynamic_states[] { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
         VkPipelineDynamicStateCreateInfo dynamic_state {
@@ -4254,7 +4328,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             .pViewportState = &viewport_state,
             .pRasterizationState = &rasterizer,
             .pMultisampleState = &multisampling,
-            .pDepthStencilState = nullptr,
+            .pDepthStencilState = uses_depth ? &depth_stencil_state : nullptr,
             .pColorBlendState = &color_blending,
             .pDynamicState = &dynamic_state,
             .layout = s_resources.pipeline_layout,
@@ -4318,6 +4392,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         s_resources.device = context.logical_device;
         s_resources.destination_format = format;
         s_resources.uses_alpha = uses_alpha;
+        s_resources.uses_depth = uses_depth;
+        s_resources.depth_format = depth_format;
         s_resources.pipeline_state_signature = pipeline_state_signature;
     }
 
@@ -4366,11 +4442,12 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         if (result != VK_SUCCESS)
             return log_failure("create_textured_alpha_image_view_failed"sv, result);
     }
-    if (s_resources.target_framebuffer == VK_NULL_HANDLE
-        || s_resources.target_framebuffer_image != target_image->image
-        || s_resources.target_framebuffer_render_pass != s_resources.render_pass
-        || s_resources.target_framebuffer_width != target_image->info.extent.width
-        || s_resources.target_framebuffer_height != target_image->info.extent.height) {
+    if (s_resources.uses_depth
+        && (s_resources.depth_image == VK_NULL_HANDLE
+            || s_resources.depth_image_view == VK_NULL_HANDLE
+            || s_resources.depth_width != target_image->info.extent.width
+            || s_resources.depth_height != target_image->info.extent.height
+            || s_resources.depth_format != VK_FORMAT_D32_SFLOAT)) {
         if (s_resources.target_framebuffer != VK_NULL_HANDLE) {
             for (auto fence : s_resources.ring_fences) {
                 if (fence != VK_NULL_HANDLE)
@@ -4379,13 +4456,108 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             vkDestroyFramebuffer(context.logical_device, s_resources.target_framebuffer, nullptr);
             s_resources.target_framebuffer = VK_NULL_HANDLE;
         }
+        if (s_resources.depth_image_view != VK_NULL_HANDLE) {
+            vkDestroyImageView(context.logical_device, s_resources.depth_image_view, nullptr);
+            s_resources.depth_image_view = VK_NULL_HANDLE;
+        }
+        if (s_resources.depth_image != VK_NULL_HANDLE) {
+            vkDestroyImage(context.logical_device, s_resources.depth_image, nullptr);
+            s_resources.depth_image = VK_NULL_HANDLE;
+        }
+        if (s_resources.depth_memory != VK_NULL_HANDLE) {
+            vkFreeMemory(context.logical_device, s_resources.depth_memory, nullptr);
+            s_resources.depth_memory = VK_NULL_HANDLE;
+        }
+
+        VkImageCreateInfo depth_image_info {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_D32_SFLOAT,
+            .extent = { .width = target_image->info.extent.width, .height = target_image->info.extent.height, .depth = 1 },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        result = vkCreateImage(context.logical_device, &depth_image_info, nullptr, &s_resources.depth_image);
+        if (result != VK_SUCCESS)
+            return log_failure("create_textured_depth_image_failed"sv, result);
+
+        VkMemoryRequirements depth_memory_requirements;
+        vkGetImageMemoryRequirements(context.logical_device, s_resources.depth_image, &depth_memory_requirements);
+        VkPhysicalDeviceMemoryProperties memory_properties;
+        vkGetPhysicalDeviceMemoryProperties(context.physical_device, &memory_properties);
+        Optional<u32> memory_type_index;
+        for (u32 i = 0; i < memory_properties.memoryTypeCount; ++i) {
+            auto const property_flags = memory_properties.memoryTypes[i].propertyFlags;
+            if ((depth_memory_requirements.memoryTypeBits & (1u << i)) && (property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+                memory_type_index = i;
+                break;
+            }
+        }
+        if (!memory_type_index.has_value())
+            return log_failure("find_textured_depth_memory_type_failed"sv);
+
+        VkMemoryAllocateInfo depth_memory_allocate_info {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .allocationSize = depth_memory_requirements.size,
+            .memoryTypeIndex = memory_type_index.value(),
+        };
+        result = vkAllocateMemory(context.logical_device, &depth_memory_allocate_info, nullptr, &s_resources.depth_memory);
+        if (result != VK_SUCCESS)
+            return log_failure("allocate_textured_depth_memory_failed"sv, result);
+        result = vkBindImageMemory(context.logical_device, s_resources.depth_image, s_resources.depth_memory, 0);
+        if (result != VK_SUCCESS)
+            return log_failure("bind_textured_depth_memory_failed"sv, result);
+
+        VkImageViewCreateInfo depth_image_view_info {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = s_resources.depth_image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_D32_SFLOAT,
+            .components = { .r = VK_COMPONENT_SWIZZLE_IDENTITY, .g = VK_COMPONENT_SWIZZLE_IDENTITY, .b = VK_COMPONENT_SWIZZLE_IDENTITY, .a = VK_COMPONENT_SWIZZLE_IDENTITY },
+            .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 },
+        };
+        result = vkCreateImageView(context.logical_device, &depth_image_view_info, nullptr, &s_resources.depth_image_view);
+        if (result != VK_SUCCESS)
+            return log_failure("create_textured_depth_image_view_failed"sv, result);
+
+        s_resources.depth_format = VK_FORMAT_D32_SFLOAT;
+        s_resources.depth_width = target_image->info.extent.width;
+        s_resources.depth_height = target_image->info.extent.height;
+    }
+    if (s_resources.target_framebuffer == VK_NULL_HANDLE
+        || s_resources.target_framebuffer_image != target_image->image
+        || s_resources.target_framebuffer_render_pass != s_resources.render_pass
+        || s_resources.target_framebuffer_width != target_image->info.extent.width
+        || s_resources.target_framebuffer_height != target_image->info.extent.height
+        || (s_resources.uses_depth && s_resources.depth_image_view == VK_NULL_HANDLE)) {
+        if (s_resources.target_framebuffer != VK_NULL_HANDLE) {
+            for (auto fence : s_resources.ring_fences) {
+                if (fence != VK_NULL_HANDLE)
+                    vkWaitForFences(context.logical_device, 1, &fence, VK_TRUE, UINT64_MAX);
+            }
+            vkDestroyFramebuffer(context.logical_device, s_resources.target_framebuffer, nullptr);
+            s_resources.target_framebuffer = VK_NULL_HANDLE;
+        }
+        Array<VkImageView, 2> framebuffer_attachments { target_image->cached_solid_mesh_color_attachment_view, s_resources.depth_image_view };
         VkFramebufferCreateInfo framebuffer_info {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
             .renderPass = s_resources.render_pass,
-            .attachmentCount = 1,
-            .pAttachments = &target_image->cached_solid_mesh_color_attachment_view,
+            .attachmentCount = s_resources.uses_depth ? 2u : 1u,
+            .pAttachments = framebuffer_attachments.data(),
             .width = target_image->info.extent.width,
             .height = target_image->info.extent.height,
             .layers = 1,
@@ -4549,14 +4721,18 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &pre_barriers[2]);
     }
 
+    Array<VkClearValue, 2> clear_values {
+        VkClearValue { .color = { { 0.0f, 0.0f, 0.0f, 0.0f } } },
+        VkClearValue { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
+    };
     VkRenderPassBeginInfo render_pass_begin {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .pNext = nullptr,
         .renderPass = s_resources.render_pass,
         .framebuffer = s_resources.target_framebuffer,
         .renderArea = { .offset = { 0, 0 }, .extent = { target_image->info.extent.width, target_image->info.extent.height } },
-        .clearValueCount = 0,
-        .pClearValues = nullptr,
+        .clearValueCount = s_resources.uses_depth ? 2u : 0u,
+        .pClearValues = s_resources.uses_depth ? clear_values.data() : nullptr,
     };
     vkCmdBeginRenderPass(command_buffer, &render_pass_begin, VK_SUBPASS_CONTENTS_INLINE);
     VkViewport viewport {
