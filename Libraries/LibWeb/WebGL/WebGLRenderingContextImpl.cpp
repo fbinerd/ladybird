@@ -3877,13 +3877,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 return false;
 
             m_context->note_direct_vulkan_video_draw_submitted();
-            if (mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS"))
+            if (mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS")
+                && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"))
                 return true;
 
             static size_t s_textured_replay_validate_only_count { 0 };
             auto validate_only_count = ++s_textured_replay_validate_only_count;
             if (validate_only_count <= 24 || validate_only_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_VALIDATE_ONLY count={} program={} source_texture={} reason=vulkan_replay_executed_but_gl_draw_kept_for_visual_parity next_step=compare_panel_visibility_before_enabling_replace_gl_draws",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_VALIDATE_ONLY count={} program={} source_texture={} reason=vulkan_replay_executed_but_gl_draw_kept_for_panel_parity next_step=enable_UNSAFE_replace_only_after_textured_panel_visual_parity",
                     validate_only_count,
                     program_handle,
                     source_texture_handle);
@@ -3895,7 +3896,9 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             return;
         }
 #endif
-        auto replace_post_direct_render_target_gl_draws = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_RENDER_TARGET_GL_DRAWS");
+        auto replay_post_direct_render_target_draws = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_RENDER_TARGET_GL_DRAWS");
+        auto replace_post_direct_render_target_gl_draws = replay_post_direct_render_target_draws
+            && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_RENDER_TARGET_GL_DRAWS_UNSAFE");
         if (gl_after_direct_vulkan_video && note_mundo_framebuffer_draw("drawElements", mode, count, type, offset, replace_post_direct_render_target_gl_draws)) {
             static size_t s_post_direct_render_target_replay_skip_count { 0 };
             auto skip_count = ++s_post_direct_render_target_replay_skip_count;
@@ -3916,6 +3919,24 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             m_context->note_direct_vulkan_video_draw_submitted();
             needs_to_present();
             return;
+        }
+        if (gl_after_direct_vulkan_video && replay_post_direct_render_target_draws && !replace_post_direct_render_target_gl_draws) {
+            static size_t s_post_direct_render_target_replay_validate_only_count { 0 };
+            auto validate_only_count = ++s_post_direct_render_target_replay_validate_only_count;
+            if (validate_only_count <= 24 || validate_only_count % 120 == 0) {
+                GLuint program_handle = 0;
+                if (m_current_program) {
+                    auto handle_or_error = m_current_program->handle(this);
+                    if (!handle_or_error.is_error())
+                        program_handle = handle_or_error.value();
+                }
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_RENDER_TARGET_REPLAY_VALIDATE_ONLY count={} program={} draw_count={} type={} offset={} reason=vulkan_render_target_replay_kept_gl_for_panel_parity next_step=enable_UNSAFE_replace_only_after_visual_parity",
+                    validate_only_count,
+                    program_handle,
+                    count,
+                    type,
+                    offset);
+            }
         }
         if (gl_after_direct_vulkan_video
             && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_INCOMPLETE_TEXTURE_DRAW")
