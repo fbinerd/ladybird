@@ -144,6 +144,18 @@ public:
         Array<float, 4> ui_transform { 1.0f, 1.0f, 0.0f, 0.0f };
         Array<float, 4> ui_layout_center { 0.0f, 0.0f, 0.0f, 0.0f };
     };
+    struct VulkanTexturedMeshPipelineState {
+        bool cull_face_enabled { false };
+        u32 cull_face_mode { 0 };
+        u32 front_face { 0 };
+        bool blend_enabled { true };
+        u32 blend_src_rgb { 0 };
+        u32 blend_dst_rgb { 0 };
+        u32 blend_src_alpha { 0 };
+        u32 blend_dst_alpha { 0 };
+        u32 blend_equation_rgb { 0 };
+        u32 blend_equation_alpha { 0 };
+    };
 
     void probe_video_opaque_fd_texture_import(u32 width, u32 height, u32 uv_width, u32 uv_height, size_t log_count);
     ErrorOr<ImportedVideoOpaqueFDTexture> create_imported_video_opaque_fd_texture(u32 width, u32 height, u32 vulkan_format, u32 gl_internal_format, char const* label, size_t log_count);
@@ -162,7 +174,7 @@ public:
     VulkanVideoMeshPipelineProbeResult probe_vulkan_video_mesh_pipeline(u64 frame_id, u32 destination_format, VkImage source_image, VkImageView source_image_view, VkSampler immutable_sampler, u32 source_layout, VulkanVideoMeshUniformSnapshot const&, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count);
     VulkanVideoMeshPipelineProbeResult probe_vulkan_solid_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const&, ReadonlyBytes position_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, bool cull_face_enabled = false, u32 cull_face_mode = 0, u32 front_face = 0, Gfx::VulkanImage* target_image_override = nullptr);
     VulkanVideoMeshPipelineProbeResult probe_vulkan_colored_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const&, ReadonlyBytes position_data, ReadonlyBytes color_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* target_image_override = nullptr);
-    VulkanVideoMeshPipelineProbeResult probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage&, VulkanSolidMeshUniformSnapshot const&, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* alpha_image = nullptr, Gfx::VulkanImage* target_image_override = nullptr);
+    VulkanVideoMeshPipelineProbeResult probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage&, VulkanSolidMeshUniformSnapshot const&, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* alpha_image, Gfx::VulkanImage* target_image_override, VulkanTexturedMeshPipelineState);
     Optional<u32> vulkan_painting_surface_format() const;
     void delete_imported_video_opaque_fd_texture(ImportedVideoOpaqueFDTexture&);
 #endif

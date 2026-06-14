@@ -3645,7 +3645,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
     };
 }
 
-OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage& source_image, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* alpha_image, Gfx::VulkanImage* target_image_override)
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage& source_image, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* alpha_image, Gfx::VulkanImage* target_image_override, VulkanTexturedMeshPipelineState pipeline_state)
 {
     struct TexturedReplayDiagnostics {
         bool valid { false };
@@ -3701,6 +3701,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         u32 target_framebuffer_width { 0 };
         u32 target_framebuffer_height { 0 };
         bool uses_alpha { false };
+        unsigned pipeline_state_signature { 0 };
         VkCommandPool ring_command_pool { VK_NULL_HANDLE };
         Array<VkCommandBuffer, textured_ring_slot_count> ring_command_buffers {};
         Array<VkFence, textured_ring_slot_count> ring_fences {};
@@ -3720,6 +3721,95 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     auto format = static_cast<VkFormat>(destination_format);
     VkResult result { VK_SUCCESS };
     TexturedReplayDiagnostics diagnostics;
+
+    if (pipeline_state.blend_enabled
+        && pipeline_state.blend_src_rgb == 0
+        && pipeline_state.blend_dst_rgb == 0
+        && pipeline_state.blend_src_alpha == 0
+        && pipeline_state.blend_dst_alpha == 0
+        && pipeline_state.blend_equation_rgb == 0
+        && pipeline_state.blend_equation_alpha == 0) {
+        pipeline_state.blend_src_rgb = GL_SRC_ALPHA;
+        pipeline_state.blend_dst_rgb = GL_ONE_MINUS_SRC_ALPHA;
+        pipeline_state.blend_src_alpha = GL_ONE;
+        pipeline_state.blend_dst_alpha = GL_ONE_MINUS_SRC_ALPHA;
+        pipeline_state.blend_equation_rgb = GL_FUNC_ADD;
+        pipeline_state.blend_equation_alpha = GL_FUNC_ADD;
+    }
+    if (pipeline_state.cull_face_enabled && pipeline_state.cull_face_mode == 0)
+        pipeline_state.cull_face_mode = GL_BACK;
+    if (pipeline_state.cull_face_enabled && pipeline_state.front_face == 0)
+        pipeline_state.front_face = GL_CCW;
+
+    auto map_blend_factor = [](u32 factor) -> Optional<VkBlendFactor> {
+        switch (factor) {
+        case GL_ZERO:
+            return VK_BLEND_FACTOR_ZERO;
+        case GL_ONE:
+            return VK_BLEND_FACTOR_ONE;
+        case GL_SRC_ALPHA:
+            return VK_BLEND_FACTOR_SRC_ALPHA;
+        case GL_ONE_MINUS_SRC_ALPHA:
+            return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        case GL_DST_ALPHA:
+            return VK_BLEND_FACTOR_DST_ALPHA;
+        case GL_ONE_MINUS_DST_ALPHA:
+            return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        case GL_SRC_COLOR:
+            return VK_BLEND_FACTOR_SRC_COLOR;
+        case GL_ONE_MINUS_SRC_COLOR:
+            return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        case GL_DST_COLOR:
+            return VK_BLEND_FACTOR_DST_COLOR;
+        case GL_ONE_MINUS_DST_COLOR:
+            return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+        default:
+            return {};
+        }
+    };
+    auto map_blend_op = [](u32 op) -> Optional<VkBlendOp> {
+        switch (op) {
+        case GL_FUNC_ADD:
+            return VK_BLEND_OP_ADD;
+        case GL_FUNC_SUBTRACT:
+            return VK_BLEND_OP_SUBTRACT;
+        case GL_FUNC_REVERSE_SUBTRACT:
+            return VK_BLEND_OP_REVERSE_SUBTRACT;
+        default:
+            return {};
+        }
+    };
+    auto map_cull_mode = [](bool enabled, u32 mode) -> Optional<VkCullModeFlags> {
+        if (!enabled)
+            return VK_CULL_MODE_NONE;
+        switch (mode) {
+        case GL_BACK:
+            return VK_CULL_MODE_BACK_BIT;
+        case GL_FRONT:
+            return VK_CULL_MODE_FRONT_BIT;
+        case GL_FRONT_AND_BACK:
+            return VK_CULL_MODE_FRONT_AND_BACK;
+        default:
+            return {};
+        }
+    };
+    auto map_front_face = [](bool enabled, u32 front_face) -> Optional<VkFrontFace> {
+        if (!enabled)
+            return VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        switch (front_face) {
+        case GL_CCW:
+            return VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        case GL_CW:
+            return VK_FRONT_FACE_CLOCKWISE;
+        default:
+            return {};
+        }
+    };
+    auto pipeline_state_signature = pair_int_hash(
+        u32_hash(pipeline_state.blend_enabled ? 1 : 0),
+        pair_int_hash(
+            pair_int_hash(pipeline_state.blend_src_rgb, pair_int_hash(pipeline_state.blend_dst_rgb, pipeline_state.blend_src_alpha)),
+            pair_int_hash(pair_int_hash(pipeline_state.blend_dst_alpha, pipeline_state.blend_equation_rgb), pair_int_hash(pipeline_state.blend_equation_alpha, pair_int_hash(pipeline_state.cull_face_enabled ? 1 : 0, pair_int_hash(pipeline_state.cull_face_mode, pipeline_state.front_face))))));
 
     auto read_float = [](ReadonlyBytes bytes, size_t offset) {
         float value { 0.0f };
@@ -3827,6 +3917,24 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     if (alpha_image && !(alpha_image->info.usage & VK_IMAGE_USAGE_SAMPLED_BIT))
         return log_failure("alpha_image_not_sampled_usage"sv);
 
+    auto vk_src_color_factor = map_blend_factor(pipeline_state.blend_src_rgb);
+    auto vk_dst_color_factor = map_blend_factor(pipeline_state.blend_dst_rgb);
+    auto vk_src_alpha_factor = map_blend_factor(pipeline_state.blend_src_alpha);
+    auto vk_dst_alpha_factor = map_blend_factor(pipeline_state.blend_dst_alpha);
+    auto vk_color_blend_op = map_blend_op(pipeline_state.blend_equation_rgb);
+    auto vk_alpha_blend_op = map_blend_op(pipeline_state.blend_equation_alpha);
+    auto vk_cull_mode = map_cull_mode(pipeline_state.cull_face_enabled, pipeline_state.cull_face_mode);
+    auto vk_front_face = map_front_face(pipeline_state.cull_face_enabled, pipeline_state.front_face);
+    if (!vk_src_color_factor.has_value()
+        || !vk_dst_color_factor.has_value()
+        || !vk_src_alpha_factor.has_value()
+        || !vk_dst_alpha_factor.has_value()
+        || !vk_color_blend_op.has_value()
+        || !vk_alpha_blend_op.has_value())
+        return log_failure("unsupported_textured_blend_state"sv);
+    if (!vk_cull_mode.has_value() || !vk_front_face.has_value())
+        return log_failure("unsupported_textured_cull_state"sv);
+
     RefPtr<Gfx::VulkanImage> painting_surface_target_image;
     auto* target_image = target_image_override;
     if (!target_image && m_painting_surface) {
@@ -3922,7 +4030,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     };
     if (s_resources.pipeline != VK_NULL_HANDLE) {
         auto matches = s_resources.device == context.logical_device
-            && s_resources.destination_format == format;
+            && s_resources.destination_format == format
+            && s_resources.pipeline_state_signature == pipeline_state_signature;
         if (!matches) {
             reset_textured_pipeline_resources(s_resources);
             pipeline_cache_status = "recreated"sv;
@@ -4209,6 +4318,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         s_resources.device = context.logical_device;
         s_resources.destination_format = format;
         s_resources.uses_alpha = uses_alpha;
+        s_resources.pipeline_state_signature = pipeline_state_signature;
     }
 
     if (source_image.cached_solid_mesh_color_attachment_view == VK_NULL_HANDLE) {

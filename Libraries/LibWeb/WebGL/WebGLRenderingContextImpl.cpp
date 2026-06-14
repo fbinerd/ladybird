@@ -1878,7 +1878,7 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                             auto* target_image_texture = target_image_or_error.release_value();
                             auto* target_image_override = target_image_texture->image.ptr();
                             auto target_format = to_underlying(target_image_override->info.format);
-                            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(target_format, *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], static_textured_attempt_count, nullptr, target_image_override);
+                            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(target_format, *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], static_textured_attempt_count, nullptr, target_image_override, {});
                             if (should_log_static_textured_replay) {
                                 dbgln("MUNDO_WEBGL_RENDER_TARGET_STATIC_TEXTURED_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} vulkan_write_count={} program={} snapshot_texture={} source_size={}x{} target_size={}x{} attempted={} supported={} executed={} reason={} next_step={}",
                                     static_textured_attempt_count,
@@ -2092,7 +2092,7 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 }
             } else {
                 auto* source_image_texture = source_image_or_error.release_value();
-                auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], textured_attempt_count);
+                auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], textured_attempt_count, nullptr, nullptr, {});
                 if (textured_attempt_count <= 24 || textured_attempt_count % 120 == 0) {
                     dbgln("MUNDO_WEBGL_RENDER_TARGET_TEXTURED_CONSUMER_PROBE_RESULT count={} color_texture={} write_count={} program={} sampled_render_target_texture={} attempted={} supported={} executed={} reason={} next_step={}",
                         textured_attempt_count,
@@ -3568,15 +3568,34 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && color_write_mask[1] == GL_TRUE
                 && color_write_mask[2] == GL_TRUE
                 && color_write_mask[3] == GL_TRUE;
+            auto blend_factor_supported = [](GLint factor) {
+                return factor == GL_ZERO
+                    || factor == GL_ONE
+                    || factor == GL_SRC_ALPHA
+                    || factor == GL_ONE_MINUS_SRC_ALPHA
+                    || factor == GL_DST_ALPHA
+                    || factor == GL_ONE_MINUS_DST_ALPHA
+                    || factor == GL_SRC_COLOR
+                    || factor == GL_ONE_MINUS_SRC_COLOR
+                    || factor == GL_DST_COLOR
+                    || factor == GL_ONE_MINUS_DST_COLOR;
+            };
+            auto blend_equation_supported = [](GLint equation) {
+                return equation == GL_FUNC_ADD
+                    || equation == GL_FUNC_SUBTRACT
+                    || equation == GL_FUNC_REVERSE_SUBTRACT;
+            };
             auto blend_state_supported = blend_enabled
-                && blend_src_rgb == GL_SRC_ALPHA
-                && blend_dst_rgb == GL_ONE_MINUS_SRC_ALPHA
-                && blend_src_alpha == GL_ONE
-                && blend_dst_alpha == GL_ONE_MINUS_SRC_ALPHA
-                && blend_equation_rgb == GL_FUNC_ADD
-                && blend_equation_alpha == GL_FUNC_ADD;
+                && blend_factor_supported(blend_src_rgb)
+                && blend_factor_supported(blend_dst_rgb)
+                && blend_factor_supported(blend_src_alpha)
+                && blend_factor_supported(blend_dst_alpha)
+                && blend_equation_supported(blend_equation_rgb)
+                && blend_equation_supported(blend_equation_alpha);
             auto depth_state_supported = !depth_test_enabled;
-            auto cull_state_supported = !cull_face_enabled;
+            auto cull_state_supported = !cull_face_enabled
+                || ((cull_face_mode == GL_BACK || cull_face_mode == GL_FRONT || cull_face_mode == GL_FRONT_AND_BACK)
+                    && (front_face == GL_CCW || front_face == GL_CW));
             auto textured_gl_state_supported = color_mask_supported
                 && blend_state_supported
                 && depth_state_supported
@@ -3758,7 +3777,19 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     return false;
                 alpha_image = alpha_image_or_error.release_value()->image.ptr();
             }
-            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, alpha_image);
+            OpenGLContext::VulkanTexturedMeshPipelineState pipeline_state {
+                .cull_face_enabled = cull_face_enabled,
+                .cull_face_mode = static_cast<u32>(cull_face_mode),
+                .front_face = static_cast<u32>(front_face),
+                .blend_enabled = blend_enabled,
+                .blend_src_rgb = static_cast<u32>(blend_src_rgb),
+                .blend_dst_rgb = static_cast<u32>(blend_dst_rgb),
+                .blend_src_alpha = static_cast<u32>(blend_src_alpha),
+                .blend_dst_alpha = static_cast<u32>(blend_dst_alpha),
+                .blend_equation_rgb = static_cast<u32>(blend_equation_rgb),
+                .blend_equation_alpha = static_cast<u32>(blend_equation_alpha),
+            };
+            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, alpha_image, nullptr, pipeline_state);
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
                 dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_PROBE_RESULT count={} program={} source_texture={} attempted={} supported={} executed={} reason={} next_step={}",
                     attempt_count,
