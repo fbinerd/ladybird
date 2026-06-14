@@ -34,6 +34,25 @@ static bool mundo_nvdec_backend_requested()
     return !strcmp(raw_backend, "nvdec") || !strcmp(raw_backend, "cuda");
 }
 
+static bool mundo_env_flag_enabled(char const* name)
+{
+    auto const* raw_value = getenv(name);
+    if (!raw_value)
+        return false;
+    auto value = StringView { raw_value, strlen(raw_value) };
+    return value != "0"sv && !value.equals_ignoring_ascii_case("false"sv) && !value.equals_ignoring_ascii_case("no"sv);
+}
+
+static bool mundo_mse_mp4_probe_support_enabled()
+{
+    return mundo_env_flag_enabled("MUNDO_MSE_MP4_PROBE_SUPPORT");
+}
+
+static bool mundo_mse_has_byte_stream_parser(MimeSniff::MimeType const& mime_type)
+{
+    return mime_type.subtype() == "webm"sv;
+}
+
 static Optional<unsigned> mundo_avc_codec_level_idc(StringView codec)
 {
     auto dot_offset = codec.find('.');
@@ -296,6 +315,11 @@ WebIDL::ExceptionOr<GC::Ref<SourceBuffer>> MediaSource::add_source_buffer(String
         dbgln("MUNDO_MEDIA_SOURCE add_source_buffer failed type={} reason=unsupported_type", type);
         return WebIDL::NotSupportedError::create(realm(), "Unsupported MIME type"_utf16);
     }
+    auto mime_type = MimeSniff::MimeType::parse(type);
+    if (!mime_type.has_value() || !mundo_mse_has_byte_stream_parser(*mime_type)) {
+        dbgln("MUNDO_MEDIA_SOURCE add_source_buffer failed type={} reason=unsupported_byte_stream_parser", type);
+        return WebIDL::NotSupportedError::create(realm(), "Unsupported byte stream format"_utf16);
+    }
 
     // FIXME: 3. If the user agent can't handle any more SourceBuffer objects or if creating a SourceBuffer
     //           based on type would result in an unsupported SourceBuffer configuration, then throw a
@@ -485,6 +509,10 @@ bool MediaSource::is_type_supported(String const& type)
             return true;
         if (mime_type->type() == "audio" && mime_type->subtype() == "webm")
             return true;
+        if (mime_type->type() == "video" && mime_type->subtype() == "mp4" && mundo_mse_mp4_probe_support_enabled())
+            return true;
+        if (mime_type->type() == "audio" && mime_type->subtype() == "mp4" && mundo_mse_mp4_probe_support_enabled())
+            return true;
         return false;
     }();
     if (!type_and_subtype_are_supported) {
@@ -512,7 +540,10 @@ bool MediaSource::is_type_supported(String const& type)
     }
 
     // 6. Return true.
-    dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=true", type);
+    if (mime_type->subtype() == "mp4" && !mundo_mse_has_byte_stream_parser(*mime_type))
+        dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=true reason=mp4_probe_only_no_byte_stream_parser", type);
+    else
+        dbgln("MUNDO_MEDIA_SOURCE is_type_supported type={} result=true", type);
     return true;
 }
 
