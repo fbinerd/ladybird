@@ -3196,17 +3196,6 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
         auto try_post_direct_vulkan_textured_render_target_replay = [&]() -> bool {
             if (!direct_vulkan_mesh_mode || !gl_after_direct_vulkan_video || vulkan_video_draw_used_sampler)
                 return false;
-            if (!(m_texture_binding_2d && !m_texture_binding_2d->has_hardware_video_backing()))
-                return false;
-            auto const& render_target_state = m_texture_binding_2d->mundo_render_target_write_state();
-            if (!render_target_state.has_value())
-                return false;
-
-            GLuint source_texture_handle = 0;
-            auto source_handle_or_error = m_texture_binding_2d->handle(this);
-            if (source_handle_or_error.is_error())
-                return false;
-            source_texture_handle = source_handle_or_error.value();
 
             GLuint program_handle = 0;
             if (m_current_program) {
@@ -3218,12 +3207,55 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             if (!program_handle)
                 return false;
 
-            GLint active_attrib_count = 0;
             GLint active_uniform_count = 0;
+            glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
+
+            GC::Ptr<WebGLTexture> source_texture = nullptr;
+            if (m_texture_binding_2d && !m_texture_binding_2d->has_hardware_video_backing() && m_texture_binding_2d->mundo_render_target_write_state().has_value())
+                source_texture = m_texture_binding_2d;
+
+            if (!source_texture) {
+                auto uniforms_to_scan_for_source = active_uniform_count < 16 ? active_uniform_count : 16;
+                for (GLint index = 0; index < uniforms_to_scan_for_source; ++index) {
+                    GLint uniform_size = 0;
+                    GLenum uniform_type = 0;
+                    GLsizei uniform_length = 0;
+                    GLchar uniform_name[256];
+                    glGetActiveUniform(program_handle, static_cast<GLuint>(index), sizeof(uniform_name), &uniform_length, &uniform_size, &uniform_type, uniform_name);
+                    if (!uniform_length || !mundo_webgl_is_sampler_uniform_type(uniform_type))
+                        continue;
+                    auto location = glGetUniformLocation(program_handle, uniform_name);
+                    if (location < 0)
+                        continue;
+                    GLint sampler_unit = -1;
+                    glGetUniformiv(program_handle, location, &sampler_unit);
+                    if (sampler_unit < 0 || static_cast<size_t>(sampler_unit) >= m_mundo_texture_binding_2d_by_unit.size())
+                        continue;
+                    auto sampler_texture = m_mundo_texture_binding_2d_by_unit[static_cast<size_t>(sampler_unit)];
+                    if (!sampler_texture || sampler_texture->has_hardware_video_backing())
+                        continue;
+                    if (sampler_texture->mundo_render_target_write_state().has_value()) {
+                        source_texture = sampler_texture;
+                        break;
+                    }
+                }
+            }
+            if (!source_texture)
+                return false;
+
+            auto const& render_target_state = source_texture->mundo_render_target_write_state();
+            if (!render_target_state.has_value())
+                return false;
+
+            auto source_handle_or_error = source_texture->handle(this);
+            if (source_handle_or_error.is_error())
+                return false;
+            auto source_texture_handle = source_handle_or_error.value();
+
+            GLint active_attrib_count = 0;
             GLint element_array_buffer = 0;
             GLint viewport[4] {};
             glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_ATTRIBUTES, 1, nullptr, &active_attrib_count);
-            glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
             glGetIntegervRobustANGLE(GL_ELEMENT_ARRAY_BUFFER_BINDING, 1, nullptr, &element_array_buffer);
             glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
 
