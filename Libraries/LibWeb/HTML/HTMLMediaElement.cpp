@@ -627,7 +627,9 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
         auto stack = mundo_media_stack_trace(realm().vm());
         dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} src_attribute_changed old={} new={} current_src={} stack={}", static_cast<void const*>(this), document().url_string(), old_value.value_or(String {}), value.value(), m_current_src, stack);
         auto trimmed_value = value->bytes_as_string_view().trim_whitespace();
-        if (trimmed_value.is_empty() && (m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv))) {
+        if (trimmed_value.is_empty()
+            && (m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv))
+            && !paused()) {
             dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring empty HLS src attribute while current_src={} pending_hls_src={} is active stack={}", static_cast<void const*>(this), document().url_string(), m_current_src, m_mundo_last_hls_src_attribute, stack);
             if (mundo_is_vr_hls_url(m_current_src))
                 document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("empty_vr_hls_src_ignored");
@@ -1260,7 +1262,7 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
     if (m_current_src.contains(".m3u8"sv) && has_attribute(HTML::AttributeNames::src)) {
         auto source = get_attribute_value(HTML::AttributeNames::src);
         auto trimmed_source = source.bytes_as_string_view().trim_whitespace();
-        if (trimmed_source.is_empty()) {
+        if (trimmed_source.is_empty() && !paused()) {
             dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring load() with empty src while current_src={} is active", static_cast<void const*>(this), m_current_src);
             if (mundo_is_vr_hls_url(m_current_src))
                 document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("empty_vr_hls_load_ignored");
@@ -1689,8 +1691,10 @@ void HTMLMediaElement::select_resource()
             // 3. ⌛ If urlRecord is not failure, then set the currentSrc attribute to the result of applying the URL serializer to urlRecord.
             if (url_record.has_value())
                 m_current_src = url_record->serialize();
-            if (mundo_is_vr_hls_url(m_current_src))
+            if (mundo_is_vr_hls_url(m_current_src)) {
                 document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("selected_vr_hls_source");
+                document().page().pause_other_hls_media_elements_for_active_vr(*this, "selected_vr_hls_source");
+            }
 
             // 4. End the synchronous section, continuing the remaining steps in parallel.
 

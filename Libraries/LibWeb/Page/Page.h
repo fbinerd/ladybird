@@ -206,6 +206,7 @@ public:
     bool has_potentially_playing_video_media() const;
     bool has_active_vr_hls_playback_excluding(HTML::HTMLMediaElement const&) const;
     void pause_auxiliary_hls_media_elements_if_vr_hls_present(char const* reason = nullptr);
+    void pause_other_hls_media_elements_for_active_vr(HTML::HTMLMediaElement const&, char const* reason = nullptr);
     void update_all_media_element_video_sinks(bool force = false, char const* reason = nullptr);
     void ensure_media_video_service_timer();
     void stop_media_video_service_timer();
