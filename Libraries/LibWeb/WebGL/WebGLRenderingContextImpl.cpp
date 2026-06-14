@@ -3230,7 +3230,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 }
                 return true;
             }
-            auto skip_black_render_target_solid = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_BLACK_RENDER_TARGET_SOLID")
+            auto skip_black_render_target_solid = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_BLACK_RENDER_TARGET_SOLID")
                 && bound_texture_render_target_written
                 && uniform_snapshot.diffuse[0] == 0.0f
                 && uniform_snapshot.diffuse[1] == 0.0f

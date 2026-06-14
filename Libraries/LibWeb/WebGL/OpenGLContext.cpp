@@ -87,6 +87,24 @@ static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
     return view == "1"sv || view == "auto"sv;
 }
 
+static float mundo_webgl_colored_ui_transform_mode(float captured_ui_transform_mode)
+{
+    if (captured_ui_transform_mode <= 0.5f)
+        return 0.0f;
+
+    auto const* value = getenv("MUNDO_WEBGL_COLORED_UI_TRANSFORM_MODE");
+    if (!value)
+        return 1.0f;
+
+    auto view = StringView { value, strlen(value) };
+    if (view == "0"sv || view == "matrix"sv || view == "matrices"sv)
+        return 0.0f;
+    if (view == "2"sv || view == "ui_only"sv || view == "ui-only"sv)
+        return 2.0f;
+
+    return 1.0f;
+}
+
 static constexpr u32 s_mundo_video_nv12_mesh_vertex_shader_spirv[] {
     0x07230203, 0x00010000, 0x0008000b, 0x0000004b, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
     0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
@@ -3073,6 +3091,10 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
         float opacity { 1.0f };
         float output_intensity { 1.0f };
         float _pad0 { 0.0f };
+        Array<float, 4> ui_position_use_tint { 0.0f, 0.0f, 0.0f, 0.0f };
+        Array<float, 4> ui_scale_clip { 1.0f, 1.0f, 0.0f, 0.0f };
+        Array<float, 4> ui_transform { 1.0f, 1.0f, 0.0f, 0.0f };
+        Array<float, 4> ui_layout_center { 0.0f, 0.0f, 0.0f, 0.0f };
     };
     constexpr size_t colored_ring_slot_count = 3;
     struct ColoredPipelineResources {
@@ -3510,15 +3532,21 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
     vkCmdSetViewport(command_buffer, 0, 1, &viewport);
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, s_resources.pipeline);
+    auto ui_transform_mode = mundo_webgl_colored_ui_transform_mode(uniform_snapshot.ui_transform[3]);
     ColoredPushConstants push_constants {
         .model_view_matrix = uniform_snapshot.model_view_matrix,
         .projection_matrix = uniform_snapshot.projection_matrix,
         .diffuse = uniform_snapshot.diffuse,
-        .use_matrices = uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix ? 1.0f : 0.0f,
+        .use_matrices = uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix && ui_transform_mode != 2.0f ? 1.0f : 0.0f,
         .opacity = uniform_snapshot.opacity,
         .output_intensity = uniform_snapshot.output_intensity,
         ._pad0 = 0.0f,
+        .ui_position_use_tint = uniform_snapshot.ui_position_use_tint,
+        .ui_scale_clip = uniform_snapshot.ui_scale_clip,
+        .ui_transform = uniform_snapshot.ui_transform,
+        .ui_layout_center = uniform_snapshot.ui_layout_center,
     };
+    push_constants.ui_transform[3] = ui_transform_mode;
     vkCmdPushConstants(command_buffer, s_resources.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
     VkBuffer vertex_buffers[] { replay_buffers.position_buffer->buffer, replay_buffers.color_buffer->buffer };
     VkDeviceSize vertex_offsets[] { 0, 0 };
@@ -3567,7 +3595,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
         return log_failure("wait_colored_draw_command_buffer_failed"sv, result);
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_COLORED_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} ui_position=({}, {}, {}) ui_scale=({}, {}) ui_transform_scale=({}, {}) ui_rotate_z={} ui_layout_center=({}, {}) ui_use_tint={} vertex_bindings=2 vertex_attributes=2 next_step=replace_colored_render_target_producer_with_vulkan_mesh",
+        dbgln("MUNDO_WEBGL_COLORED_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} ui_transform_mode={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} ui_position=({}, {}, {}) ui_scale=({}, {}) ui_transform_scale=({}, {}) ui_rotate_z={} ui_layout_center=({}, {}) ui_use_tint={} vertex_bindings=2 vertex_attributes=2 next_step=replace_colored_render_target_producer_with_vulkan_mesh",
             log_count,
             probe_count,
             pipeline_cache_status,
@@ -3589,7 +3617,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
             viewport_height,
             viewport_x,
             viewport_y,
-            uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix,
+            push_constants.use_matrices > 0.5f,
+            ui_transform_mode,
             uniform_snapshot.diffuse[0],
             uniform_snapshot.diffuse[1],
             uniform_snapshot.diffuse[2],
