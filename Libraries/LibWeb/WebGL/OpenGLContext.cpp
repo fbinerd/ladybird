@@ -2471,7 +2471,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     };
 }
 
-OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_solid_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, bool cull_face_enabled, u32 cull_face_mode, u32 front_face, Gfx::VulkanImage* target_image_override)
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_solid_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, bool cull_face_enabled, u32 cull_face_mode, u32 front_face, bool depth_test_enabled, bool depth_write_enabled, u32 depth_func, Gfx::VulkanImage* target_image_override)
 {
     struct SolidPushConstants {
         Array<float, 16> model_view_matrix {};
@@ -2497,6 +2497,20 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         VkPipeline pipeline { VK_NULL_HANDLE };
         VkCullModeFlags cull_mode { VK_CULL_MODE_NONE };
         VkFrontFace front_face { VK_FRONT_FACE_COUNTER_CLOCKWISE };
+        bool uses_depth { false };
+        bool depth_write_enabled { false };
+        u32 depth_func { 0 };
+        VkFormat depth_format { VK_FORMAT_UNDEFINED };
+        VkImage depth_image { VK_NULL_HANDLE };
+        VkDeviceMemory depth_memory { VK_NULL_HANDLE };
+        VkImageView depth_image_view { VK_NULL_HANDLE };
+        u32 depth_width { 0 };
+        u32 depth_height { 0 };
+        VkFramebuffer target_framebuffer { VK_NULL_HANDLE };
+        VkImage target_framebuffer_image { VK_NULL_HANDLE };
+        VkRenderPass target_framebuffer_render_pass { VK_NULL_HANDLE };
+        u32 target_framebuffer_width { 0 };
+        u32 target_framebuffer_height { 0 };
         VkCommandPool ring_command_pool { VK_NULL_HANDLE };
         Array<VkCommandBuffer, solid_ring_slot_count> ring_command_buffers {};
         Array<VkFence, solid_ring_slot_count> ring_fences {};
@@ -2525,6 +2539,31 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         // to the GL framebuffer path, so the effective winding is inverted.
         vulkan_front_face = gl_front_face == VK_FRONT_FACE_CLOCKWISE ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
     }
+    auto map_depth_compare_op = [](bool enabled, u32 gl_depth_func) -> Optional<VkCompareOp> {
+        if (!enabled)
+            return VK_COMPARE_OP_ALWAYS;
+        switch (gl_depth_func) {
+        case GL_NEVER:
+            return VK_COMPARE_OP_NEVER;
+        case GL_LESS:
+            return VK_COMPARE_OP_LESS;
+        case GL_EQUAL:
+            return VK_COMPARE_OP_EQUAL;
+        case GL_LEQUAL:
+            return VK_COMPARE_OP_LESS_OR_EQUAL;
+        case GL_GREATER:
+            return VK_COMPARE_OP_GREATER;
+        case GL_NOTEQUAL:
+            return VK_COMPARE_OP_NOT_EQUAL;
+        case GL_GEQUAL:
+            return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        case GL_ALWAYS:
+            return VK_COMPARE_OP_ALWAYS;
+        default:
+            return {};
+        }
+    };
+    auto vk_depth_compare_op = map_depth_compare_op(depth_test_enabled, depth_func);
 
     auto log_failure = [&](StringView reason, VkResult result = VK_SUCCESS) {
         if (should_log) {
@@ -2548,6 +2587,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             .reason = reason,
         };
     };
+    if (!vk_depth_compare_op.has_value())
+        return log_failure("unsupported_solid_depth_state"sv);
 
     if (viewport_width <= 0 || viewport_height <= 0)
         return log_failure("invalid_viewport"sv);
@@ -2602,6 +2643,14 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             vkDestroyPipeline(device, s_resources.pipeline, nullptr);
         if (s_resources.pipeline_layout != VK_NULL_HANDLE)
             vkDestroyPipelineLayout(device, s_resources.pipeline_layout, nullptr);
+        if (s_resources.target_framebuffer != VK_NULL_HANDLE)
+            vkDestroyFramebuffer(device, s_resources.target_framebuffer, nullptr);
+        if (s_resources.depth_image_view != VK_NULL_HANDLE)
+            vkDestroyImageView(device, s_resources.depth_image_view, nullptr);
+        if (s_resources.depth_image != VK_NULL_HANDLE)
+            vkDestroyImage(device, s_resources.depth_image, nullptr);
+        if (s_resources.depth_memory != VK_NULL_HANDLE)
+            vkFreeMemory(device, s_resources.depth_memory, nullptr);
         if (s_resources.render_pass != VK_NULL_HANDLE)
             vkDestroyRenderPass(device, s_resources.render_pass, nullptr);
         if (s_resources.fragment_shader != VK_NULL_HANDLE)
@@ -2614,7 +2663,10 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         auto matches = s_resources.device == context.logical_device
             && s_resources.destination_format == format
             && s_resources.cull_mode == vulkan_cull_mode
-            && s_resources.front_face == vulkan_front_face;
+            && s_resources.front_face == vulkan_front_face
+            && s_resources.uses_depth == depth_test_enabled
+            && s_resources.depth_write_enabled == depth_write_enabled
+            && s_resources.depth_func == depth_func;
         if (!matches) {
             reset_solid_pipeline_resources();
             pipeline_cache_status = "recreated"sv;
@@ -2644,9 +2696,27 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
+        auto const uses_depth = depth_test_enabled;
+        auto const depth_format = VK_FORMAT_D32_SFLOAT;
+        VkAttachmentDescription depth_attachment {
+            .flags = 0,
+            .format = depth_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
+        Array<VkAttachmentDescription, 2> attachments { color_attachment, depth_attachment };
         VkAttachmentReference color_attachment_ref {
             .attachment = 0,
             .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+        VkAttachmentReference depth_attachment_ref {
+            .attachment = 1,
+            .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
         VkSubpassDescription subpass {
             .flags = 0,
@@ -2656,7 +2726,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             .colorAttachmentCount = 1,
             .pColorAttachments = &color_attachment_ref,
             .pResolveAttachments = nullptr,
-            .pDepthStencilAttachment = nullptr,
+            .pDepthStencilAttachment = uses_depth ? &depth_attachment_ref : nullptr,
             .preserveAttachmentCount = 0,
             .pPreserveAttachments = nullptr,
         };
@@ -2664,8 +2734,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
-            .attachmentCount = 1,
-            .pAttachments = &color_attachment,
+            .attachmentCount = uses_depth ? 2u : 1u,
+            .pAttachments = attachments.data(),
             .subpassCount = 1,
             .pSubpasses = &subpass,
             .dependencyCount = 0,
@@ -2772,6 +2842,20 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             .pAttachments = &color_blend_attachment,
             .blendConstants = { 0, 0, 0, 0 },
         };
+        VkPipelineDepthStencilStateCreateInfo depth_stencil_state {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .depthTestEnable = uses_depth ? VK_TRUE : VK_FALSE,
+            .depthWriteEnable = depth_write_enabled ? VK_TRUE : VK_FALSE,
+            .depthCompareOp = vk_depth_compare_op.value(),
+            .depthBoundsTestEnable = VK_FALSE,
+            .stencilTestEnable = VK_FALSE,
+            .front = {},
+            .back = {},
+            .minDepthBounds = 0.0f,
+            .maxDepthBounds = 1.0f,
+        };
         VkDynamicState dynamic_states[] { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
         VkPipelineDynamicStateCreateInfo dynamic_state {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -2792,7 +2876,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             .pViewportState = &viewport_state,
             .pRasterizationState = &rasterizer,
             .pMultisampleState = &multisampling,
-            .pDepthStencilState = nullptr,
+            .pDepthStencilState = uses_depth ? &depth_stencil_state : nullptr,
             .pColorBlendState = &color_blending,
             .pDynamicState = &dynamic_state,
             .layout = s_resources.pipeline_layout,
@@ -2809,6 +2893,10 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         s_resources.destination_format = format;
         s_resources.cull_mode = vulkan_cull_mode;
         s_resources.front_face = vulkan_front_face;
+        s_resources.uses_depth = uses_depth;
+        s_resources.depth_write_enabled = depth_write_enabled;
+        s_resources.depth_func = depth_func;
+        s_resources.depth_format = depth_format;
     }
 
     if (s_resources.ring_command_pool == VK_NULL_HANDLE) {
@@ -2873,29 +2961,133 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         if (result != VK_SUCCESS)
             return log_failure("create_solid_target_image_view_failed"sv, result);
     }
-    if (target_image->cached_solid_mesh_framebuffer == VK_NULL_HANDLE
-        || target_image->cached_solid_mesh_framebuffer_render_pass != s_resources.render_pass
-        || target_image->cached_solid_mesh_framebuffer_width != target_image->info.extent.width
-        || target_image->cached_solid_mesh_framebuffer_height != target_image->info.extent.height) {
-        if (target_image->cached_solid_mesh_framebuffer != VK_NULL_HANDLE)
-            vkDestroyFramebuffer(context.logical_device, target_image->cached_solid_mesh_framebuffer, nullptr);
+    if (s_resources.uses_depth
+        && (s_resources.depth_image == VK_NULL_HANDLE
+            || s_resources.depth_image_view == VK_NULL_HANDLE
+            || s_resources.depth_width != target_image->info.extent.width
+            || s_resources.depth_height != target_image->info.extent.height
+            || s_resources.depth_format != VK_FORMAT_D32_SFLOAT)) {
+        if (s_resources.target_framebuffer != VK_NULL_HANDLE) {
+            for (auto fence : s_resources.ring_fences) {
+                if (fence != VK_NULL_HANDLE)
+                    vkWaitForFences(context.logical_device, 1, &fence, VK_TRUE, UINT64_MAX);
+            }
+            vkDestroyFramebuffer(context.logical_device, s_resources.target_framebuffer, nullptr);
+            s_resources.target_framebuffer = VK_NULL_HANDLE;
+        }
+        if (s_resources.depth_image_view != VK_NULL_HANDLE) {
+            vkDestroyImageView(context.logical_device, s_resources.depth_image_view, nullptr);
+            s_resources.depth_image_view = VK_NULL_HANDLE;
+        }
+        if (s_resources.depth_image != VK_NULL_HANDLE) {
+            vkDestroyImage(context.logical_device, s_resources.depth_image, nullptr);
+            s_resources.depth_image = VK_NULL_HANDLE;
+        }
+        if (s_resources.depth_memory != VK_NULL_HANDLE) {
+            vkFreeMemory(context.logical_device, s_resources.depth_memory, nullptr);
+            s_resources.depth_memory = VK_NULL_HANDLE;
+        }
+
+        VkImageCreateInfo depth_image_info {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_D32_SFLOAT,
+            .extent = { .width = target_image->info.extent.width, .height = target_image->info.extent.height, .depth = 1 },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        result = vkCreateImage(context.logical_device, &depth_image_info, nullptr, &s_resources.depth_image);
+        if (result != VK_SUCCESS)
+            return log_failure("create_solid_depth_image_failed"sv, result);
+
+        VkMemoryRequirements depth_memory_requirements;
+        vkGetImageMemoryRequirements(context.logical_device, s_resources.depth_image, &depth_memory_requirements);
+        VkPhysicalDeviceMemoryProperties memory_properties;
+        vkGetPhysicalDeviceMemoryProperties(context.physical_device, &memory_properties);
+        Optional<u32> memory_type_index;
+        for (u32 i = 0; i < memory_properties.memoryTypeCount; ++i) {
+            auto const property_flags = memory_properties.memoryTypes[i].propertyFlags;
+            if ((depth_memory_requirements.memoryTypeBits & (1u << i)) && (property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+                memory_type_index = i;
+                break;
+            }
+        }
+        if (!memory_type_index.has_value())
+            return log_failure("find_solid_depth_memory_type_failed"sv);
+
+        VkMemoryAllocateInfo depth_memory_allocate_info {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .allocationSize = depth_memory_requirements.size,
+            .memoryTypeIndex = memory_type_index.value(),
+        };
+        result = vkAllocateMemory(context.logical_device, &depth_memory_allocate_info, nullptr, &s_resources.depth_memory);
+        if (result != VK_SUCCESS)
+            return log_failure("allocate_solid_depth_memory_failed"sv, result);
+        result = vkBindImageMemory(context.logical_device, s_resources.depth_image, s_resources.depth_memory, 0);
+        if (result != VK_SUCCESS)
+            return log_failure("bind_solid_depth_memory_failed"sv, result);
+
+        VkImageViewCreateInfo depth_image_view_info {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = s_resources.depth_image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_D32_SFLOAT,
+            .components = { .r = VK_COMPONENT_SWIZZLE_IDENTITY, .g = VK_COMPONENT_SWIZZLE_IDENTITY, .b = VK_COMPONENT_SWIZZLE_IDENTITY, .a = VK_COMPONENT_SWIZZLE_IDENTITY },
+            .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 },
+        };
+        result = vkCreateImageView(context.logical_device, &depth_image_view_info, nullptr, &s_resources.depth_image_view);
+        if (result != VK_SUCCESS)
+            return log_failure("create_solid_depth_image_view_failed"sv, result);
+
+        s_resources.depth_format = VK_FORMAT_D32_SFLOAT;
+        s_resources.depth_width = target_image->info.extent.width;
+        s_resources.depth_height = target_image->info.extent.height;
+    }
+    if (s_resources.target_framebuffer == VK_NULL_HANDLE
+        || s_resources.target_framebuffer_image != target_image->image
+        || s_resources.target_framebuffer_render_pass != s_resources.render_pass
+        || s_resources.target_framebuffer_width != target_image->info.extent.width
+        || s_resources.target_framebuffer_height != target_image->info.extent.height
+        || (s_resources.uses_depth && s_resources.depth_image_view == VK_NULL_HANDLE)) {
+        if (s_resources.target_framebuffer != VK_NULL_HANDLE) {
+            for (auto fence : s_resources.ring_fences) {
+                if (fence != VK_NULL_HANDLE)
+                    vkWaitForFences(context.logical_device, 1, &fence, VK_TRUE, UINT64_MAX);
+            }
+            vkDestroyFramebuffer(context.logical_device, s_resources.target_framebuffer, nullptr);
+            s_resources.target_framebuffer = VK_NULL_HANDLE;
+        }
+        Array<VkImageView, 2> framebuffer_attachments { target_image->cached_solid_mesh_color_attachment_view, s_resources.depth_image_view };
         VkFramebufferCreateInfo framebuffer_info {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
             .renderPass = s_resources.render_pass,
-            .attachmentCount = 1,
-            .pAttachments = &target_image->cached_solid_mesh_color_attachment_view,
+            .attachmentCount = s_resources.uses_depth ? 2u : 1u,
+            .pAttachments = framebuffer_attachments.data(),
             .width = target_image->info.extent.width,
             .height = target_image->info.extent.height,
             .layers = 1,
         };
-        result = vkCreateFramebuffer(context.logical_device, &framebuffer_info, nullptr, &target_image->cached_solid_mesh_framebuffer);
+        result = vkCreateFramebuffer(context.logical_device, &framebuffer_info, nullptr, &s_resources.target_framebuffer);
         if (result != VK_SUCCESS)
             return log_failure("create_solid_target_framebuffer_failed"sv, result);
-        target_image->cached_solid_mesh_framebuffer_render_pass = s_resources.render_pass;
-        target_image->cached_solid_mesh_framebuffer_width = target_image->info.extent.width;
-        target_image->cached_solid_mesh_framebuffer_height = target_image->info.extent.height;
+        s_resources.target_framebuffer_image = target_image->image;
+        s_resources.target_framebuffer_render_pass = s_resources.render_pass;
+        s_resources.target_framebuffer_width = target_image->info.extent.width;
+        s_resources.target_framebuffer_height = target_image->info.extent.height;
     }
 
     auto index_type = VK_INDEX_TYPE_UINT16;
@@ -2951,11 +3143,19 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .pNext = nullptr,
         .renderPass = s_resources.render_pass,
-        .framebuffer = target_image->cached_solid_mesh_framebuffer,
+        .framebuffer = s_resources.target_framebuffer,
         .renderArea = { .offset = { 0, 0 }, .extent = { target_image->info.extent.width, target_image->info.extent.height } },
         .clearValueCount = 0,
         .pClearValues = nullptr,
     };
+    Array<VkClearValue, 2> clear_values {
+        VkClearValue { .color = { .float32 = { 0.0f, 0.0f, 0.0f, 0.0f } } },
+        VkClearValue { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
+    };
+    if (s_resources.uses_depth) {
+        render_pass_begin.clearValueCount = clear_values.size();
+        render_pass_begin.pClearValues = clear_values.data();
+    }
     vkCmdBeginRenderPass(command_buffer, &render_pass_begin, VK_SUBPASS_CONTENTS_INLINE);
     VkViewport viewport {
         .x = static_cast<float>(viewport_x),
@@ -3038,7 +3238,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         return log_failure("wait_solid_draw_command_buffer_failed"sv, result);
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_SOLID_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} cull_enabled={} gl_cull_mode={} gl_front_face={} vk_cull_mode={} vk_front_face={} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} next_step=replace_matching_post_video_gl_draw_with_solid_vulkan_mesh",
+        dbgln("MUNDO_WEBGL_SOLID_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} cull_enabled={} gl_cull_mode={} gl_front_face={} vk_cull_mode={} vk_front_face={} depth_test={} depth_write={} gl_depth_func={} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} next_step=replace_matching_post_video_gl_draw_with_solid_vulkan_mesh",
             log_count,
             probe_count,
             pipeline_cache_status,
@@ -3049,7 +3249,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             destination_format,
             reinterpret_cast<uintptr_t>(target_image->image),
             reinterpret_cast<uintptr_t>(target_image->cached_solid_mesh_color_attachment_view),
-            reinterpret_cast<uintptr_t>(target_image->cached_solid_mesh_framebuffer),
+            reinterpret_cast<uintptr_t>(s_resources.target_framebuffer),
             target_image->info.extent.width,
             target_image->info.extent.height,
             target_image_override != nullptr,
@@ -3065,6 +3265,9 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             front_face,
             static_cast<u32>(vulkan_cull_mode),
             static_cast<u32>(vulkan_front_face),
+            depth_test_enabled,
+            depth_write_enabled,
+            depth_func,
             uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix,
             uniform_snapshot.diffuse[0],
             uniform_snapshot.diffuse[1],

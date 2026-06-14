@@ -1997,7 +1997,7 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 }
                 auto* target_image_override = imported_render_target_texture->image.ptr();
                 auto target_format = to_underlying(target_image_override->info.format);
-                auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(target_format, uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], solid_attempt_count, false, 0, 0, target_image_override);
+                auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(target_format, uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], solid_attempt_count, false, 0, 0, false, false, 0, target_image_override);
                 if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
                     dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} program={} to_texture=true attempted={} supported={} executed={} reason={} next_step={}",
                         solid_attempt_count,
@@ -3125,15 +3125,26 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && blend_dst_rgb == GL_ONE_MINUS_SRC_ALPHA
                 && blend_equation_rgb == GL_FUNC_ADD;
             auto solid_uniforms_supported = active_uniform_count <= 5;
-            auto allow_depth_test_without_depth_attachment = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ALLOW_DEPTH_TEST_WITHOUT_ATTACHMENT");
-            auto depth_state_supported = !depth_test_enabled || (allow_depth_test_without_depth_attachment && depth_write_mask == GL_FALSE);
+            auto allow_solid_depth_replay = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_WITH_DEPTH");
+            auto depth_func_supported = !depth_test_enabled
+                || depth_func == GL_NEVER
+                || depth_func == GL_LESS
+                || depth_func == GL_EQUAL
+                || depth_func == GL_LEQUAL
+                || depth_func == GL_GREATER
+                || depth_func == GL_NOTEQUAL
+                || depth_func == GL_GEQUAL
+                || depth_func == GL_ALWAYS;
+            auto depth_state_supported = !depth_test_enabled || (allow_solid_depth_replay && depth_func_supported);
             auto cull_state_supported = !cull_face_enabled || cull_face_mode != GL_FRONT_AND_BACK;
+            auto bound_texture_state_supported = bound_texture_handle == 0;
             auto solid_gl_state_supported = color_mask_supported
                 && blend_state_supported
                 && depth_state_supported
                 && !stencil_test_enabled
                 && cull_state_supported
-                && !scissor_test_enabled;
+                && !scissor_test_enabled
+                && bound_texture_state_supported;
             auto can_replay = position_layout_supported && position_ready && element_ready && destination_format.has_value()
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
                 && mode == GL_TRIANGLES
@@ -3179,10 +3190,11 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : stencil_test_enabled ? "unsupported_stencil_state"sv
                         : !cull_state_supported ? "unsupported_cull_state"sv
                         : scissor_test_enabled ? "unsupported_scissor_state"sv
+                        : !bound_texture_state_supported ? "unsupported_bound_texture_state"sv
                         : !solid_replay_enabled ? "solid_replay_disabled_by_environment"sv
                         : "ready"sv,
                     can_replay ? "execute_solid_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_GL_STATE count={} program={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} depth_test={} depth_func={} depth_write={} depth_supported={} allow_depth_without_attachment={} stencil_test={} cull_face={} cull_face_mode={} front_face={} scissor_test={} color_mask=({},{},{},{}) diffuse=({}, {}, {}, {}) opacity={} output_intensity={} reason=solid_replay_needs_matching_gl_state next_step=map_blend_depth_cull_color_mask_before_enabling_solid_vulkan_replay",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_GL_STATE count={} program={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} depth_test={} depth_func={} depth_write={} depth_supported={} allow_depth_replay={} stencil_test={} cull_face={} cull_face_mode={} front_face={} scissor_test={} color_mask=({},{},{},{}) diffuse=({}, {}, {}, {}) opacity={} output_intensity={} reason=solid_replay_needs_matching_gl_state next_step=map_blend_depth_cull_color_mask_before_enabling_solid_vulkan_replay",
                     attempt_count,
                     program_handle,
                     glIsEnabled(GL_BLEND) == GL_TRUE,
@@ -3196,7 +3208,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     depth_func,
                     depth_write_mask == GL_TRUE,
                     depth_state_supported,
-                    allow_depth_test_without_depth_attachment,
+                    allow_solid_depth_replay,
                     stencil_test_enabled,
                     cull_face_enabled,
                     cull_face_mode,
@@ -3262,7 +3274,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             if (!can_replay)
                 return false;
 
-            auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(destination_format.value(), uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, cull_face_enabled, static_cast<u32>(cull_face_mode), static_cast<u32>(front_face));
+            auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(destination_format.value(), uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, cull_face_enabled, static_cast<u32>(cull_face_mode), static_cast<u32>(front_face), depth_test_enabled, depth_write_mask == GL_TRUE, static_cast<u32>(depth_func));
             if (!solid_pipeline_probe.executed)
                 return false;
 
@@ -3520,7 +3532,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             }
 
             auto destination_format = m_context->vulkan_painting_surface_format();
-            auto textured_replay_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_REPLAY");
+            auto textured_replay_enabled = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_REPLAY");
             auto source_render_target_vulkan_backed = render_target_state->current_contents_vulkan_backed;
             auto resolved_static_extra_samplers_supported = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_AUTO_EXTRA_STATIC_SAMPLERS")
                 && sampler_render_target_count == 1
