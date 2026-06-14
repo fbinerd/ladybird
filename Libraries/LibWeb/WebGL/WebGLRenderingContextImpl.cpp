@@ -3829,14 +3829,26 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 return false;
 
             m_context->note_direct_vulkan_video_draw_submitted();
-            return true;
+            if (mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS"))
+                return true;
+
+            static size_t s_textured_replay_validate_only_count { 0 };
+            auto validate_only_count = ++s_textured_replay_validate_only_count;
+            if (validate_only_count <= 24 || validate_only_count % 120 == 0) {
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_VALIDATE_ONLY count={} program={} source_texture={} reason=vulkan_replay_executed_but_gl_draw_kept_for_visual_parity next_step=compare_panel_visibility_before_enabling_replace_gl_draws",
+                    validate_only_count,
+                    program_handle,
+                    source_texture_handle);
+            }
+            return false;
         };
         if (try_post_direct_vulkan_textured_render_target_replay()) {
             needs_to_present();
             return;
         }
 #endif
-        if (gl_after_direct_vulkan_video && note_mundo_framebuffer_draw("drawElements", mode, count, type, offset, true)) {
+        auto replace_post_direct_render_target_gl_draws = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_RENDER_TARGET_GL_DRAWS");
+        if (gl_after_direct_vulkan_video && note_mundo_framebuffer_draw("drawElements", mode, count, type, offset, replace_post_direct_render_target_gl_draws)) {
             static size_t s_post_direct_render_target_replay_skip_count { 0 };
             auto skip_count = ++s_post_direct_render_target_replay_skip_count;
             if (skip_count <= 24 || skip_count % 120 == 0) {
@@ -3857,7 +3869,10 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             needs_to_present();
             return;
         }
-        if (gl_after_direct_vulkan_video && m_texture_binding_2d && !m_texture_binding_2d->has_hardware_video_backing()) {
+        if (gl_after_direct_vulkan_video
+            && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_INCOMPLETE_TEXTURE_DRAW")
+            && m_texture_binding_2d
+            && !m_texture_binding_2d->has_hardware_video_backing()) {
             auto const& texture_snapshot = m_texture_binding_2d->mundo_texture_upload_snapshot();
             auto const& render_target_write_state = m_texture_binding_2d->mundo_render_target_write_state();
             auto texture_has_complete_source = (texture_snapshot.has_value() && texture_snapshot->complete) || (render_target_write_state.has_value() && render_target_write_state->current_contents_vulkan_backed);
