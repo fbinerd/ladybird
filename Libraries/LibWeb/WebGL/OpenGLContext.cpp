@@ -3647,6 +3647,30 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
 
 OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_textured_mesh_pipeline(u32 destination_format, Gfx::VulkanImage& source_image, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes uv_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* alpha_image, Gfx::VulkanImage* target_image_override)
 {
+    struct TexturedReplayDiagnostics {
+        bool valid { false };
+        float position_min_x { 0.0f };
+        float position_min_y { 0.0f };
+        float position_min_z { 0.0f };
+        float position_max_x { 0.0f };
+        float position_max_y { 0.0f };
+        float position_max_z { 0.0f };
+        float uv_min_x { 0.0f };
+        float uv_min_y { 0.0f };
+        float uv_max_x { 0.0f };
+        float uv_max_y { 0.0f };
+        float clip_min_x { 0.0f };
+        float clip_min_y { 0.0f };
+        float clip_max_x { 0.0f };
+        float clip_max_y { 0.0f };
+        float clip_min_w { 0.0f };
+        float clip_max_w { 0.0f };
+        float first_position_x { 0.0f };
+        float first_position_y { 0.0f };
+        float first_position_z { 0.0f };
+        float first_uv_x { 0.0f };
+        float first_uv_y { 0.0f };
+    };
     struct TexturedPushConstants {
         Array<float, 16> model_view_matrix {};
         Array<float, 16> projection_matrix {};
@@ -3695,6 +3719,73 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
     auto const& context = m_skia_backend_context->vulkan_context();
     auto format = static_cast<VkFormat>(destination_format);
     VkResult result { VK_SUCCESS };
+    TexturedReplayDiagnostics diagnostics;
+
+    auto read_float = [](ReadonlyBytes bytes, size_t offset) {
+        float value { 0.0f };
+        __builtin_memcpy(&value, bytes.data() + offset, sizeof(float));
+        return value;
+    };
+    auto multiply_matrix_vector = [](Array<float, 16> const& matrix, Array<float, 4> const& vector) {
+        return Array<float, 4> {
+            matrix[0] * vector[0] + matrix[4] * vector[1] + matrix[8] * vector[2] + matrix[12] * vector[3],
+            matrix[1] * vector[0] + matrix[5] * vector[1] + matrix[9] * vector[2] + matrix[13] * vector[3],
+            matrix[2] * vector[0] + matrix[6] * vector[1] + matrix[10] * vector[2] + matrix[14] * vector[3],
+            matrix[3] * vector[0] + matrix[7] * vector[1] + matrix[11] * vector[2] + matrix[15] * vector[3],
+        };
+    };
+    auto update_min_max = [](float value, float& min, float& max, bool first) {
+        if (first || value < min)
+            min = value;
+        if (first || value > max)
+            max = value;
+    };
+    auto collect_diagnostics = [&] {
+        if (position_data.size() < sizeof(float) * 3 || uv_data.size() < sizeof(float) * 2)
+            return;
+
+        auto position_vertex_count = position_data.size() / (sizeof(float) * 3);
+        auto uv_vertex_count = uv_data.size() / (sizeof(float) * 2);
+        auto vertex_count = min(position_vertex_count, uv_vertex_count);
+        if (vertex_count == 0)
+            return;
+
+        diagnostics.valid = true;
+        for (size_t vertex_index = 0; vertex_index < vertex_count; ++vertex_index) {
+            auto position_offset = vertex_index * sizeof(float) * 3;
+            auto uv_offset = vertex_index * sizeof(float) * 2;
+            auto x = read_float(position_data, position_offset);
+            auto y = read_float(position_data, position_offset + sizeof(float));
+            auto z = read_float(position_data, position_offset + sizeof(float) * 2);
+            auto u = read_float(uv_data, uv_offset);
+            auto v = read_float(uv_data, uv_offset + sizeof(float));
+            auto first = vertex_index == 0;
+            if (first) {
+                diagnostics.first_position_x = x;
+                diagnostics.first_position_y = y;
+                diagnostics.first_position_z = z;
+                diagnostics.first_uv_x = u;
+                diagnostics.first_uv_y = v;
+            }
+            update_min_max(x, diagnostics.position_min_x, diagnostics.position_max_x, first);
+            update_min_max(y, diagnostics.position_min_y, diagnostics.position_max_y, first);
+            update_min_max(z, diagnostics.position_min_z, diagnostics.position_max_z, first);
+            update_min_max(u, diagnostics.uv_min_x, diagnostics.uv_max_x, first);
+            update_min_max(v, diagnostics.uv_min_y, diagnostics.uv_max_y, first);
+
+            Array<float, 4> position { x, y, z, 1.0f };
+            if (uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix)
+                position = multiply_matrix_vector(uniform_snapshot.projection_matrix, multiply_matrix_vector(uniform_snapshot.model_view_matrix, position));
+
+            auto w = position[3];
+            auto ndc_x = w != 0.0f ? position[0] / w : position[0];
+            auto ndc_y = w != 0.0f ? position[1] / w : position[1];
+            update_min_max(ndc_x, diagnostics.clip_min_x, diagnostics.clip_max_x, first);
+            update_min_max(ndc_y, diagnostics.clip_min_y, diagnostics.clip_max_y, first);
+            update_min_max(w, diagnostics.clip_min_w, diagnostics.clip_max_w, first);
+        }
+    };
+    collect_diagnostics();
 
     auto log_failure = [&](StringView reason, VkResult result = VK_SUCCESS) {
         if (should_log) {
@@ -4462,7 +4553,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         return log_failure("wait_textured_draw_command_buffer_failed"sv, result);
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_TEXTURED_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} source_image={} source_image_view={} source_size={}x{} source_layout={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} vertex_bindings=2 vertex_attributes=2 next_step=wire_render_target_sampler_consumer_to_this_pipeline",
+        dbgln("MUNDO_WEBGL_TEXTURED_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} source_image={} source_image_view={} source_size={}x{} source_layout={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} diagnostics_valid={} pos_min=({}, {}, {}) pos_max=({}, {}, {}) uv_min=({}, {}) uv_max=({}, {}) clip_min=({}, {}) clip_max=({}, {}) clip_w=({}, {}) first_pos=({}, {}, {}) first_uv=({}, {}) mv_m00={} mv_m12={} mv_m13={} mv_m14={} proj_m00={} proj_m11={} proj_m14={} proj_m15={} vertex_bindings=2 vertex_attributes=2 next_step=wire_render_target_sampler_consumer_to_this_pipeline",
             log_count,
             probe_count,
             pipeline_cache_status,
@@ -4494,7 +4585,37 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             uniform_snapshot.diffuse[2],
             uniform_snapshot.diffuse[3],
             uniform_snapshot.opacity,
-            uniform_snapshot.output_intensity);
+            uniform_snapshot.output_intensity,
+            diagnostics.valid,
+            diagnostics.position_min_x,
+            diagnostics.position_min_y,
+            diagnostics.position_min_z,
+            diagnostics.position_max_x,
+            diagnostics.position_max_y,
+            diagnostics.position_max_z,
+            diagnostics.uv_min_x,
+            diagnostics.uv_min_y,
+            diagnostics.uv_max_x,
+            diagnostics.uv_max_y,
+            diagnostics.clip_min_x,
+            diagnostics.clip_min_y,
+            diagnostics.clip_max_x,
+            diagnostics.clip_max_y,
+            diagnostics.clip_min_w,
+            diagnostics.clip_max_w,
+            diagnostics.first_position_x,
+            diagnostics.first_position_y,
+            diagnostics.first_position_z,
+            diagnostics.first_uv_x,
+            diagnostics.first_uv_y,
+            uniform_snapshot.model_view_matrix[0],
+            uniform_snapshot.model_view_matrix[12],
+            uniform_snapshot.model_view_matrix[13],
+            uniform_snapshot.model_view_matrix[14],
+            uniform_snapshot.projection_matrix[0],
+            uniform_snapshot.projection_matrix[5],
+            uniform_snapshot.projection_matrix[14],
+            uniform_snapshot.projection_matrix[15]);
     }
     return VulkanVideoMeshPipelineProbeResult {
         .attempted = true,

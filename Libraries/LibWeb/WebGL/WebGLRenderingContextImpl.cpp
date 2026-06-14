@@ -3125,7 +3125,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && blend_dst_rgb == GL_ONE_MINUS_SRC_ALPHA
                 && blend_equation_rgb == GL_FUNC_ADD;
             auto solid_uniforms_supported = active_uniform_count <= 5;
-            auto depth_state_supported = !depth_test_enabled || depth_write_mask == GL_FALSE;
+            auto allow_depth_test_without_depth_attachment = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ALLOW_DEPTH_TEST_WITHOUT_ATTACHMENT");
+            auto depth_state_supported = !depth_test_enabled || (allow_depth_test_without_depth_attachment && depth_write_mask == GL_FALSE);
             auto cull_state_supported = !cull_face_enabled || cull_face_mode != GL_FRONT_AND_BACK;
             auto solid_gl_state_supported = color_mask_supported
                 && blend_state_supported
@@ -3181,7 +3182,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !solid_replay_enabled ? "solid_replay_disabled_by_environment"sv
                         : "ready"sv,
                     can_replay ? "execute_solid_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_GL_STATE count={} program={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} depth_test={} depth_func={} depth_write={} stencil_test={} cull_face={} cull_face_mode={} front_face={} scissor_test={} color_mask=({},{},{},{}) diffuse=({}, {}, {}, {}) opacity={} output_intensity={} reason=solid_replay_needs_matching_gl_state next_step=map_blend_depth_cull_color_mask_before_enabling_solid_vulkan_replay",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_GL_STATE count={} program={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} depth_test={} depth_func={} depth_write={} depth_supported={} allow_depth_without_attachment={} stencil_test={} cull_face={} cull_face_mode={} front_face={} scissor_test={} color_mask=({},{},{},{}) diffuse=({}, {}, {}, {}) opacity={} output_intensity={} reason=solid_replay_needs_matching_gl_state next_step=map_blend_depth_cull_color_mask_before_enabling_solid_vulkan_replay",
                     attempt_count,
                     program_handle,
                     glIsEnabled(GL_BLEND) == GL_TRUE,
@@ -3194,6 +3195,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     depth_test_enabled,
                     depth_func,
                     depth_write_mask == GL_TRUE,
+                    depth_state_supported,
+                    allow_depth_test_without_depth_attachment,
                     stencil_test_enabled,
                     cull_face_enabled,
                     cull_face_mode,
@@ -3528,12 +3531,58 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             auto alpha_map_replay_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALPHA_MAP");
             auto allow_extra_samplers = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALLOW_EXTRA_SAMPLERS")
                 || resolved_static_extra_samplers_supported;
+            GLboolean color_write_mask[4] {};
+            GLboolean depth_write_mask = GL_FALSE;
+            GLint depth_func = 0;
+            GLint cull_face_mode = 0;
+            GLint front_face = 0;
+            GLint blend_src_rgb = 0;
+            GLint blend_dst_rgb = 0;
+            GLint blend_src_alpha = 0;
+            GLint blend_dst_alpha = 0;
+            GLint blend_equation_rgb = 0;
+            GLint blend_equation_alpha = 0;
+            auto blend_enabled = glIsEnabled(GL_BLEND) == GL_TRUE;
+            auto depth_test_enabled = glIsEnabled(GL_DEPTH_TEST) == GL_TRUE;
+            auto stencil_test_enabled = glIsEnabled(GL_STENCIL_TEST) == GL_TRUE;
+            auto cull_face_enabled = glIsEnabled(GL_CULL_FACE) == GL_TRUE;
+            auto scissor_test_enabled = glIsEnabled(GL_SCISSOR_TEST) == GL_TRUE;
+            glGetBooleanvRobustANGLE(GL_COLOR_WRITEMASK, 4, nullptr, color_write_mask);
+            glGetBooleanvRobustANGLE(GL_DEPTH_WRITEMASK, 1, nullptr, &depth_write_mask);
+            glGetIntegervRobustANGLE(GL_DEPTH_FUNC, 1, nullptr, &depth_func);
+            glGetIntegervRobustANGLE(GL_CULL_FACE_MODE, 1, nullptr, &cull_face_mode);
+            glGetIntegervRobustANGLE(GL_FRONT_FACE, 1, nullptr, &front_face);
+            glGetIntegervRobustANGLE(GL_BLEND_SRC_RGB, 1, nullptr, &blend_src_rgb);
+            glGetIntegervRobustANGLE(GL_BLEND_DST_RGB, 1, nullptr, &blend_dst_rgb);
+            glGetIntegervRobustANGLE(GL_BLEND_SRC_ALPHA, 1, nullptr, &blend_src_alpha);
+            glGetIntegervRobustANGLE(GL_BLEND_DST_ALPHA, 1, nullptr, &blend_dst_alpha);
+            glGetIntegervRobustANGLE(GL_BLEND_EQUATION_RGB, 1, nullptr, &blend_equation_rgb);
+            glGetIntegervRobustANGLE(GL_BLEND_EQUATION_ALPHA, 1, nullptr, &blend_equation_alpha);
             auto sampler_count_supported = sampler_uniform_count == 1
                 || (allow_extra_samplers
                     && sampler_render_target_count == 1
                     && sampler_video_count == 0
                     && sampler_unresolved_count == 0
                     && sampler_render_target_count + sampler_snapshot_complete_count == sampler_uniform_count);
+            auto color_mask_supported = color_write_mask[0] == GL_TRUE
+                && color_write_mask[1] == GL_TRUE
+                && color_write_mask[2] == GL_TRUE
+                && color_write_mask[3] == GL_TRUE;
+            auto blend_state_supported = blend_enabled
+                && blend_src_rgb == GL_SRC_ALPHA
+                && blend_dst_rgb == GL_ONE_MINUS_SRC_ALPHA
+                && blend_src_alpha == GL_ONE
+                && blend_dst_alpha == GL_ONE_MINUS_SRC_ALPHA
+                && blend_equation_rgb == GL_FUNC_ADD
+                && blend_equation_alpha == GL_FUNC_ADD;
+            auto depth_state_supported = !depth_test_enabled;
+            auto cull_state_supported = !cull_face_enabled;
+            auto textured_gl_state_supported = color_mask_supported
+                && blend_state_supported
+                && depth_state_supported
+                && !stencil_test_enabled
+                && cull_state_supported
+                && !scissor_test_enabled;
             auto replay_viewport_valid = viewport[2] > 0 && viewport[3] > 0;
             auto can_replay = textured_replay_enabled
                 && source_render_target_vulkan_backed
@@ -3549,7 +3598,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && destination_format.has_value()
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
                 && replay_viewport_valid
-                && mode == GL_TRIANGLES;
+                && mode == GL_TRIANGLES
+                && textured_gl_state_supported;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
                 dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ATTEMPT count={} program={} source_texture={} source_write_count={} source_vulkan_backed={} source_vulkan_write_count={} source_viewport={}x{} source_program={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} sampler_render_targets={} sampler_videos={} sampler_snapshots={} sampler_unresolved={} allow_extra_samplers={} alpha_map_replay_enabled={} sampler_count_supported={} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_ready={} uv_ready={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
                     attempt_count,
@@ -3601,8 +3651,42 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
                         : !replay_viewport_valid ? "invalid_viewport"sv
                         : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
+                        : !color_mask_supported ? "unsupported_color_mask_state"sv
+                        : !blend_state_supported ? "unsupported_blend_state"sv
+                        : !depth_state_supported ? "unsupported_depth_state"sv
+                        : stencil_test_enabled ? "unsupported_stencil_state"sv
+                        : !cull_state_supported ? "unsupported_cull_state"sv
+                        : scissor_test_enabled ? "unsupported_scissor_state"sv
                         : "ready"sv,
                     can_replay ? "execute_textured_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_GL_STATE count={} program={} source_texture={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} blend_supported={} depth_test={} depth_func={} depth_write={} depth_supported={} stencil_test={} cull_face={} cull_face_mode={} front_face={} cull_supported={} scissor_test={} color_mask=({},{},{},{}) color_mask_supported={} state_supported={} reason=textured_replay_needs_matching_gl_state next_step=map_depth_cull_blend_state_for_post_video_render_target_consumers",
+                    attempt_count,
+                    program_handle,
+                    source_texture_handle,
+                    blend_enabled,
+                    blend_src_rgb,
+                    blend_dst_rgb,
+                    blend_src_alpha,
+                    blend_dst_alpha,
+                    blend_equation_rgb,
+                    blend_equation_alpha,
+                    blend_state_supported,
+                    depth_test_enabled,
+                    depth_func,
+                    depth_write_mask == GL_TRUE,
+                    depth_state_supported,
+                    stencil_test_enabled,
+                    cull_face_enabled,
+                    cull_face_mode,
+                    front_face,
+                    cull_state_supported,
+                    scissor_test_enabled,
+                    color_write_mask[0] == GL_TRUE,
+                    color_write_mask[1] == GL_TRUE,
+                    color_write_mask[2] == GL_TRUE,
+                    color_write_mask[3] == GL_TRUE,
+                    color_mask_supported,
+                    textured_gl_state_supported);
             }
             if (!can_replay)
                 return false;
