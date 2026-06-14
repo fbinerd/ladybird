@@ -3337,35 +3337,40 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
 
             GC::Ptr<WebGLTexture> source_texture = nullptr;
-            if (m_texture_binding_2d && !m_texture_binding_2d->has_hardware_video_backing() && m_texture_binding_2d->mundo_render_target_write_state().has_value())
-                source_texture = m_texture_binding_2d;
-
-            if (!source_texture) {
-                auto uniforms_to_scan_for_source = active_uniform_count < 16 ? active_uniform_count : 16;
-                for (GLint index = 0; index < uniforms_to_scan_for_source; ++index) {
-                    GLint uniform_size = 0;
-                    GLenum uniform_type = 0;
-                    GLsizei uniform_length = 0;
-                    GLchar uniform_name[256];
-                    glGetActiveUniform(program_handle, static_cast<GLuint>(index), sizeof(uniform_name), &uniform_length, &uniform_size, &uniform_type, uniform_name);
-                    if (!uniform_length || !mundo_webgl_is_sampler_uniform_type(uniform_type))
-                        continue;
-                    auto location = glGetUniformLocation(program_handle, uniform_name);
-                    if (location < 0)
-                        continue;
-                    GLint sampler_unit = -1;
-                    glGetUniformiv(program_handle, location, &sampler_unit);
-                    if (sampler_unit < 0 || static_cast<size_t>(sampler_unit) >= m_mundo_texture_binding_2d_by_unit.size())
-                        continue;
-                    auto sampler_texture = m_mundo_texture_binding_2d_by_unit[static_cast<size_t>(sampler_unit)];
-                    if (!sampler_texture || sampler_texture->has_hardware_video_backing())
-                        continue;
-                    if (sampler_texture->mundo_render_target_write_state().has_value()) {
-                        source_texture = sampler_texture;
-                        break;
-                    }
+            GC::Ptr<WebGLTexture> first_render_target_sampler_texture = nullptr;
+            auto uniforms_to_scan_for_source = active_uniform_count < 16 ? active_uniform_count : 16;
+            for (GLint index = 0; index < uniforms_to_scan_for_source; ++index) {
+                GLint uniform_size = 0;
+                GLenum uniform_type = 0;
+                GLsizei uniform_length = 0;
+                GLchar uniform_name[256];
+                glGetActiveUniform(program_handle, static_cast<GLuint>(index), sizeof(uniform_name), &uniform_length, &uniform_size, &uniform_type, uniform_name);
+                if (!uniform_length || !mundo_webgl_is_sampler_uniform_type(uniform_type))
+                    continue;
+                auto uniform_name_view = StringView { uniform_name, static_cast<size_t>(uniform_length) };
+                auto location = glGetUniformLocation(program_handle, uniform_name);
+                if (location < 0)
+                    continue;
+                GLint sampler_unit = -1;
+                glGetUniformiv(program_handle, location, &sampler_unit);
+                if (sampler_unit < 0 || static_cast<size_t>(sampler_unit) >= m_mundo_texture_binding_2d_by_unit.size())
+                    continue;
+                auto sampler_texture = m_mundo_texture_binding_2d_by_unit[static_cast<size_t>(sampler_unit)];
+                if (!sampler_texture || sampler_texture->has_hardware_video_backing())
+                    continue;
+                if (!sampler_texture->mundo_render_target_write_state().has_value())
+                    continue;
+                if (!first_render_target_sampler_texture)
+                    first_render_target_sampler_texture = sampler_texture;
+                if (uniform_name_view == "map"sv) {
+                    source_texture = sampler_texture;
+                    break;
                 }
             }
+            if (!source_texture)
+                source_texture = first_render_target_sampler_texture;
+            if (!source_texture && m_texture_binding_2d && !m_texture_binding_2d->has_hardware_video_backing() && m_texture_binding_2d->mundo_render_target_write_state().has_value())
+                source_texture = m_texture_binding_2d;
             if (!source_texture)
                 return false;
 
