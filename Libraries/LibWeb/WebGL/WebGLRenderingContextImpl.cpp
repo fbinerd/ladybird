@@ -1243,9 +1243,28 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
     GLint viewport[4] {};
     glGetIntegervRobustANGLE(GL_VIEWPORT, 4, nullptr, viewport);
     auto replay_viewport_valid = viewport[2] > 0 && viewport[3] > 0;
+    if (!replay_viewport_valid) {
+        static size_t s_skipped_empty_render_target_draw_count { 0 };
+        auto skipped_count = ++s_skipped_empty_render_target_draw_count;
+        if (skipped_count <= 24 || skipped_count % 120 == 0) {
+            auto texture_handle = texture->handle(this).value_or(0);
+            auto framebuffer_handle = m_framebuffer_binding->handle(this).value_or(0);
+            dbgln("MUNDO_WEBGL_SKIP_EMPTY_RENDER_TARGET_DRAW count={} op={} framebuffer={} color_texture={} program={} viewport={}x{}+{}+{} reason=empty_viewport_has_no_color_effect next_step=keep_previous_render_target_state_for_vulkan_consumers",
+                skipped_count,
+                operation,
+                framebuffer_handle,
+                texture_handle,
+                program_handle,
+                viewport[2],
+                viewport[3],
+                viewport[0],
+                viewport[1]);
+        }
+        return false;
+    }
     texture->mark_mundo_render_target_written(
-        viewport[2] > 0 ? static_cast<u32>(viewport[2]) : 0,
-        viewport[3] > 0 ? static_cast<u32>(viewport[3]) : 0,
+        static_cast<u32>(viewport[2]),
+        static_cast<u32>(viewport[3]),
         program_handle);
 
     auto render_target_state = texture->mundo_render_target_write_state();
@@ -1355,6 +1374,41 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
                     glGetUniformfv(program_handle, location, diffuse.data());
                     uniform_snapshot.diffuse = diffuse;
+                } else if (type == GL_FLOAT_VEC3 && uniform_name == "uPosition"sv) {
+                    Array<float, 3> position {};
+                    glGetUniformfv(program_handle, location, position.data());
+                    uniform_snapshot.ui_position_use_tint[0] = position[0];
+                    uniform_snapshot.ui_position_use_tint[1] = position[1];
+                    uniform_snapshot.ui_position_use_tint[2] = position[2];
+                    uniform_snapshot.ui_transform[3] = 1.0f;
+                } else if (type == GL_FLOAT_VEC2 && uniform_name == "uScale"sv) {
+                    Array<float, 2> scale { 1.0f, 1.0f };
+                    glGetUniformfv(program_handle, location, scale.data());
+                    uniform_snapshot.ui_scale_clip[0] = scale[0];
+                    uniform_snapshot.ui_scale_clip[1] = scale[1];
+                    uniform_snapshot.ui_transform[3] = 1.0f;
+                } else if (type == GL_FLOAT_VEC2 && uniform_name == "uClipRect"sv) {
+                    Array<float, 2> clip {};
+                    glGetUniformfv(program_handle, location, clip.data());
+                    uniform_snapshot.ui_scale_clip[2] = clip[0];
+                    uniform_snapshot.ui_scale_clip[3] = clip[1];
+                } else if (type == GL_FLOAT && uniform_name == "uTransformRotateZ"sv) {
+                    glGetUniformfv(program_handle, location, &uniform_snapshot.ui_transform[2]);
+                    uniform_snapshot.ui_transform[3] = 1.0f;
+                } else if (type == GL_FLOAT_VEC2 && uniform_name == "uTransformScale"sv) {
+                    Array<float, 2> transform_scale { 1.0f, 1.0f };
+                    glGetUniformfv(program_handle, location, transform_scale.data());
+                    uniform_snapshot.ui_transform[0] = transform_scale[0];
+                    uniform_snapshot.ui_transform[1] = transform_scale[1];
+                    uniform_snapshot.ui_transform[3] = 1.0f;
+                } else if (type == GL_FLOAT_VEC2 && uniform_name == "uLayoutCenter"sv) {
+                    Array<float, 2> layout_center {};
+                    glGetUniformfv(program_handle, location, layout_center.data());
+                    uniform_snapshot.ui_layout_center[0] = layout_center[0];
+                    uniform_snapshot.ui_layout_center[1] = layout_center[1];
+                    uniform_snapshot.ui_transform[3] = 1.0f;
+                } else if (type == GL_FLOAT && uniform_name == "uUseTint"sv) {
+                    glGetUniformfv(program_handle, location, &uniform_snapshot.ui_position_use_tint[3]);
                 }
             }
 #endif
@@ -1564,7 +1618,8 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         auto colored_attempt_count = ++s_colored_render_target_attempt_count;
         auto colored_replay_to_texture_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY_TO_TEXTURE");
         auto colored_replay_enabled = colored_replay_to_texture_enabled && mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COLORED_REPLAY");
-        auto colored_uniforms_supported = active_uniform_count <= 12;
+        auto complex_colored_replay_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_COMPLEX_COLORED_REPLAY");
+        auto colored_uniforms_supported = active_uniform_count <= 5 || complex_colored_replay_enabled;
         auto colored_replay_possible = !strcmp(operation, "drawElements")
             && replay_viewport_valid
             && mode == GL_TRIANGLES
@@ -1580,7 +1635,7 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         auto destination_format = m_context->vulkan_painting_surface_format();
         auto should_log_colored_replay = colored_attempt_count <= 24 || colored_attempt_count % 120 == 0 || render_target_vulkan_stale;
         if (should_log_colored_replay) {
-            dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_ATTEMPT count={} color_texture={} write_count={} vulkan_backed={} vulkan_write_count={} vulkan_stale={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} colored_uniforms_supported={} has_position={} has_color={} position_layout_supported={} color_layout_supported={} position_bytes={} color_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_ATTEMPT count={} color_texture={} write_count={} vulkan_backed={} vulkan_write_count={} vulkan_stale={} program={} enabled={} to_texture_enabled={} complex_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} colored_uniforms_supported={} has_position={} has_color={} position_layout_supported={} color_layout_supported={} position_bytes={} color_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
                 colored_attempt_count,
                 texture_handle,
                 render_target_state->write_count,
@@ -1590,6 +1645,7 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 program_handle,
                 colored_replay_enabled,
                 colored_replay_to_texture_enabled,
+                complex_colored_replay_enabled,
                 colored_replay_possible,
                 operation,
                 mode,
@@ -1614,7 +1670,7 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                     : active_attrib_count != 2 ? "not_two_attrib_colored_mesh"sv
                     : sampler_uniform_count != 0 ? "sampler_based_draw_not_colored_mesh"sv
-                    : !colored_uniforms_supported ? "unsupported_colored_shader_uniform_shape"sv
+                    : !colored_uniforms_supported ? "unsupported_complex_colored_shader_uniform_shape"sv
                     : !has_position_attrib ? "missing_position_attrib"sv
                     : !has_color_attrib ? "missing_color_attrib"sv
                     : !position_layout_supported ? "unsupported_position_layout"sv
@@ -1941,7 +1997,7 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 }
                 auto* target_image_override = imported_render_target_texture->image.ptr();
                 auto target_format = to_underlying(target_image_override->info.format);
-                auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(target_format, uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], solid_attempt_count, target_image_override);
+                auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(target_format, uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], solid_attempt_count, false, 0, 0, target_image_override);
                 if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
                     dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} program={} to_texture=true attempted={} supported={} executed={} reason={} next_step={}",
                         solid_attempt_count,
@@ -3069,10 +3125,13 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && blend_dst_rgb == GL_ONE_MINUS_SRC_ALPHA
                 && blend_equation_rgb == GL_FUNC_ADD;
             auto solid_uniforms_supported = active_uniform_count <= 5;
+            auto depth_state_supported = !depth_test_enabled || depth_write_mask == GL_FALSE;
+            auto cull_state_supported = !cull_face_enabled || cull_face_mode != GL_FRONT_AND_BACK;
             auto solid_gl_state_supported = color_mask_supported
                 && blend_state_supported
-                && !depth_test_enabled
+                && depth_state_supported
                 && !stencil_test_enabled
+                && cull_state_supported
                 && !scissor_test_enabled;
             auto can_replay = position_layout_supported && position_ready && element_ready && destination_format.has_value()
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
@@ -3115,8 +3174,9 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !solid_uniforms_supported ? "unsupported_solid_shader_uniform_shape"sv
                         : !color_mask_supported ? "unsupported_color_mask_state"sv
                         : !blend_state_supported ? "unsupported_blend_state"sv
-                        : depth_test_enabled ? "unsupported_depth_state"sv
+                        : !depth_state_supported ? "unsupported_depth_state"sv
                         : stencil_test_enabled ? "unsupported_stencil_state"sv
+                        : !cull_state_supported ? "unsupported_cull_state"sv
                         : scissor_test_enabled ? "unsupported_scissor_state"sv
                         : !solid_replay_enabled ? "solid_replay_disabled_by_environment"sv
                         : "ready"sv,
@@ -3170,10 +3230,36 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 }
                 return true;
             }
+            auto skip_black_render_target_solid = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_BLACK_RENDER_TARGET_SOLID")
+                && bound_texture_render_target_written
+                && uniform_snapshot.diffuse[0] == 0.0f
+                && uniform_snapshot.diffuse[1] == 0.0f
+                && uniform_snapshot.diffuse[2] == 0.0f
+                && uniform_snapshot.diffuse[3] == 1.0f
+                && uniform_snapshot.opacity == 1.0f
+                && uniform_snapshot.output_intensity == 1.0f;
+            if (skip_black_render_target_solid) {
+                static size_t s_skipped_black_render_target_solid_count { 0 };
+                auto skipped_black_solid_count = ++s_skipped_black_render_target_solid_count;
+                if (skipped_black_solid_count <= 24 || skipped_black_solid_count % 120 == 0) {
+                    dbgln("MUNDO_WEBGL_SKIP_POST_DIRECT_BLACK_RENDER_TARGET_SOLID count={} attempt_count={} program={} bound_texture={} render_target_write_count={} render_target_size={}x{} draw_count={} type={} offset={} reason=black_render_target_solid_would_occlude_post_video_panels next_step=verify_panels_visible_then_replace_with_correct_gl_equivalent_composition",
+                        skipped_black_solid_count,
+                        attempt_count,
+                        program_handle,
+                        bound_texture_handle,
+                        bound_texture_render_target_write_count,
+                        bound_texture_render_target_width,
+                        bound_texture_render_target_height,
+                        count,
+                        type,
+                        offset);
+                }
+                return true;
+            }
             if (!can_replay)
                 return false;
 
-            auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(destination_format.value(), uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count);
+            auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(destination_format.value(), uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, cull_face_enabled, static_cast<u32>(cull_face_mode), static_cast<u32>(front_face));
             if (!solid_pipeline_probe.executed)
                 return false;
 
@@ -3190,8 +3276,10 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             }
             return true;
         };
-        if (try_post_direct_vulkan_solid_mesh_replay())
+        if (try_post_direct_vulkan_solid_mesh_replay()) {
+            needs_to_present();
             return;
+        }
 
         auto try_post_direct_vulkan_textured_render_target_replay = [&]() -> bool {
             if (!direct_vulkan_mesh_mode || !gl_after_direct_vulkan_video || vulkan_video_draw_used_sampler)
@@ -3437,6 +3525,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && sampler_unresolved_count == 0
                 && sampler_snapshot_complete_count > 0
                 && sampler_render_target_count + sampler_snapshot_complete_count == sampler_uniform_count;
+            auto alpha_map_replay_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALPHA_MAP");
             auto allow_extra_samplers = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALLOW_EXTRA_SAMPLERS")
                 || resolved_static_extra_samplers_supported;
             auto sampler_count_supported = sampler_uniform_count == 1
@@ -3462,7 +3551,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && replay_viewport_valid
                 && mode == GL_TRIANGLES;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ATTEMPT count={} program={} source_texture={} source_write_count={} source_vulkan_backed={} source_vulkan_write_count={} source_viewport={}x{} source_program={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} sampler_render_targets={} sampler_videos={} sampler_snapshots={} sampler_unresolved={} allow_extra_samplers={} sampler_count_supported={} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_ready={} uv_ready={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ATTEMPT count={} program={} source_texture={} source_write_count={} source_vulkan_backed={} source_vulkan_write_count={} source_viewport={}x{} source_program={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} sampler_render_targets={} sampler_videos={} sampler_snapshots={} sampler_unresolved={} allow_extra_samplers={} alpha_map_replay_enabled={} sampler_count_supported={} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_ready={} uv_ready={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
                     attempt_count,
                     program_handle,
                     source_texture_handle,
@@ -3482,6 +3571,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     sampler_snapshot_complete_count,
                     sampler_unresolved_count,
                     allow_extra_samplers,
+                    alpha_map_replay_enabled,
                     sampler_count_supported,
                     has_position_attrib,
                     has_uv_attrib,
@@ -3522,7 +3612,16 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 return false;
             auto* source_image_texture = source_image_or_error.release_value();
             Gfx::VulkanImage* alpha_image = nullptr;
-            if (static_sampler_texture) {
+            if (static_sampler_texture && !alpha_map_replay_enabled) {
+                if (attempt_count <= 24 || attempt_count % 120 == 0) {
+                    dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ALPHA_UPLOAD count={} program={} status=skipped source_texture={} alpha_texture={} reason=alpha_map_replay_disabled_by_default next_step=verify_panel_visibility_without_alpha_mask_then_reenable_with_correct_channel_semantics",
+                        attempt_count,
+                        program_handle,
+                        source_texture_handle,
+                        static_sampler_texture_handle);
+                }
+            }
+            if (static_sampler_texture && alpha_map_replay_enabled) {
                 auto const& snapshot = static_sampler_texture->mundo_texture_upload_snapshot();
                 if (!snapshot.has_value() || !snapshot->complete) {
                     if (attempt_count <= 24 || attempt_count % 120 == 0) {
@@ -3593,8 +3692,10 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             m_context->note_direct_vulkan_video_draw_submitted();
             return true;
         };
-        if (try_post_direct_vulkan_textured_render_target_replay())
+        if (try_post_direct_vulkan_textured_render_target_replay()) {
+            needs_to_present();
             return;
+        }
 #endif
         if (gl_after_direct_vulkan_video && note_mundo_framebuffer_draw("drawElements", mode, count, type, offset, true)) {
             static size_t s_post_direct_render_target_replay_skip_count { 0 };
@@ -3614,7 +3715,45 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     offset);
             }
             m_context->note_direct_vulkan_video_draw_submitted();
+            needs_to_present();
             return;
+        }
+        if (gl_after_direct_vulkan_video && m_texture_binding_2d && !m_texture_binding_2d->has_hardware_video_backing()) {
+            auto const& texture_snapshot = m_texture_binding_2d->mundo_texture_upload_snapshot();
+            auto const& render_target_write_state = m_texture_binding_2d->mundo_render_target_write_state();
+            auto texture_has_complete_source = (texture_snapshot.has_value() && texture_snapshot->complete) || (render_target_write_state.has_value() && render_target_write_state->current_contents_vulkan_backed);
+            if (!texture_has_complete_source) {
+                static size_t s_skipped_post_direct_incomplete_texture_draw_count { 0 };
+                auto skip_count = ++s_skipped_post_direct_incomplete_texture_draw_count;
+                if (skip_count <= 24 || skip_count % 120 == 0) {
+                    GLuint program_handle = 0;
+                    GLuint texture_handle = 0;
+                    if (m_current_program) {
+                        auto handle_or_error = m_current_program->handle(this);
+                        if (!handle_or_error.is_error())
+                            program_handle = handle_or_error.value();
+                    }
+                    auto texture_handle_or_error = m_texture_binding_2d->handle(this);
+                    if (!texture_handle_or_error.is_error())
+                        texture_handle = texture_handle_or_error.value();
+                    dbgln("MUNDO_WEBGL_SKIP_POST_DIRECT_INCOMPLETE_TEXTURE_DRAW count={} program={} texture={} draw_count={} type={} offset={} snapshot={} complete={} snapshot_size={}x{} render_target_written={} render_target_vulkan_backed={} reason=post_direct_texture_has_no_complete_source next_step=avoid_gl_present_from_empty_overlay_draw",
+                        skip_count,
+                        program_handle,
+                        texture_handle,
+                        count,
+                        type,
+                        offset,
+                        texture_snapshot.has_value(),
+                        texture_snapshot.has_value() ? texture_snapshot->complete : false,
+                        texture_snapshot.has_value() ? texture_snapshot->width : 0,
+                        texture_snapshot.has_value() ? texture_snapshot->height : 0,
+                        render_target_write_state.has_value(),
+                        render_target_write_state.has_value() ? render_target_write_state->current_contents_vulkan_backed : false);
+                }
+                m_context->note_direct_vulkan_video_draw_submitted();
+                needs_to_present();
+                return;
+            }
         }
         glDrawElements(mode, count, type, reinterpret_cast<void*>(offset));
         m_context->note_gl_draw_submitted();

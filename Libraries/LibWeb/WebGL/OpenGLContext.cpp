@@ -2453,7 +2453,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_vi
     };
 }
 
-OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_solid_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, Gfx::VulkanImage* target_image_override)
+OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_solid_mesh_pipeline(u32 destination_format, VulkanSolidMeshUniformSnapshot const& uniform_snapshot, ReadonlyBytes position_data, ReadonlyBytes index_data, u32 draw_count, u32 draw_type, u64 draw_offset, int viewport_x, int viewport_y, int viewport_width, int viewport_height, size_t log_count, bool cull_face_enabled, u32 cull_face_mode, u32 front_face, Gfx::VulkanImage* target_image_override)
 {
     struct SolidPushConstants {
         Array<float, 16> model_view_matrix {};
@@ -2463,6 +2463,10 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         float opacity { 1.0f };
         float output_intensity { 1.0f };
         float _pad0 { 0.0f };
+        Array<float, 4> ui_position_use_tint { 0.0f, 0.0f, 0.0f, 0.0f };
+        Array<float, 4> ui_scale_clip { 1.0f, 1.0f, 0.0f, 0.0f };
+        Array<float, 4> ui_transform { 1.0f, 1.0f, 0.0f, 0.0f };
+        Array<float, 4> ui_layout_center { 0.0f, 0.0f, 0.0f, 0.0f };
     };
     constexpr size_t solid_ring_slot_count = 3;
     struct SolidPipelineResources {
@@ -2473,6 +2477,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         VkRenderPass render_pass { VK_NULL_HANDLE };
         VkPipelineLayout pipeline_layout { VK_NULL_HANDLE };
         VkPipeline pipeline { VK_NULL_HANDLE };
+        VkCullModeFlags cull_mode { VK_CULL_MODE_NONE };
+        VkFrontFace front_face { VK_FRONT_FACE_COUNTER_CLOCKWISE };
         VkCommandPool ring_command_pool { VK_NULL_HANDLE };
         Array<VkCommandBuffer, solid_ring_slot_count> ring_command_buffers {};
         Array<VkFence, solid_ring_slot_count> ring_fences {};
@@ -2485,6 +2491,22 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
     auto const& context = m_skia_backend_context->vulkan_context();
     auto format = static_cast<VkFormat>(destination_format);
     VkResult result { VK_SUCCESS };
+    auto vulkan_cull_mode = VK_CULL_MODE_NONE;
+    if (cull_face_enabled) {
+        if (cull_face_mode == GL_FRONT)
+            vulkan_cull_mode = VK_CULL_MODE_FRONT_BIT;
+        else if (cull_face_mode == GL_FRONT_AND_BACK)
+            vulkan_cull_mode = VK_CULL_MODE_FRONT_AND_BACK;
+        else
+            vulkan_cull_mode = VK_CULL_MODE_BACK_BIT;
+    }
+    auto gl_front_face = front_face == GL_CW ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    auto vulkan_front_face = gl_front_face;
+    if (cull_face_enabled) {
+        // This replay path uses a Vulkan viewport transform that flips Y relative
+        // to the GL framebuffer path, so the effective winding is inverted.
+        vulkan_front_face = gl_front_face == VK_FRONT_FACE_CLOCKWISE ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+    }
 
     auto log_failure = [&](StringView reason, VkResult result = VK_SUCCESS) {
         if (should_log) {
@@ -2572,7 +2594,9 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
     };
     if (s_resources.pipeline != VK_NULL_HANDLE) {
         auto matches = s_resources.device == context.logical_device
-            && s_resources.destination_format == format;
+            && s_resources.destination_format == format
+            && s_resources.cull_mode == vulkan_cull_mode
+            && s_resources.front_face == vulkan_front_face;
         if (!matches) {
             reset_solid_pipeline_resources();
             pipeline_cache_status = "recreated"sv;
@@ -2691,8 +2715,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             .depthClampEnable = VK_FALSE,
             .rasterizerDiscardEnable = VK_FALSE,
             .polygonMode = VK_POLYGON_MODE_FILL,
-            .cullMode = VK_CULL_MODE_NONE,
-            .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            .cullMode = vulkan_cull_mode,
+            .frontFace = vulkan_front_face,
             .depthBiasEnable = VK_FALSE,
             .depthBiasConstantFactor = 0.0f,
             .depthBiasClamp = 0.0f,
@@ -2765,6 +2789,8 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
 
         s_resources.device = context.logical_device;
         s_resources.destination_format = format;
+        s_resources.cull_mode = vulkan_cull_mode;
+        s_resources.front_face = vulkan_front_face;
     }
 
     if (s_resources.ring_command_pool == VK_NULL_HANDLE) {
@@ -2936,6 +2962,10 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         .opacity = uniform_snapshot.opacity,
         .output_intensity = uniform_snapshot.output_intensity,
         ._pad0 = 0.0f,
+        .ui_position_use_tint = uniform_snapshot.ui_position_use_tint,
+        .ui_scale_clip = uniform_snapshot.ui_scale_clip,
+        .ui_transform = uniform_snapshot.ui_transform,
+        .ui_layout_center = uniform_snapshot.ui_layout_center,
     };
     vkCmdPushConstants(command_buffer, s_resources.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
     VkDeviceSize vertex_offset = 0;
@@ -2990,7 +3020,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
         return log_failure("wait_solid_draw_command_buffer_failed"sv, result);
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_SOLID_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} next_step=replace_matching_post_video_gl_draw_with_solid_vulkan_mesh",
+        dbgln("MUNDO_WEBGL_SOLID_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} cull_enabled={} gl_cull_mode={} gl_front_face={} vk_cull_mode={} vk_front_face={} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} next_step=replace_matching_post_video_gl_draw_with_solid_vulkan_mesh",
             log_count,
             probe_count,
             pipeline_cache_status,
@@ -3012,6 +3042,11 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_so
             viewport_height,
             viewport_x,
             viewport_y,
+            cull_face_enabled,
+            cull_face_mode,
+            front_face,
+            static_cast<u32>(vulkan_cull_mode),
+            static_cast<u32>(vulkan_front_face),
             uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix,
             uniform_snapshot.diffuse[0],
             uniform_snapshot.diffuse[1],
@@ -3532,7 +3567,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
         return log_failure("wait_colored_draw_command_buffer_failed"sv, result);
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_COLORED_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} vertex_bindings=2 vertex_attributes=2 next_step=replace_colored_render_target_producer_with_vulkan_mesh",
+        dbgln("MUNDO_WEBGL_COLORED_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} target_override={} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} ui_position=({}, {}, {}) ui_scale=({}, {}) ui_transform_scale=({}, {}) ui_rotate_z={} ui_layout_center=({}, {}) ui_use_tint={} vertex_bindings=2 vertex_attributes=2 next_step=replace_colored_render_target_producer_with_vulkan_mesh",
             log_count,
             probe_count,
             pipeline_cache_status,
@@ -3560,7 +3595,18 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_co
             uniform_snapshot.diffuse[2],
             uniform_snapshot.diffuse[3],
             uniform_snapshot.opacity,
-            uniform_snapshot.output_intensity);
+            uniform_snapshot.output_intensity,
+            uniform_snapshot.ui_position_use_tint[0],
+            uniform_snapshot.ui_position_use_tint[1],
+            uniform_snapshot.ui_position_use_tint[2],
+            uniform_snapshot.ui_scale_clip[0],
+            uniform_snapshot.ui_scale_clip[1],
+            uniform_snapshot.ui_transform[0],
+            uniform_snapshot.ui_transform[1],
+            uniform_snapshot.ui_transform[2],
+            uniform_snapshot.ui_layout_center[0],
+            uniform_snapshot.ui_layout_center[1],
+            uniform_snapshot.ui_position_use_tint[3]);
     }
     return VulkanVideoMeshPipelineProbeResult {
         .attempted = true,
