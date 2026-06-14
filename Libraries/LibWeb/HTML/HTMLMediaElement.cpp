@@ -1673,11 +1673,16 @@ void HTMLMediaElement::select_resource()
                         static_cast<void const*>(this), m_pending_play_promises.size(), m_current_src);
                     return;
                 }
-                if (m_current_src.contains(".m3u8"sv)) {
+                if (m_current_src.contains(".m3u8"sv) && !paused()) {
                     dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring empty src attribute while current_src={} is active", static_cast<void const*>(this), m_current_src);
                     if (mundo_is_vr_hls_url(m_current_src))
                         document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("empty_vr_hls_select_ignored");
                     return;
+                }
+                if (m_current_src.contains(".m3u8"sv)) {
+                    dbgln("MUNDO_MEDIA_ELEMENT element={} accepting empty src attribute as stopped HLS reset current_src={}", static_cast<void const*>(this), m_current_src);
+                    m_current_src = {};
+                    m_mundo_last_hls_src_attribute = {};
                 }
                 failed_with_attribute("The 'src' attribute is empty"_string);
                 return;

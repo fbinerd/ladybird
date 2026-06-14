@@ -3068,7 +3068,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && blend_src_rgb == GL_SRC_ALPHA
                 && blend_dst_rgb == GL_ONE_MINUS_SRC_ALPHA
                 && blend_equation_rgb == GL_FUNC_ADD;
-            auto solid_uniforms_supported = active_uniform_count <= 4;
+            auto solid_uniforms_supported = active_uniform_count <= 5;
             auto solid_gl_state_supported = color_mask_supported
                 && blend_state_supported
                 && !depth_test_enabled
