@@ -139,6 +139,16 @@ public:
         Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
         float opacity { 1.0f };
         float output_intensity { 1.0f };
+        bool has_edge_fade_top { false };
+        bool has_edge_fade_bottom { false };
+        bool has_edge_fade_params { false };
+        bool has_panel_size { false };
+        bool has_time { false };
+        bool has_loading { false };
+        bool has_gradient_top { false };
+        bool has_gradient_bottom { false };
+        bool has_uv_rect { false };
+        bool has_content_size { false };
         float edge_fade_top { 0.0f };
         float edge_fade_bottom { 0.0f };
         Array<float, 2> edge_fade_params { 0.0f, 0.0f };

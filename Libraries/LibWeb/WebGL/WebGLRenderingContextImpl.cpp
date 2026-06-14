@@ -3443,24 +3443,34 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         uniform_snapshot.diffuse = diffuse;
                     } else if (uniform_type == GL_FLOAT && uniform_name_view == "edgeFadeTop"sv) {
                         glGetUniformfv(program_handle, location, &uniform_snapshot.edge_fade_top);
+                        uniform_snapshot.has_edge_fade_top = true;
                     } else if (uniform_type == GL_FLOAT && uniform_name_view == "edgeFadeBottom"sv) {
                         glGetUniformfv(program_handle, location, &uniform_snapshot.edge_fade_bottom);
+                        uniform_snapshot.has_edge_fade_bottom = true;
                     } else if (uniform_type == GL_FLOAT_VEC2 && uniform_name_view == "edgeFadeParams"sv) {
                         glGetUniformfv(program_handle, location, uniform_snapshot.edge_fade_params.data());
+                        uniform_snapshot.has_edge_fade_params = true;
                     } else if (uniform_type == GL_FLOAT_VEC2 && uniform_name_view == "panelSize"sv) {
                         glGetUniformfv(program_handle, location, uniform_snapshot.panel_size.data());
+                        uniform_snapshot.has_panel_size = true;
                     } else if (uniform_type == GL_FLOAT && uniform_name_view == "time"sv) {
                         glGetUniformfv(program_handle, location, &uniform_snapshot.time);
+                        uniform_snapshot.has_time = true;
                     } else if (uniform_type == GL_FLOAT && uniform_name_view == "loading"sv) {
                         glGetUniformfv(program_handle, location, &uniform_snapshot.loading);
+                        uniform_snapshot.has_loading = true;
                     } else if (uniform_type == GL_FLOAT && uniform_name_view == "gradientTop"sv) {
                         glGetUniformfv(program_handle, location, &uniform_snapshot.gradient_top);
+                        uniform_snapshot.has_gradient_top = true;
                     } else if (uniform_type == GL_FLOAT && uniform_name_view == "gradientBottom"sv) {
                         glGetUniformfv(program_handle, location, &uniform_snapshot.gradient_bottom);
+                        uniform_snapshot.has_gradient_bottom = true;
                     } else if (uniform_type == GL_FLOAT_VEC4 && uniform_name_view == "uvRect"sv) {
                         glGetUniformfv(program_handle, location, uniform_snapshot.uv_rect.data());
+                        uniform_snapshot.has_uv_rect = true;
                     } else if (uniform_type == GL_FLOAT_VEC2 && uniform_name_view == "size"sv) {
                         glGetUniformfv(program_handle, location, uniform_snapshot.content_size.data());
+                        uniform_snapshot.has_content_size = true;
                     } else if (is_sampler) {
                         glGetUniformiv(program_handle, location, &sampler_unit);
                         if (sampler_unit >= 0 && static_cast<size_t>(sampler_unit) < m_mundo_texture_binding_2d_by_unit.size()) {
@@ -3877,17 +3887,49 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 return false;
 
             m_context->note_direct_vulkan_video_draw_submitted();
-            if (mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS")
-                && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"))
+            auto replace_textured_render_target_gl_draw = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS")
+                && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE");
+            auto is_panel_like_textured_render_target_consumer = uniform_snapshot.has_panel_size
+                || uniform_snapshot.has_edge_fade_top
+                || uniform_snapshot.has_edge_fade_bottom
+                || uniform_snapshot.has_edge_fade_params
+                || uniform_snapshot.has_uv_rect
+                || uniform_snapshot.has_content_size
+                || (uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom);
+            auto replace_alpha_textured_render_target_gl_draw = replace_textured_render_target_gl_draw
+                && (!static_sampler_texture || mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_ALPHA_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"));
+            auto replace_panel_textured_render_target_gl_draw = replace_alpha_textured_render_target_gl_draw
+                && (!is_panel_like_textured_render_target_consumer || mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"));
+            if (replace_panel_textured_render_target_gl_draw)
                 return true;
 
             static size_t s_textured_replay_validate_only_count { 0 };
             auto validate_only_count = ++s_textured_replay_validate_only_count;
             if (validate_only_count <= 24 || validate_only_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_VALIDATE_ONLY count={} program={} source_texture={} reason=vulkan_replay_executed_but_gl_draw_kept_for_panel_parity next_step=enable_UNSAFE_replace_only_after_textured_panel_visual_parity",
+                auto reason = "vulkan_replay_executed_but_gl_draw_kept_for_panel_parity"sv;
+                auto next_step = "enable_UNSAFE_replace_only_after_textured_panel_visual_parity"sv;
+                if (replace_textured_render_target_gl_draw && static_sampler_texture) {
+                    reason = "alpha_textured_vulkan_replay_executed_but_gl_draw_kept_for_alpha_panel_parity"sv;
+                    next_step = "enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_ALPHA_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE_only_after_alpha_mask_visual_parity"sv;
+                } else if (replace_alpha_textured_render_target_gl_draw && is_panel_like_textured_render_target_consumer) {
+                    reason = "panel_like_textured_vulkan_replay_executed_but_gl_draw_kept_for_ui_panel_parity"sv;
+                    next_step = "enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE_only_after_panel_depth_alpha_and_clipping_parity"sv;
+                }
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_VALIDATE_ONLY count={} program={} source_texture={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} reason={} next_step={}",
                     validate_only_count,
                     program_handle,
-                    source_texture_handle);
+                    source_texture_handle,
+                    static_sampler_texture != nullptr,
+                    is_panel_like_textured_render_target_consumer,
+                    uniform_snapshot.has_edge_fade_top,
+                    uniform_snapshot.has_edge_fade_bottom,
+                    uniform_snapshot.has_edge_fade_params,
+                    uniform_snapshot.has_panel_size,
+                    uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom,
+                    uniform_snapshot.has_uv_rect,
+                    uniform_snapshot.has_content_size,
+                    reason,
+                    next_step);
             }
             return false;
         };
