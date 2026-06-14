@@ -3246,7 +3246,6 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 return true;
             }
             auto skip_black_render_target_solid = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_BLACK_RENDER_TARGET_SOLID")
-                && bound_texture_render_target_written
                 && uniform_snapshot.diffuse[0] == 0.0f
                 && uniform_snapshot.diffuse[1] == 0.0f
                 && uniform_snapshot.diffuse[2] == 0.0f
@@ -3257,11 +3256,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 static size_t s_skipped_black_render_target_solid_count { 0 };
                 auto skipped_black_solid_count = ++s_skipped_black_render_target_solid_count;
                 if (skipped_black_solid_count <= 24 || skipped_black_solid_count % 120 == 0) {
-                    dbgln("MUNDO_WEBGL_SKIP_POST_DIRECT_BLACK_RENDER_TARGET_SOLID count={} attempt_count={} program={} bound_texture={} render_target_write_count={} render_target_size={}x{} draw_count={} type={} offset={} reason=black_render_target_solid_would_occlude_post_video_panels next_step=verify_panels_visible_then_replace_with_correct_gl_equivalent_composition",
+                    dbgln("MUNDO_WEBGL_SKIP_POST_DIRECT_BLACK_RENDER_TARGET_SOLID count={} attempt_count={} program={} bound_texture={} bound_texture_render_target={} render_target_write_count={} render_target_size={}x{} draw_count={} type={} offset={} reason=black_solid_would_occlude_post_video_panels next_step=verify_panels_visible_then_replace_with_correct_gl_equivalent_composition",
                         skipped_black_solid_count,
                         attempt_count,
                         program_handle,
                         bound_texture_handle,
+                        bound_texture_render_target_written,
                         bound_texture_render_target_write_count,
                         bound_texture_render_target_width,
                         bound_texture_render_target_height,
