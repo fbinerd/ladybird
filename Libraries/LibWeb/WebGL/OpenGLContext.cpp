@@ -3882,6 +3882,17 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         float opacity { 1.0f };
         float output_intensity { 1.0f };
         float flip_y { 0.0f };
+        float edge_fade_top { 0.0f };
+        float edge_fade_bottom { 0.0f };
+        Array<float, 2> edge_fade_params { 0.0f, 0.0f };
+        Array<float, 2> panel_size { 1.0f, 1.0f };
+        float time { 0.0f };
+        float loading { 0.0f };
+        float gradient_top { 0.0f };
+        float gradient_bottom { 0.0f };
+        Array<float, 2> padding_before_uv_rect { 0.0f, 0.0f };
+        Array<float, 4> uv_rect { 0.0f, 0.0f, 1.0f, 1.0f };
+        Array<float, 2> content_size { 1.0f, 1.0f };
     };
     constexpr size_t textured_ring_slot_count = 3;
     struct TexturedPipelineResources {
@@ -4962,6 +4973,16 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         .opacity = uniform_snapshot.opacity,
         .output_intensity = uniform_snapshot.output_intensity,
         .flip_y = 0.0f,
+        .edge_fade_top = uniform_snapshot.edge_fade_top,
+        .edge_fade_bottom = uniform_snapshot.edge_fade_bottom,
+        .edge_fade_params = uniform_snapshot.edge_fade_params,
+        .panel_size = uniform_snapshot.panel_size,
+        .time = uniform_snapshot.time,
+        .loading = uniform_snapshot.loading,
+        .gradient_top = uniform_snapshot.gradient_top,
+        .gradient_bottom = uniform_snapshot.gradient_bottom,
+        .uv_rect = uniform_snapshot.uv_rect,
+        .content_size = uniform_snapshot.content_size,
     };
     vkCmdPushConstants(command_buffer, s_resources.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_constants), &push_constants);
     VkBuffer vertex_buffers[] { replay_buffers.position_buffer->buffer, replay_buffers.uv_buffer->buffer };

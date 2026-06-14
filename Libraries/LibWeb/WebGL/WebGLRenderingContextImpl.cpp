@@ -3310,6 +3310,29 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             if (!program_handle)
                 return false;
 
+            if (mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SHADER_SOURCE_LOG") && m_current_program) {
+                static Vector<GLuint> s_logged_post_direct_textured_programs;
+                if (!s_logged_post_direct_textured_programs.contains_slow(program_handle)) {
+                    s_logged_post_direct_textured_programs.append(program_handle);
+                    auto log_shader_source = [&](StringView stage, GC::Ptr<WebGLShader> shader) {
+                        if (!shader)
+                            return;
+                        auto source = get_shader_source(GC::make_root(*shader));
+                        if (!source.has_value())
+                            return;
+                        dbgln("MUNDO_WEBGL_POST_DIRECT_SHADER_SOURCE program={} stage={} bytes={} begin\n{}\nMUNDO_WEBGL_POST_DIRECT_SHADER_SOURCE program={} stage={} end",
+                            program_handle,
+                            stage,
+                            source->bytes().size(),
+                            *source,
+                            program_handle,
+                            stage);
+                    };
+                    log_shader_source("vertex"sv, m_current_program->attached_vertex_shader());
+                    log_shader_source("fragment"sv, m_current_program->attached_fragment_shader());
+                }
+            }
+
             GLint active_uniform_count = 0;
             glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_UNIFORMS, 1, nullptr, &active_uniform_count);
 
@@ -3413,6 +3436,26 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
                         glGetUniformfv(program_handle, location, diffuse.data());
                         uniform_snapshot.diffuse = diffuse;
+                    } else if (uniform_type == GL_FLOAT && uniform_name_view == "edgeFadeTop"sv) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.edge_fade_top);
+                    } else if (uniform_type == GL_FLOAT && uniform_name_view == "edgeFadeBottom"sv) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.edge_fade_bottom);
+                    } else if (uniform_type == GL_FLOAT_VEC2 && uniform_name_view == "edgeFadeParams"sv) {
+                        glGetUniformfv(program_handle, location, uniform_snapshot.edge_fade_params.data());
+                    } else if (uniform_type == GL_FLOAT_VEC2 && uniform_name_view == "panelSize"sv) {
+                        glGetUniformfv(program_handle, location, uniform_snapshot.panel_size.data());
+                    } else if (uniform_type == GL_FLOAT && uniform_name_view == "time"sv) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.time);
+                    } else if (uniform_type == GL_FLOAT && uniform_name_view == "loading"sv) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.loading);
+                    } else if (uniform_type == GL_FLOAT && uniform_name_view == "gradientTop"sv) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.gradient_top);
+                    } else if (uniform_type == GL_FLOAT && uniform_name_view == "gradientBottom"sv) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.gradient_bottom);
+                    } else if (uniform_type == GL_FLOAT_VEC4 && uniform_name_view == "uvRect"sv) {
+                        glGetUniformfv(program_handle, location, uniform_snapshot.uv_rect.data());
+                    } else if (uniform_type == GL_FLOAT_VEC2 && uniform_name_view == "size"sv) {
+                        glGetUniformfv(program_handle, location, uniform_snapshot.content_size.data());
                     } else if (is_sampler) {
                         glGetUniformiv(program_handle, location, &sampler_unit);
                         if (sampler_unit >= 0 && static_cast<size_t>(sampler_unit) < m_mundo_texture_binding_2d_by_unit.size()) {

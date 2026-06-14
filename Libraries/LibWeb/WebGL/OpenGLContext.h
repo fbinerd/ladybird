@@ -139,6 +139,16 @@ public:
         Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
         float opacity { 1.0f };
         float output_intensity { 1.0f };
+        float edge_fade_top { 0.0f };
+        float edge_fade_bottom { 0.0f };
+        Array<float, 2> edge_fade_params { 0.0f, 0.0f };
+        Array<float, 2> panel_size { 1.0f, 1.0f };
+        float time { 0.0f };
+        float loading { 0.0f };
+        float gradient_top { 0.0f };
+        float gradient_bottom { 0.0f };
+        Array<float, 4> uv_rect { 0.0f, 0.0f, 1.0f, 1.0f };
+        Array<float, 2> content_size { 1.0f, 1.0f };
         Array<float, 4> ui_position_use_tint { 0.0f, 0.0f, 0.0f, 0.0f };
         Array<float, 4> ui_scale_clip { 1.0f, 1.0f, 0.0f, 0.0f };
         Array<float, 4> ui_transform { 1.0f, 1.0f, 0.0f, 0.0f };
