@@ -1741,9 +1741,10 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     colored_pipeline_probe.executed ? "move_colored_mesh_output_from_painting_surface_probe_to_offscreen_render_target_image" : "fix_colored_mesh_probe_before_offscreen_target");
             }
             if (target_image_override && colored_pipeline_probe.executed) {
-                texture->mark_mundo_render_target_vulkan_backed();
-                if (allow_vulkan_skip_gl_draw)
+                if (allow_vulkan_skip_gl_draw) {
+                    texture->mark_mundo_render_target_vulkan_backed();
                     return true;
+                }
             }
         }
 
@@ -1907,9 +1908,10 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                                     textured_pipeline_probe.executed ? "verify_static_textured_render_target_consumers_can_stay_vulkan_backed" : "fix_static_textured_mesh_probe_before_replacing_gl_draw");
                             }
                             if (textured_pipeline_probe.executed) {
-                                texture->mark_mundo_render_target_vulkan_backed();
-                                if (allow_vulkan_skip_gl_draw)
+                                if (allow_vulkan_skip_gl_draw) {
+                                    texture->mark_mundo_render_target_vulkan_backed();
                                     return true;
+                                }
                             }
                         }
                     }
@@ -2020,9 +2022,10 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                         solid_pipeline_probe.executed ? "verify_solid_render_target_consumers_can_sample_imported_texture" : "fix_solid_mesh_probe_before_offscreen_target");
                 }
                 if (solid_pipeline_probe.executed) {
-                    texture->mark_mundo_render_target_vulkan_backed();
-                    if (allow_vulkan_skip_gl_draw)
+                    if (allow_vulkan_skip_gl_draw) {
+                        texture->mark_mundo_render_target_vulkan_backed();
                         return true;
+                    }
                 }
             }
         }
