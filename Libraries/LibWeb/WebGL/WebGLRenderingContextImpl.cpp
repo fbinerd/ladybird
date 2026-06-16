@@ -187,6 +187,15 @@ static size_t mundo_webgl_env_size_value(char const* name, size_t default_value)
     return parsed_value > 0 ? static_cast<size_t>(parsed_value) : default_value;
 }
 
+static StringView mundo_webgl_env_string_value(char const* name, StringView default_value)
+{
+    auto const* value = getenv(name);
+    if (!value || value[0] == '\0')
+        return default_value;
+
+    return { value, strlen(value) };
+}
+
 static bool mundo_webgl_video_direct_vulkan_mesh_enabled()
 {
     auto const* value = getenv("MUNDO_WEBGL_VIDEO_DIRECT_VULKAN_MESH");
@@ -3601,6 +3610,17 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             auto alpha_map_replay_enabled = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALPHA_MAP");
             auto allow_extra_samplers = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RENDER_TARGET_ALLOW_EXTRA_SAMPLERS")
                 || resolved_static_extra_samplers_supported;
+            auto is_panel_like_textured_render_target_consumer = uniform_snapshot.has_panel_size
+                || uniform_snapshot.has_edge_fade_top
+                || uniform_snapshot.has_edge_fade_bottom
+                || uniform_snapshot.has_edge_fade_params
+                || uniform_snapshot.has_uv_rect
+                || uniform_snapshot.has_content_size
+                || (uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom);
+            auto ignore_panel_replay_depth = is_panel_like_textured_render_target_consumer
+                && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_PANEL_REPLAY_IGNORE_DEPTH");
+            auto ignore_panel_replay_cull = is_panel_like_textured_render_target_consumer
+                && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_PANEL_REPLAY_IGNORE_CULL");
             GLboolean color_write_mask[4] {};
             GLboolean depth_write_mask = GL_FALSE;
             GLint depth_func = 0;
@@ -3757,7 +3777,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : scissor_test_enabled ? "unsupported_scissor_state"sv
                         : "ready"sv,
                     can_replay ? "execute_textured_vulkan_mesh_and_skip_matching_gl_draw" : "keep_gl_draw_until_replay_ready");
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_GL_STATE count={} program={} source_texture={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} blend_supported={} depth_test={} depth_func={} depth_write={} depth_supported={} stencil_test={} cull_face={} cull_face_mode={} front_face={} cull_supported={} scissor_test={} color_mask=({},{},{},{}) color_mask_supported={} state_supported={} reason=textured_replay_needs_matching_gl_state next_step=map_depth_cull_blend_state_for_post_video_render_target_consumers",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_GL_STATE count={} program={} source_texture={} blend={} blend_src_rgb={} blend_dst_rgb={} blend_src_alpha={} blend_dst_alpha={} blend_equation_rgb={} blend_equation_alpha={} blend_supported={} depth_test={} depth_func={} depth_write={} depth_supported={} panel_like={} panel_depth_ignored={} stencil_test={} cull_face={} cull_face_mode={} front_face={} cull_supported={} panel_cull_ignored={} scissor_test={} color_mask=({},{},{},{}) color_mask_supported={} state_supported={} reason=textured_replay_needs_matching_gl_state next_step=map_depth_cull_blend_state_for_post_video_render_target_consumers",
                     attempt_count,
                     program_handle,
                     source_texture_handle,
@@ -3773,11 +3793,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     depth_func,
                     depth_write_mask == GL_TRUE,
                     depth_state_supported,
+                    is_panel_like_textured_render_target_consumer,
+                    ignore_panel_replay_depth,
                     stencil_test_enabled,
                     cull_face_enabled,
                     cull_face_mode,
                     front_face,
                     cull_state_supported,
+                    ignore_panel_replay_cull,
                     scissor_test_enabled,
                     color_write_mask[0] == GL_TRUE,
                     color_write_mask[1] == GL_TRUE,
@@ -3819,8 +3842,45 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 Optional<ByteBuffer> converted_rgba_pixels;
                 ReadonlyBytes rgba_pixels;
                 auto const expected_rgba_size = static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height) * 4;
+                auto alpha_map_rgba_channel = mundo_webgl_env_string_value("MUNDO_WEBGL_POST_DIRECT_VULKAN_ALPHA_MAP_RGBA_CHANNEL", "preserve"sv);
                 if (snapshot->format == GL_RGBA && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= expected_rgba_size) {
-                    rgba_pixels = snapshot->pixels.bytes().slice(0, expected_rgba_size);
+                    auto source_pixels = snapshot->pixels.bytes().slice(0, expected_rgba_size);
+                    if (alpha_map_rgba_channel == "red"sv
+                        || alpha_map_rgba_channel == "green"sv
+                        || alpha_map_rgba_channel == "blue"sv
+                        || alpha_map_rgba_channel == "alpha"sv
+                        || alpha_map_rgba_channel == "inverse-red"sv
+                        || alpha_map_rgba_channel == "inverse-alpha"sv) {
+                        converted_rgba_pixels = ByteBuffer::create_uninitialized(expected_rgba_size).release_value_but_fixme_should_propagate_errors();
+                        auto destination_pixels = converted_rgba_pixels->bytes();
+                        for (size_t i = 0; i < static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height); ++i) {
+                            auto red = source_pixels[i * 4 + 0];
+                            auto green = source_pixels[i * 4 + 1];
+                            auto blue = source_pixels[i * 4 + 2];
+                            auto alpha = source_pixels[i * 4 + 3];
+                            u8 value = 0;
+                            if (alpha_map_rgba_channel == "red"sv)
+                                value = red;
+                            else if (alpha_map_rgba_channel == "green"sv)
+                                value = green;
+                            else if (alpha_map_rgba_channel == "blue"sv)
+                                value = blue;
+                            else if (alpha_map_rgba_channel == "alpha"sv)
+                                value = alpha;
+                            else if (alpha_map_rgba_channel == "inverse-red"sv)
+                                value = 255 - red;
+                            else
+                                value = 255 - alpha;
+
+                            destination_pixels[i * 4 + 0] = value;
+                            destination_pixels[i * 4 + 1] = value;
+                            destination_pixels[i * 4 + 2] = value;
+                            destination_pixels[i * 4 + 3] = value;
+                        }
+                        rgba_pixels = converted_rgba_pixels->bytes();
+                    } else {
+                        rgba_pixels = source_pixels;
+                    }
                 } else if ((snapshot->format == GL_ALPHA || snapshot->format == GL_LUMINANCE) && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height)) {
                     converted_rgba_pixels = ByteBuffer::create_uninitialized(expected_rgba_size).release_value_but_fixme_should_propagate_errors();
                     auto source_pixels = snapshot->pixels.bytes();
@@ -3850,6 +3910,30 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     return false;
                 }
 
+                if (attempt_count <= 24 || attempt_count % 120 == 0) {
+                    auto source_pixels = snapshot->pixels.bytes();
+                    auto byte0 = source_pixels.size() > 0 ? source_pixels[0] : 0;
+                    auto byte1 = source_pixels.size() > 1 ? source_pixels[1] : 0;
+                    auto byte2 = source_pixels.size() > 2 ? source_pixels[2] : 0;
+                    auto byte3 = source_pixels.size() > 3 ? source_pixels[3] : 0;
+                    dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ALPHA_UPLOAD count={} program={} status=ready source_texture={} alpha_texture={} snapshot_size={}x{} internal_format={} format={} type={} byte_length={} rgba_channel={} first_bytes=({},{},{},{}) route=static_alpha_sampler next_step=test_alpha_channel_semantics_before_replacing_gl_alpha_panel_draws",
+                        attempt_count,
+                        program_handle,
+                        source_texture_handle,
+                        static_sampler_texture_handle,
+                        snapshot->width,
+                        snapshot->height,
+                        snapshot->internal_format,
+                        snapshot->format,
+                        snapshot->type,
+                        snapshot->byte_length,
+                        alpha_map_rgba_channel,
+                        byte0,
+                        byte1,
+                        byte2,
+                        byte3);
+                }
+
                 auto signature = pair_int_hash(Traits<ReadonlyBytes>::hash(rgba_pixels), pair_int_hash(u32_hash(snapshot->width), pair_int_hash(u32_hash(snapshot->height), u32_hash(rgba_pixels.size()))));
                 auto alpha_image_or_error = m_context->get_or_create_vulkan_rgba_static_texture_image(static_sampler_texture_handle, snapshot->width, snapshot->height, signature, rgba_pixels, attempt_count);
                 if (alpha_image_or_error.is_error())
@@ -3857,7 +3941,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 alpha_image = alpha_image_or_error.release_value()->image.ptr();
             }
             OpenGLContext::VulkanTexturedMeshPipelineState pipeline_state {
-                .cull_face_enabled = cull_face_enabled,
+                .cull_face_enabled = cull_face_enabled && !ignore_panel_replay_cull,
                 .cull_face_mode = static_cast<u32>(cull_face_mode),
                 .front_face = static_cast<u32>(front_face),
                 .blend_enabled = blend_enabled,
@@ -3867,8 +3951,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 .blend_dst_alpha = static_cast<u32>(blend_dst_alpha),
                 .blend_equation_rgb = static_cast<u32>(blend_equation_rgb),
                 .blend_equation_alpha = static_cast<u32>(blend_equation_alpha),
-                .depth_test_enabled = depth_test_enabled,
-                .depth_write_enabled = depth_write_mask == GL_TRUE,
+                .depth_test_enabled = depth_test_enabled && !ignore_panel_replay_depth,
+                .depth_write_enabled = (depth_write_mask == GL_TRUE) && !ignore_panel_replay_depth,
                 .depth_func = static_cast<u32>(depth_func),
             };
             auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, alpha_image, nullptr, pipeline_state);
@@ -3889,13 +3973,6 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             m_context->note_direct_vulkan_video_draw_submitted();
             auto replace_textured_render_target_gl_draw = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS")
                 && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE");
-            auto is_panel_like_textured_render_target_consumer = uniform_snapshot.has_panel_size
-                || uniform_snapshot.has_edge_fade_top
-                || uniform_snapshot.has_edge_fade_bottom
-                || uniform_snapshot.has_edge_fade_params
-                || uniform_snapshot.has_uv_rect
-                || uniform_snapshot.has_content_size
-                || (uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom);
             auto replace_alpha_textured_render_target_gl_draw = replace_textured_render_target_gl_draw
                 && (!static_sampler_texture || mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_ALPHA_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"));
             auto replace_panel_textured_render_target_gl_draw = replace_alpha_textured_render_target_gl_draw
