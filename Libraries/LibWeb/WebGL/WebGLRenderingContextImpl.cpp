@@ -1741,8 +1741,23 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     colored_pipeline_probe.executed ? "move_colored_mesh_output_from_painting_surface_probe_to_offscreen_render_target_image" : "fix_colored_mesh_probe_before_offscreen_target");
             }
             if (target_image_override && colored_pipeline_probe.executed) {
-                if (allow_vulkan_skip_gl_draw) {
-                    texture->mark_mundo_render_target_vulkan_backed();
+                texture->mark_mundo_render_target_vulkan_backed();
+                auto replace_colored_render_target_gl_draw = allow_vulkan_skip_gl_draw
+                    || mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_RENDER_TARGET_VULKAN_REPLACE_COLORED_GL_DRAWS");
+                if (replace_colored_render_target_gl_draw) {
+                    static size_t s_colored_render_target_replace_count { 0 };
+                    auto replace_count = ++s_colored_render_target_replace_count;
+                    if (replace_count <= 24 || replace_count % 120 == 0) {
+                        dbgln("MUNDO_WEBGL_RENDER_TARGET_COLORED_REPLAY_REPLACE_GL count={} color_texture={} write_count={} vulkan_write_count={} program={} draw_count={} type={} offset={} reason=colored_vulkan_mesh_draw_executed_to_render_target next_step=verify_render_target_consumers_stay_vulkan_backed",
+                            replace_count,
+                            texture_handle,
+                            render_target_state->write_count,
+                            render_target_state->vulkan_write_count,
+                            program_handle,
+                            count,
+                            type,
+                            offset);
+                    }
                     return true;
                 }
             }
@@ -1908,8 +1923,8 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                                     textured_pipeline_probe.executed ? "verify_static_textured_render_target_consumers_can_stay_vulkan_backed" : "fix_static_textured_mesh_probe_before_replacing_gl_draw");
                             }
                             if (textured_pipeline_probe.executed) {
+                                texture->mark_mundo_render_target_vulkan_backed();
                                 if (allow_vulkan_skip_gl_draw) {
-                                    texture->mark_mundo_render_target_vulkan_backed();
                                     return true;
                                 }
                             }
@@ -2022,8 +2037,8 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                         solid_pipeline_probe.executed ? "verify_solid_render_target_consumers_can_sample_imported_texture" : "fix_solid_mesh_probe_before_offscreen_target");
                 }
                 if (solid_pipeline_probe.executed) {
+                    texture->mark_mundo_render_target_vulkan_backed();
                     if (allow_vulkan_skip_gl_draw) {
-                        texture->mark_mundo_render_target_vulkan_backed();
                         return true;
                     }
                 }
@@ -3974,14 +3989,40 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 return false;
 
             m_context->note_direct_vulkan_video_draw_submitted();
-            auto replace_textured_render_target_gl_draw = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS")
-                && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE");
+            auto replace_textured_render_target_gl_draw = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS");
             auto replace_alpha_textured_render_target_gl_draw = replace_textured_render_target_gl_draw
                 && (!static_sampler_texture || mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_ALPHA_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"));
-            auto replace_panel_textured_render_target_gl_draw = replace_alpha_textured_render_target_gl_draw
-                && (!is_panel_like_textured_render_target_consumer || mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"));
-            if (replace_panel_textured_render_target_gl_draw)
+            auto has_complete_panel_uniforms = uniform_snapshot.has_edge_fade_top
+                && uniform_snapshot.has_edge_fade_bottom
+                && uniform_snapshot.has_edge_fade_params
+                && uniform_snapshot.has_panel_size;
+            auto replace_safe_textured_panel_gl_draw = replace_textured_render_target_gl_draw
+                && !static_sampler_texture
+                && (!is_panel_like_textured_render_target_consumer || has_complete_panel_uniforms);
+            auto replace_panel_textured_render_target_gl_draw = replace_safe_textured_panel_gl_draw
+                || (replace_alpha_textured_render_target_gl_draw
+                    && (!is_panel_like_textured_render_target_consumer || mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE")));
+            if (replace_panel_textured_render_target_gl_draw) {
+                static size_t s_textured_replay_replace_count { 0 };
+                auto replace_count = ++s_textured_replay_replace_count;
+                if (replace_count <= 24 || replace_count % 120 == 0) {
+                    dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_REPLACE_GL count={} program={} source_texture={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} reason={} next_step=verify_panel_visual_parity_without_matching_gl_draw",
+                        replace_count,
+                        program_handle,
+                        source_texture_handle,
+                        static_sampler_texture != nullptr,
+                        is_panel_like_textured_render_target_consumer,
+                        uniform_snapshot.has_edge_fade_top,
+                        uniform_snapshot.has_edge_fade_bottom,
+                        uniform_snapshot.has_edge_fade_params,
+                        uniform_snapshot.has_panel_size,
+                        uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom,
+                        uniform_snapshot.has_uv_rect,
+                        uniform_snapshot.has_content_size,
+                        replace_safe_textured_panel_gl_draw ? "safe_textured_panel_vulkan_replay_executed"sv : "unsafe_textured_panel_vulkan_replay_executed"sv);
+                }
                 return true;
+            }
 
             static size_t s_textured_replay_validate_only_count { 0 };
             auto validate_only_count = ++s_textured_replay_validate_only_count;

@@ -628,8 +628,7 @@ void HTMLMediaElement::attribute_changed(FlyString const& name, Optional<String>
         dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} src_attribute_changed old={} new={} current_src={} stack={}", static_cast<void const*>(this), document().url_string(), old_value.value_or(String {}), value.value(), m_current_src, stack);
         auto trimmed_value = value->bytes_as_string_view().trim_whitespace();
         if (trimmed_value.is_empty()
-            && (m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv))
-            && !paused()) {
+            && (m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv))) {
             dbgln("MUNDO_MEDIA_ELEMENT element={} page_url={} ignoring empty HLS src attribute while current_src={} pending_hls_src={} is active stack={}", static_cast<void const*>(this), document().url_string(), m_current_src, m_mundo_last_hls_src_attribute, stack);
             if (mundo_is_vr_hls_url(m_current_src))
                 document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("empty_vr_hls_src_ignored");
@@ -1250,20 +1249,20 @@ WebIDL::ExceptionOr<void> HTMLMediaElement::load_element()
         static_cast<void const*>(this), to_underlying(m_network_state), to_underlying(m_ready_state), paused(), m_pending_play_promises.size(), m_current_playback_position, m_duration,
         has_attribute(HTML::AttributeNames::src), has_attribute(HTML::AttributeNames::src) ? get_attribute_value(HTML::AttributeNames::src) : String {}, m_current_src);
 
-    if (m_current_src.contains(".m3u8"sv)
+    if ((m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv))
         && !has_attribute(HTML::AttributeNames::src)
         && !first_child_of_type<HTMLSourceElement>()
         && m_ready_state != ReadyState::HaveNothing
         && m_network_state != NetworkState::Empty) {
-        dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring load() without replacement source while HLS current_src={} is active", static_cast<void const*>(this), m_current_src);
+        dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring load() without replacement source while HLS current_src={} pending_hls_src={} is active", static_cast<void const*>(this), m_current_src, m_mundo_last_hls_src_attribute);
         return {};
     }
 
-    if (m_current_src.contains(".m3u8"sv) && has_attribute(HTML::AttributeNames::src)) {
+    if ((m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv)) && has_attribute(HTML::AttributeNames::src)) {
         auto source = get_attribute_value(HTML::AttributeNames::src);
         auto trimmed_source = source.bytes_as_string_view().trim_whitespace();
-        if (trimmed_source.is_empty() && !paused()) {
-            dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring load() with empty src while current_src={} is active", static_cast<void const*>(this), m_current_src);
+        if (trimmed_source.is_empty()) {
+            dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring load() with empty src while current_src={} pending_hls_src={} is active", static_cast<void const*>(this), m_current_src, m_mundo_last_hls_src_attribute);
             if (mundo_is_vr_hls_url(m_current_src))
                 document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("empty_vr_hls_load_ignored");
             return {};
@@ -1673,8 +1672,8 @@ void HTMLMediaElement::select_resource()
                         static_cast<void const*>(this), m_pending_play_promises.size(), m_current_src);
                     return;
                 }
-                if (m_current_src.contains(".m3u8"sv) && !paused()) {
-                    dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring empty src attribute while current_src={} is active", static_cast<void const*>(this), m_current_src);
+                if (m_current_src.contains(".m3u8"sv) || m_mundo_last_hls_src_attribute.contains(".m3u8"sv)) {
+                    dbgln("MUNDO_MEDIA_ELEMENT element={} ignoring empty src attribute while current_src={} pending_hls_src={} is active", static_cast<void const*>(this), m_current_src, m_mundo_last_hls_src_attribute);
                     if (mundo_is_vr_hls_url(m_current_src))
                         document().page().pause_auxiliary_hls_media_elements_if_vr_hls_present("empty_vr_hls_select_ignored");
                     return;
@@ -1817,6 +1816,7 @@ void HTMLMediaElement::load_url_resource(URL::URL const& url_record, Function<vo
     m_remote_fetch_data->url_record = url_record;
     m_remote_fetch_data->stream = Media::IncrementallyPopulatedStream::create_empty();
     m_remote_fetch_data->stream->set_likely_hls(serialized_url.contains(".m3u8"sv));
+    m_remote_fetch_data->stream->set_demuxer_source_url(serialized_url);
     m_remote_fetch_data->stream->set_data_request_callback(GC::weak_callback(*this, [](auto& self, u64 offset) {
         self.restart_fetch_at_offset(offset);
     }));

@@ -12,6 +12,7 @@
 #include <AK/Function.h>
 #include <AK/RedBlackTree.h>
 #include <AK/RefPtr.h>
+#include <AK/String.h>
 #include <AK/Time.h>
 #include <AK/Vector.h>
 #include <LibCore/Forward.h>
@@ -33,8 +34,10 @@ public:
 
     virtual NonnullRefPtr<MediaStreamCursor> create_cursor() override;
     virtual bool is_likely_hls() const override { return m_is_likely_hls; }
+    virtual StringView demuxer_source_url() const override { return m_demuxer_source_url.bytes_as_string_view(); }
 
     void set_likely_hls(bool is_likely_hls) { m_is_likely_hls = is_likely_hls; }
+    void set_demuxer_source_url(String source_url) { m_demuxer_source_url = move(source_url); }
 
     // Callback invoked when data at a specific offset is needed but not available.
     // The callback receives the desired offset position and is invoked on the provided event loop.
@@ -120,6 +123,7 @@ private:
     Optional<u64> m_expected_size;
     bool m_closed { false };
     bool m_is_likely_hls { false };
+    String m_demuxer_source_url;
 
     RefPtr<Core::WeakEventLoopReference> m_callback_event_loop;
     DataRequestCallback m_data_request_callback;

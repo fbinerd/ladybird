@@ -5,10 +5,12 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <AK/ByteString.h>
 #include <AK/Debug.h>
 #include <AK/Math.h>
 #include <AK/MemoryStream.h>
 #include <AK/Stream.h>
+#include <AK/StringBuilder.h>
 #include <AK/StringView.h>
 #include <AK/Time.h>
 #include <LibMedia/CodecID.h>
@@ -60,6 +62,46 @@ static DecoderErrorOr<bool> stream_looks_like_hls(MediaStreamCursor& cursor)
     return probe.starts_with("#EXTM3U"sv) && probe.contains("#EXT-X-"sv);
 }
 
+static DecoderErrorOr<void> log_hls_probe(MediaStreamCursor& cursor, StringView tag)
+{
+    Array<u8, 256> probe_buffer;
+
+    if (cursor.seek(0, AK::SeekMode::SetPosition).is_error())
+        return {};
+
+    auto bytes_read_or_error = cursor.read_into(probe_buffer);
+    auto reset_result = cursor.seek(0, AK::SeekMode::SetPosition);
+    if (reset_result.is_error())
+        return reset_result.release_error();
+
+    if (bytes_read_or_error.is_error())
+        return {};
+
+    auto bytes_read = bytes_read_or_error.release_value();
+    auto probe = StringView { reinterpret_cast<char const*>(probe_buffer.data()), bytes_read };
+
+    StringBuilder preview;
+    for (auto ch : probe.substring_view(0, min<size_t>(probe.length(), 160))) {
+        if (ch == '\n')
+            preview.append("\\n"sv);
+        else if (ch == '\r')
+            preview.append("\\r"sv);
+        else if (ch >= 0x20 && ch < 0x7f)
+            preview.append(ch);
+        else
+            preview.append('?');
+    }
+
+    dbgln("MUNDO_MEDIA_FFMPEG hls_probe tag={} bytes={} starts_extm3u={} contains_extx={} preview={}",
+        tag,
+        bytes_read,
+        probe.starts_with("#EXTM3U"sv),
+        probe.contains("#EXT-X-"sv),
+        preview.to_byte_string());
+
+    return {};
+}
+
 static void discard_unselected_streams(AVFormatContext& format_context, Optional<u32> selected_stream_index)
 {
     if (!selected_stream_index.has_value())
@@ -71,7 +113,7 @@ static void discard_unselected_streams(AVFormatContext& format_context, Optional
     dbgln("MUNDO_MEDIA_FFMPEG discard_unselected_streams selected={} streams={}", selected_stream_index.value(), format_context.nb_streams);
 }
 
-static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_context, AVIOContext& io_context, bool force_hls_demuxer, Optional<u32> selected_stream_index = OptionalNone {})
+static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_context, AVIOContext& io_context, bool force_hls_demuxer, StringView demuxer_source_url, Optional<u32> selected_stream_index = OptionalNone {})
 {
     format_context = avformat_alloc_context();
     if (format_context == nullptr)
@@ -82,13 +124,32 @@ static DecoderErrorOr<void> initialize_format_context(AVFormatContext*& format_c
     if (force_hls_demuxer)
         input_format = av_find_input_format("hls");
 
-    dbgln("MUNDO_MEDIA_FFMPEG open_input force_hls={}", force_hls_demuxer);
-    auto open_input_result = avformat_open_input(&format_context, nullptr, input_format, nullptr);
+    auto source_url_storage = force_hls_demuxer ? demuxer_source_url.to_byte_string() : ByteString {};
+    auto* input_url = source_url_storage.is_empty() ? nullptr : source_url_storage.characters();
+    dbgln("MUNDO_MEDIA_FFMPEG open_input force_hls={} source_url={}", force_hls_demuxer, input_url != nullptr);
+    auto open_input_result = avformat_open_input(&format_context, input_url, input_format, nullptr);
     if (open_input_result < 0) {
-        dbgln("MUNDO_MEDIA_FFMPEG open_input failed error={} force_hls={}", open_input_result, force_hls_demuxer);
+        dbgln("MUNDO_MEDIA_FFMPEG open_input failed error={} force_hls={} source_url={}", open_input_result, force_hls_demuxer, input_url != nullptr);
         avformat_free_context(format_context);
         format_context = nullptr;
-        return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to open input for format parsing"sv);
+
+        if (force_hls_demuxer && input_url != nullptr) {
+            format_context = avformat_alloc_context();
+            if (format_context == nullptr)
+                return DecoderError::with_description(DecoderErrorCategory::Memory, "Failed to allocate format context"sv);
+
+            dbgln("MUNDO_MEDIA_FFMPEG open_input retry_direct_url force_hls={} source_url=true", force_hls_demuxer);
+            open_input_result = avformat_open_input(&format_context, input_url, input_format, nullptr);
+            if (open_input_result >= 0)
+                dbgln("MUNDO_MEDIA_FFMPEG open_input retry_direct_url status=ok force_hls={}", force_hls_demuxer);
+        }
+
+        if (open_input_result < 0) {
+            dbgln("MUNDO_MEDIA_FFMPEG open_input failed_final error={} force_hls={} source_url={}", open_input_result, force_hls_demuxer, input_url != nullptr);
+            avformat_free_context(format_context);
+            format_context = nullptr;
+            return DecoderError::with_description(DecoderErrorCategory::Corrupted, "Failed to open input for format parsing"sv);
+        }
     }
 
     discard_unselected_streams(*format_context, selected_stream_index);
@@ -196,11 +257,14 @@ DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullR
 {
     auto cursor = stream->create_cursor();
     auto force_hls_demuxer = stream->is_likely_hls() || TRY(stream_looks_like_hls(cursor));
-    dbgln("MUNDO_MEDIA_FFMPEG from_stream force_hls={} hint={}", force_hls_demuxer, stream->is_likely_hls());
+    auto demuxer_source_url = stream->demuxer_source_url();
+    dbgln("MUNDO_MEDIA_FFMPEG from_stream force_hls={} hint={} source_url={}", force_hls_demuxer, stream->is_likely_hls(), !demuxer_source_url.is_empty());
+    if (force_hls_demuxer)
+        TRY(log_hls_probe(cursor, "from_stream"sv));
     auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     AVFormatContext* format_context = nullptr;
-    TRY(initialize_format_context(format_context, *io_context->avio_context(), force_hls_demuxer));
+    TRY(initialize_format_context(format_context, *io_context->avio_context(), force_hls_demuxer, demuxer_source_url));
 
     auto demuxer = DECODER_TRY_ALLOC(adopt_nonnull_ref_or_enomem(new (nothrow) FFmpegDemuxer(stream)));
     if (force_hls_demuxer) {
@@ -270,12 +334,15 @@ DecoderErrorOr<void> FFmpegDemuxer::create_context_for_track(Track const& track)
 {
     auto cursor = m_stream->create_cursor();
     auto force_hls_demuxer = m_stream->is_likely_hls() || TRY(stream_looks_like_hls(cursor));
-    dbgln("MUNDO_MEDIA_FFMPEG create_context track_id={} type={} force_hls={} hint={}", track.identifier(), to_underlying(track.type()), force_hls_demuxer, m_stream->is_likely_hls());
+    auto demuxer_source_url = m_stream->demuxer_source_url();
+    dbgln("MUNDO_MEDIA_FFMPEG create_context track_id={} type={} force_hls={} hint={} source_url={}", track.identifier(), to_underlying(track.type()), force_hls_demuxer, m_stream->is_likely_hls(), !demuxer_source_url.is_empty());
+    if (force_hls_demuxer)
+        TRY(log_hls_probe(cursor, "create_context"sv));
     auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     auto track_context = make<TrackContext>(move(cursor), move(io_context), force_hls_demuxer);
 
-    TRY(initialize_format_context(track_context->format_context, *track_context->io_context->avio_context(), force_hls_demuxer, track.identifier()));
+    TRY(initialize_format_context(track_context->format_context, *track_context->io_context->avio_context(), force_hls_demuxer, demuxer_source_url, track.identifier()));
 
     track_context->packet = av_packet_alloc();
     VERIFY(track_context->packet != nullptr);
@@ -308,7 +375,9 @@ DecoderErrorOr<void> FFmpegDemuxer::recreate_context_for_track(Track const& trac
     auto io_context = DECODER_TRY_ALLOC(Media::FFmpeg::FFmpegIOContext::create(cursor));
 
     AVFormatContext* new_format_context = nullptr;
-    TRY(initialize_format_context(new_format_context, *io_context->avio_context(), track_context.force_hls_demuxer, track.identifier()));
+    if (track_context.force_hls_demuxer)
+        TRY(log_hls_probe(cursor, "recreate_context"sv));
+    TRY(initialize_format_context(new_format_context, *io_context->avio_context(), track_context.force_hls_demuxer, m_stream->demuxer_source_url(), track.identifier()));
 
     if (track_context.format_context != nullptr)
         avformat_close_input(&track_context.format_context);

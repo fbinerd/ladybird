@@ -9,6 +9,7 @@
 #include <AK/AtomicRefCounted.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/Stream.h>
+#include <AK/StringView.h>
 #include <LibMedia/DecoderError.h>
 
 namespace Media {
@@ -34,6 +35,7 @@ public:
 
     virtual NonnullRefPtr<MediaStreamCursor> create_cursor() = 0;
     virtual bool is_likely_hls() const { return false; }
+    virtual StringView demuxer_source_url() const { return {}; }
 };
 
 }
