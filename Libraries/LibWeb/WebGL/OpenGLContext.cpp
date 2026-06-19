@@ -4022,9 +4022,9 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             return VK_FRONT_FACE_COUNTER_CLOCKWISE;
         switch (front_face) {
         case GL_CCW:
-            return VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        case GL_CW:
             return VK_FRONT_FACE_CLOCKWISE;
+        case GL_CW:
+            return VK_FRONT_FACE_COUNTER_CLOCKWISE;
         default:
             return {};
         }
@@ -5063,7 +5063,7 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
         return log_failure("wait_textured_draw_command_buffer_failed"sv, result);
 
     if (should_log) {
-        dbgln("MUNDO_WEBGL_TEXTURED_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} source_image={} source_image_view={} source_size={}x{} source_layout={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} diagnostics_valid={} pos_min=({}, {}, {}) pos_max=({}, {}, {}) uv_min=({}, {}) uv_max=({}, {}) clip_min=({}, {}) clip_max=({}, {}) clip_w=({}, {}) first_pos=({}, {}, {}) first_uv=({}, {}) mv_m00={} mv_m12={} mv_m13={} mv_m14={} proj_m00={} proj_m11={} proj_m14={} proj_m15={} vertex_bindings=2 vertex_attributes=2 next_step=wire_render_target_sampler_consumer_to_this_pipeline",
+        dbgln("MUNDO_WEBGL_TEXTURED_MESH_PIPELINE_PROBE count={} probe_count={} status=ok pipeline_cache_status={} buffer_cache_status={} draw_status=executed queue_ring_slot={} queue_submit_us={} queue_wait_us={} destination_format={} source_image={} source_image_view={} source_size={}x{} source_layout={} target_image={} target_image_view={} target_framebuffer={} target_size={}x{} draw_index_count={} draw_index_type={} draw_index_offset={} viewport={}x{}+{}+{} matrix_push_constants={} uses_alpha={} blend={} cull={} cull_mode={} gl_front_face={} vk_front_face={} depth_test={} depth_write={} depth_func={} diffuse=({}, {}, {}, {}) opacity={} output_intensity={} gradient=({}, {}) uv_rect=({}, {}, {}, {}) content_size=({}, {}) diagnostics_valid={} pos_min=({}, {}, {}) pos_max=({}, {}, {}) uv_min=({}, {}) uv_max=({}, {}) clip_min=({}, {}) clip_max=({}, {}) clip_w=({}, {}) first_pos=({}, {}, {}) first_uv=({}, {}) mv_m00={} mv_m12={} mv_m13={} mv_m14={} proj_m00={} proj_m11={} proj_m14={} proj_m15={} vertex_bindings=2 vertex_attributes=2 next_step=wire_render_target_sampler_consumer_to_this_pipeline",
             log_count,
             probe_count,
             pipeline_cache_status,
@@ -5090,12 +5090,29 @@ OpenGLContext::VulkanVideoMeshPipelineProbeResult OpenGLContext::probe_vulkan_te
             viewport_x,
             viewport_y,
             uniform_snapshot.has_model_view_matrix && uniform_snapshot.has_projection_matrix,
+            uses_alpha,
+            pipeline_state.blend_enabled,
+            pipeline_state.cull_face_enabled,
+            pipeline_state.cull_face_mode,
+            pipeline_state.front_face,
+            to_underlying(vk_front_face.value()),
+            pipeline_state.depth_test_enabled,
+            pipeline_state.depth_write_enabled,
+            pipeline_state.depth_func,
             uniform_snapshot.diffuse[0],
             uniform_snapshot.diffuse[1],
             uniform_snapshot.diffuse[2],
             uniform_snapshot.diffuse[3],
             uniform_snapshot.opacity,
             uniform_snapshot.output_intensity,
+            uniform_snapshot.gradient_top,
+            uniform_snapshot.gradient_bottom,
+            uniform_snapshot.uv_rect[0],
+            uniform_snapshot.uv_rect[1],
+            uniform_snapshot.uv_rect[2],
+            uniform_snapshot.uv_rect[3],
+            uniform_snapshot.content_size[0],
+            uniform_snapshot.content_size[1],
             diagnostics.valid,
             diagnostics.position_min_x,
             diagnostics.position_min_y,

@@ -1337,6 +1337,31 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             glGetProgramivRobustANGLE(program_handle, GL_ACTIVE_ATTRIBUTES, 1, nullptr, &active_attrib_count);
         }
 
+        if (mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_RENDER_TARGET_SHADER_SOURCE_LOG") && m_current_program) {
+            static Vector<GLuint> s_logged_render_target_programs;
+            if (!s_logged_render_target_programs.contains_slow(program_handle)) {
+                s_logged_render_target_programs.append(program_handle);
+                auto log_shader_source = [&](StringView stage, GC::Ptr<WebGLShader> shader) {
+                    if (!shader)
+                        return;
+                    auto source = get_shader_source(GC::make_root(*shader));
+                    if (!source.has_value())
+                        return;
+                    dbgln("MUNDO_WEBGL_RENDER_TARGET_SHADER_SOURCE program={} color_texture={} write_count={} stage={} bytes={} begin\n{}\nMUNDO_WEBGL_RENDER_TARGET_SHADER_SOURCE program={} stage={} end",
+                        program_handle,
+                        texture_handle,
+                        render_target_state->write_count,
+                        stage,
+                        source->bytes().size(),
+                        *source,
+                        program_handle,
+                        stage);
+                };
+                log_shader_source("vertex"sv, m_current_program->attached_vertex_shader());
+                log_shader_source("fragment"sv, m_current_program->attached_fragment_shader());
+            }
+        }
+
         auto uniforms_to_log = active_uniform_count < 16 ? active_uniform_count : 16;
         size_t sampler_uniform_count = 0;
         size_t sampler_sources_resolved = 0;
@@ -1383,6 +1408,17 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
                     glGetUniformfv(program_handle, location, diffuse.data());
                     uniform_snapshot.diffuse = diffuse;
+                } else if (type == GL_FLOAT_VEC4 && uniform_name == "clippingPlanes[0]"sv) {
+                    char plane_name[] = "clippingPlanes[0]";
+                    auto plane_count = min(size, 4);
+                    for (GLint plane_index = 0; plane_index < plane_count; ++plane_index) {
+                        plane_name[15] = static_cast<char>('0' + plane_index);
+                        auto plane_location = glGetUniformLocation(program_handle, plane_name);
+                        if (plane_location < 0)
+                            continue;
+                        glGetUniformfv(program_handle, plane_location, uniform_snapshot.clipping_planes.data() + plane_index * 4);
+                        uniform_snapshot.has_clipping_planes = true;
+                    }
                 } else if (type == GL_FLOAT_VEC3 && uniform_name == "uPosition"sv) {
                     Array<float, 3> position {};
                     glGetUniformfv(program_handle, location, position.data());
@@ -1955,7 +1991,7 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
             && element_shadow_complete
             && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
         if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} solid_area={} solid_max_default_area={} solid_area_supported={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} has_clipping_planes={} clip0=({},{},{},{}) solid_area={} solid_max_default_area={} solid_area_supported={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
                 solid_attempt_count,
                 texture_handle,
                 render_target_state->write_count,
@@ -1972,6 +2008,11 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 active_uniform_count,
                 sampler_uniform_count,
                 solid_uniforms_supported,
+                uniform_snapshot.has_clipping_planes,
+                uniform_snapshot.clipping_planes[0],
+                uniform_snapshot.clipping_planes[1],
+                uniform_snapshot.clipping_planes[2],
+                uniform_snapshot.clipping_planes[3],
                 solid_replay_area,
                 solid_replay_max_default_area,
                 solid_replay_area_supported,
@@ -3020,6 +3061,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 uniform_snapshot.model_view_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
                 uniform_snapshot.projection_matrix[i] = (i % 5) == 0 ? 1.0f : 0.0f;
             }
+            size_t sampler_uniform_count = 0;
             auto uniforms_to_scan = active_uniform_count < 16 ? active_uniform_count : 16;
             for (GLint index = 0; index < uniforms_to_scan; ++index) {
                 GLint uniform_size = 0;
@@ -3030,6 +3072,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 if (!uniform_length)
                     continue;
                 auto uniform_name_view = StringView { uniform_name, static_cast<size_t>(uniform_length) };
+                if (mundo_webgl_is_sampler_uniform_type(uniform_type))
+                    ++sampler_uniform_count;
                 auto location = glGetUniformLocation(program_handle, uniform_name);
                 if (location < 0)
                     continue;
@@ -3047,6 +3091,17 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
                     glGetUniformfv(program_handle, location, diffuse.data());
                     uniform_snapshot.diffuse = diffuse;
+                } else if (uniform_type == GL_FLOAT_VEC4 && uniform_name_view == "clippingPlanes[0]"sv) {
+                    char plane_name[] = "clippingPlanes[0]";
+                    auto plane_count = min(uniform_size, 4);
+                    for (GLint plane_index = 0; plane_index < plane_count; ++plane_index) {
+                        plane_name[15] = static_cast<char>('0' + plane_index);
+                        auto plane_location = glGetUniformLocation(program_handle, plane_name);
+                        if (plane_location < 0)
+                            continue;
+                        glGetUniformfv(program_handle, plane_location, uniform_snapshot.clipping_planes.data() + plane_index * 4);
+                        uniform_snapshot.has_clipping_planes = true;
+                    }
                 }
             }
 
@@ -3164,7 +3219,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 || depth_func == GL_ALWAYS;
             auto depth_state_supported = !depth_test_enabled || (allow_solid_depth_replay && depth_func_supported);
             auto cull_state_supported = !cull_face_enabled || cull_face_mode != GL_FRONT_AND_BACK;
-            auto bound_texture_state_supported = bound_texture_handle == 0;
+            auto bound_texture_state_supported = sampler_uniform_count == 0 || bound_texture_handle == 0;
             auto solid_gl_state_supported = color_mask_supported
                 && blend_state_supported
                 && depth_state_supported
@@ -3176,11 +3231,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
                 && mode == GL_TRIANGLES
                 && replay_viewport_valid
+                && sampler_uniform_count == 0
                 && solid_uniforms_supported
                 && solid_gl_state_supported
                 && solid_replay_enabled;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} solid_uniforms_supported={} bound_texture={} bound_texture_video={} bound_texture_render_target={} bound_texture_render_target_write_count={} bound_texture_render_target_size={}x{} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_SOLID_REPLAY_ATTEMPT count={} program={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} bound_texture={} bound_texture_ignored={} bound_texture_video={} bound_texture_render_target={} bound_texture_render_target_write_count={} bound_texture_render_target_size={}x{} position_layout_supported={} position_ready={} position_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
                     attempt_count,
                     program_handle,
                     count,
@@ -3188,8 +3244,10 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     offset,
                     active_attrib_count,
                     active_uniform_count,
+                    sampler_uniform_count,
                     solid_uniforms_supported,
                     bound_texture_handle,
+                    sampler_uniform_count == 0 && bound_texture_handle != 0,
                     bound_texture_has_video_backing,
                     bound_texture_render_target_written,
                     bound_texture_render_target_write_count,
@@ -3210,6 +3268,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
                         : mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                         : !replay_viewport_valid ? "invalid_viewport"sv
+                        : sampler_uniform_count != 0 ? "sampler_based_draw_not_solid_mesh"sv
                         : !solid_uniforms_supported ? "unsupported_solid_shader_uniform_shape"sv
                         : !color_mask_supported ? "unsupported_color_mask_state"sv
                         : !blend_state_supported ? "unsupported_blend_state"sv
@@ -3272,7 +3331,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 }
                 return true;
             }
-            auto skip_black_render_target_solid = mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_BLACK_RENDER_TARGET_SOLID")
+            auto skip_black_render_target_solid = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_BLACK_RENDER_TARGET_SOLID")
                 && uniform_snapshot.diffuse[0] == 0.0f
                 && uniform_snapshot.diffuse[1] == 0.0f
                 && uniform_snapshot.diffuse[2] == 0.0f
@@ -3468,6 +3527,17 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
                         glGetUniformfv(program_handle, location, diffuse.data());
                         uniform_snapshot.diffuse = diffuse;
+                    } else if (uniform_type == GL_FLOAT_VEC4 && uniform_name_view == "clippingPlanes[0]"sv) {
+                        char plane_name[] = "clippingPlanes[0]";
+                        auto plane_count = min(uniform_size, 4);
+                        for (GLint plane_index = 0; plane_index < plane_count; ++plane_index) {
+                            plane_name[15] = static_cast<char>('0' + plane_index);
+                            auto plane_location = glGetUniformLocation(program_handle, plane_name);
+                            if (plane_location < 0)
+                                continue;
+                            glGetUniformfv(program_handle, plane_location, uniform_snapshot.clipping_planes.data() + plane_index * 4);
+                            uniform_snapshot.has_clipping_planes = true;
+                        }
                     } else if (uniform_type == GL_FLOAT && uniform_name_view == "edgeFadeTop"sv) {
                         glGetUniformfv(program_handle, location, &uniform_snapshot.edge_fade_top);
                         uniform_snapshot.has_edge_fade_top = true;
@@ -3860,7 +3930,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 Optional<ByteBuffer> converted_rgba_pixels;
                 ReadonlyBytes rgba_pixels;
                 auto const expected_rgba_size = static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height) * 4;
-                auto alpha_map_rgba_channel = mundo_webgl_env_string_value("MUNDO_WEBGL_POST_DIRECT_VULKAN_ALPHA_MAP_RGBA_CHANNEL", "preserve"sv);
+                auto alpha_map_rgba_channel = mundo_webgl_env_string_value("MUNDO_WEBGL_POST_DIRECT_VULKAN_ALPHA_MAP_RGBA_CHANNEL", "auto"sv);
                 auto create_solid_rgba_alpha_map = [&](u8 value) {
                     converted_rgba_pixels = ByteBuffer::create_uninitialized(expected_rgba_size).release_value_but_fixme_should_propagate_errors();
                     auto destination_pixels = converted_rgba_pixels->bytes();
@@ -3874,7 +3944,15 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 };
                 if (snapshot->format == GL_RGBA && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= expected_rgba_size) {
                     auto source_pixels = snapshot->pixels.bytes().slice(0, expected_rgba_size);
-                    if (alpha_map_rgba_channel == "solid-white"sv) {
+                    auto auto_promote_zero_alpha_map = alpha_map_rgba_channel == "auto"sv
+                        && is_panel_like_textured_render_target_consumer
+                        && snapshot->width == 1
+                        && snapshot->height == 1
+                        && source_pixels[0] == 0
+                        && source_pixels[1] == 0
+                        && source_pixels[2] == 0
+                        && source_pixels[3] == 0;
+                    if (alpha_map_rgba_channel == "solid-white"sv || auto_promote_zero_alpha_map) {
                         create_solid_rgba_alpha_map(255);
                     } else if (alpha_map_rgba_channel == "solid-black"sv) {
                         create_solid_rgba_alpha_map(0);
@@ -3915,13 +3993,18 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         rgba_pixels = source_pixels;
                     }
                 } else if ((snapshot->format == GL_ALPHA || snapshot->format == GL_LUMINANCE) && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height)) {
-                    if (alpha_map_rgba_channel == "solid-white"sv) {
+                    auto source_pixels = snapshot->pixels.bytes();
+                    auto auto_promote_zero_alpha_map = alpha_map_rgba_channel == "auto"sv
+                        && is_panel_like_textured_render_target_consumer
+                        && snapshot->width == 1
+                        && snapshot->height == 1
+                        && source_pixels[0] == 0;
+                    if (alpha_map_rgba_channel == "solid-white"sv || auto_promote_zero_alpha_map) {
                         create_solid_rgba_alpha_map(255);
                     } else if (alpha_map_rgba_channel == "solid-black"sv) {
                         create_solid_rgba_alpha_map(0);
                     } else {
                         converted_rgba_pixels = ByteBuffer::create_uninitialized(expected_rgba_size).release_value_but_fixme_should_propagate_errors();
-                        auto source_pixels = snapshot->pixels.bytes();
                         auto destination_pixels = converted_rgba_pixels->bytes();
                         for (size_t i = 0; i < static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height); ++i) {
                             auto value = source_pixels[i];
@@ -4040,21 +4123,33 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             auto replace_textured_render_target_gl_draw = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_TEXTURED_RENDER_TARGET_GL_DRAWS");
             auto replace_alpha_textured_render_target_gl_draw = replace_textured_render_target_gl_draw
                 && (!static_sampler_texture || mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_ALPHA_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"));
-            auto has_complete_panel_uniforms = uniform_snapshot.has_edge_fade_top
+            auto has_complete_edge_fade_panel_uniforms = uniform_snapshot.has_edge_fade_top
                 && uniform_snapshot.has_edge_fade_bottom
                 && uniform_snapshot.has_edge_fade_params
                 && uniform_snapshot.has_panel_size;
+            auto has_complete_gradient_panel_uniforms = uniform_snapshot.has_gradient_top
+                && uniform_snapshot.has_gradient_bottom
+                && uniform_snapshot.has_uv_rect
+                && uniform_snapshot.has_content_size;
+            auto has_complete_panel_uniforms = has_complete_edge_fade_panel_uniforms
+                || has_complete_gradient_panel_uniforms;
+            auto has_incomplete_alpha_panel_replay = static_sampler_texture
+                && is_panel_like_textured_render_target_consumer
+                && !has_complete_panel_uniforms;
+            auto allow_incomplete_alpha_panel_replacement = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_INCOMPLETE_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL");
             auto replace_safe_textured_panel_gl_draw = replace_textured_render_target_gl_draw
                 && !static_sampler_texture
                 && (!is_panel_like_textured_render_target_consumer || has_complete_panel_uniforms);
             auto replace_panel_textured_render_target_gl_draw = replace_safe_textured_panel_gl_draw
                 || (replace_alpha_textured_render_target_gl_draw
-                    && (!is_panel_like_textured_render_target_consumer || mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE")));
+                    && (!is_panel_like_textured_render_target_consumer
+                        || (!has_incomplete_alpha_panel_replay && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"))
+                        || allow_incomplete_alpha_panel_replacement));
             if (replace_panel_textured_render_target_gl_draw) {
                 static size_t s_textured_replay_replace_count { 0 };
                 auto replace_count = ++s_textured_replay_replace_count;
                 if (replace_count <= 24 || replace_count % 120 == 0) {
-                    dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_REPLACE_GL count={} program={} source_texture={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} reason={} next_step=verify_panel_visual_parity_without_matching_gl_draw",
+                    dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_REPLACE_GL count={} program={} source_texture={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} panel_uniform_route={} reason={} next_step=verify_panel_visual_parity_without_matching_gl_draw",
                         replace_count,
                         program_handle,
                         source_texture_handle,
@@ -4067,7 +4162,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom,
                         uniform_snapshot.has_uv_rect,
                         uniform_snapshot.has_content_size,
-                        replace_safe_textured_panel_gl_draw ? "safe_textured_panel_vulkan_replay_executed"sv : "unsafe_textured_panel_vulkan_replay_executed"sv);
+                        has_complete_edge_fade_panel_uniforms ? "edge_fade"sv
+                        : has_complete_gradient_panel_uniforms ? "gradient_uv"sv
+                                                               : "incomplete"sv,
+                        replace_safe_textured_panel_gl_draw ? "safe_textured_panel_vulkan_replay_executed"sv
+                        : allow_incomplete_alpha_panel_replacement ? "experimental_incomplete_alpha_panel_vulkan_replay_executed"sv
+                                                               : "unsafe_textured_panel_vulkan_replay_executed"sv);
                 }
                 return true;
             }
@@ -4080,11 +4180,15 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 if (replace_textured_render_target_gl_draw && static_sampler_texture) {
                     reason = "alpha_textured_vulkan_replay_executed_but_gl_draw_kept_for_alpha_panel_parity"sv;
                     next_step = "enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_ALPHA_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE_only_after_alpha_mask_visual_parity"sv;
+                    if (has_incomplete_alpha_panel_replay) {
+                        reason = "incomplete_alpha_panel_vulkan_replay_executed_but_gl_draw_kept_for_panel_parity"sv;
+                        next_step = "implement_missing_alpha_panel_uniform_parity_or_explicitly_enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_INCOMPLETE_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL"sv;
+                    }
                 } else if (replace_alpha_textured_render_target_gl_draw && is_panel_like_textured_render_target_consumer) {
                     reason = "panel_like_textured_vulkan_replay_executed_but_gl_draw_kept_for_ui_panel_parity"sv;
                     next_step = "enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE_only_after_panel_depth_alpha_and_clipping_parity"sv;
                 }
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_VALIDATE_ONLY count={} program={} source_texture={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_VALIDATE_ONLY count={} program={} source_texture={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} panel_uniform_route={} reason={} next_step={}",
                     validate_only_count,
                     program_handle,
                     source_texture_handle,
@@ -4097,6 +4201,9 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom,
                     uniform_snapshot.has_uv_rect,
                     uniform_snapshot.has_content_size,
+                    has_complete_edge_fade_panel_uniforms ? "edge_fade"sv
+                    : has_complete_gradient_panel_uniforms ? "gradient_uv"sv
+                                                           : "incomplete"sv,
                     reason,
                     next_step);
             }
@@ -4150,7 +4257,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             }
         }
         if (gl_after_direct_vulkan_video
-            && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_INCOMPLETE_TEXTURE_DRAW")
+            && mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_SKIP_INCOMPLETE_TEXTURE_DRAW")
             && m_texture_binding_2d
             && !m_texture_binding_2d->has_hardware_video_backing()) {
             auto const& texture_snapshot = m_texture_binding_2d->mundo_texture_upload_snapshot();
@@ -4257,6 +4364,17 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
                         glGetUniformfv(program_handle, location, diffuse.data());
                         uniform_snapshot.diffuse = diffuse;
+                    } else if (uniform_type == GL_FLOAT_VEC4 && uniform_name == "clippingPlanes[0]"sv) {
+                        char plane_name[] = "clippingPlanes[0]";
+                        auto plane_count = min(size, 4);
+                        for (GLint plane_index = 0; plane_index < plane_count; ++plane_index) {
+                            plane_name[15] = static_cast<char>('0' + plane_index);
+                            auto plane_location = glGetUniformLocation(program_handle, plane_name);
+                            if (plane_location < 0)
+                                continue;
+                            glGetUniformfv(program_handle, plane_location, uniform_snapshot.clipping_planes.data() + plane_index * 4);
+                            uniform_snapshot.has_clipping_planes = true;
+                        }
                     }
                 }
 

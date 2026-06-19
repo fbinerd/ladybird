@@ -149,6 +149,7 @@ public:
         bool has_gradient_bottom { false };
         bool has_uv_rect { false };
         bool has_content_size { false };
+        bool has_clipping_planes { false };
         float edge_fade_top { 0.0f };
         float edge_fade_bottom { 0.0f };
         Array<float, 2> edge_fade_params { 0.0f, 0.0f };
@@ -163,6 +164,7 @@ public:
         Array<float, 4> ui_scale_clip { 1.0f, 1.0f, 0.0f, 0.0f };
         Array<float, 4> ui_transform { 1.0f, 1.0f, 0.0f, 0.0f };
         Array<float, 4> ui_layout_center { 0.0f, 0.0f, 0.0f, 0.0f };
+        Array<float, 16> clipping_planes {};
     };
     struct VulkanTexturedMeshPipelineState {
         bool cull_face_enabled { false };
