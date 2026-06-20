@@ -139,6 +139,10 @@ public:
         Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
         float opacity { 1.0f };
         float output_intensity { 1.0f };
+        bool has_stereo_eye { false };
+        bool has_stereo_eye_left { false };
+        float stereo_eye { 0.0f };
+        float stereo_eye_left { 1.0f };
         bool has_edge_fade_top { false };
         bool has_edge_fade_bottom { false };
         bool has_edge_fade_params { false };

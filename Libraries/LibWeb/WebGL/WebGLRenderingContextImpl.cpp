@@ -3585,6 +3585,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         glGetUniformfv(program_handle, location, &uniform_snapshot.opacity);
                     } else if (uniform_type == GL_FLOAT && (uniform_name_view == "uOutputIntensity"sv || uniform_name_view == "outputIntensity"sv)) {
                         glGetUniformfv(program_handle, location, &uniform_snapshot.output_intensity);
+                    } else if (uniform_type == GL_FLOAT && uniform_name_view == "uStereoEye"sv) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.stereo_eye);
+                        uniform_snapshot.has_stereo_eye = true;
+                    } else if (uniform_type == GL_BOOL && uniform_name_view == "uStereoEyeLeft"sv) {
+                        GLint stereo_eye_left = 1;
+                        glGetUniformiv(program_handle, location, &stereo_eye_left);
+                        uniform_snapshot.stereo_eye_left = stereo_eye_left ? 1.0f : 0.0f;
+                        uniform_snapshot.has_stereo_eye_left = true;
                     } else if ((uniform_type == GL_FLOAT_VEC3 || uniform_type == GL_FLOAT_VEC4) && (uniform_name_view == "diffuse"sv || uniform_name_view == "uTintColor"sv)) {
                         Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
                         glGetUniformfv(program_handle, location, diffuse.data());
@@ -3693,12 +3701,16 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
 
             ReadonlyBytes position_data;
             ReadonlyBytes uv_data;
+            ReadonlyBytes uv_right_data;
             bool position_ready = false;
             bool uv_ready = false;
+            bool uv_right_ready = false;
             bool position_layout_supported = false;
             bool uv_layout_supported = false;
+            bool uv_right_layout_supported = false;
             bool has_position_attrib = false;
             bool has_uv_attrib = false;
+            bool has_uv_right_attrib = false;
             for (GLint index = 0; index < active_attrib_count; ++index) {
                 GLint attrib_size = 0;
                 GLenum attrib_type = 0;
@@ -3737,6 +3749,13 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     if (uv_layout_supported && webgl_buffer && webgl_buffer->has_complete_shadow_data()) {
                         uv_data = webgl_buffer->shadow_data();
                         uv_ready = true;
+                    }
+                } else if (attrib_name_view == "uv_right"sv) {
+                    has_uv_right_attrib = true;
+                    uv_right_layout_supported = enabled && array_size == 2 && array_type == GL_FLOAT && stride == static_cast<GLint>(sizeof(float) * 2) && reinterpret_cast<uintptr_t>(pointer) == 0;
+                    if (uv_right_layout_supported && webgl_buffer && webgl_buffer->has_complete_shadow_data()) {
+                        uv_right_data = webgl_buffer->shadow_data();
+                        uv_right_ready = true;
                     }
                 }
             }
@@ -3852,14 +3871,23 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && cull_state_supported
                 && !scissor_test_enabled;
             auto replay_viewport_valid = viewport[2] > 0 && viewport[3] > 0;
+            auto stereo_uv_layout_supported = !has_uv_right_attrib || (uv_right_layout_supported && uv_right_ready);
+            auto attrib_count_supported = active_attrib_count == 2
+                || (active_attrib_count == 3 && has_uv_right_attrib && stereo_uv_layout_supported);
+            auto use_right_eye_uv = has_uv_right_attrib
+                && uv_right_ready
+                && ((uniform_snapshot.has_stereo_eye && uniform_snapshot.stereo_eye > 0.5f)
+                    || (uniform_snapshot.has_stereo_eye_left && uniform_snapshot.stereo_eye_left < 0.5f));
+            auto replay_uv_data = use_right_eye_uv ? uv_right_data : uv_data;
             auto can_replay = textured_replay_enabled
                 && source_render_target_vulkan_backed
-                && active_attrib_count == 2
+                && attrib_count_supported
                 && sampler_count_supported
                 && has_position_attrib
                 && has_uv_attrib
                 && position_layout_supported
                 && uv_layout_supported
+                && stereo_uv_layout_supported
                 && position_ready
                 && uv_ready
                 && element_ready
@@ -3869,7 +3897,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && mode == GL_TRIANGLES
                 && textured_gl_state_supported;
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ATTEMPT count={} program={} source_texture={} source_write_count={} source_vulkan_backed={} source_vulkan_write_count={} source_viewport={}x{} source_program={} draw_count={} type={} offset={} active_attribs={} sampler_uniforms={} sampler_render_targets={} sampler_videos={} sampler_snapshots={} sampler_unresolved={} allow_extra_samplers={} alpha_map_replay_enabled={} sampler_count_supported={} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_ready={} uv_ready={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_ATTEMPT count={} program={} source_texture={} source_write_count={} source_vulkan_backed={} source_vulkan_write_count={} source_viewport={}x{} source_program={} draw_count={} type={} offset={} active_attribs={} attrib_count_supported={} sampler_uniforms={} sampler_render_targets={} sampler_videos={} sampler_snapshots={} sampler_unresolved={} allow_extra_samplers={} alpha_map_replay_enabled={} sampler_count_supported={} has_position={} has_uv={} has_uv_right={} position_layout_supported={} uv_layout_supported={} uv_right_layout_supported={} position_ready={} uv_ready={} uv_right_ready={} use_right_eye_uv={} stereo_eye={} stereo_eye_left={} position_bytes={} uv_bytes={} uv_right_bytes={} element_ready={} element_bytes={} destination_format={} enabled={} ready={} reason={} next_step={}",
                     attempt_count,
                     program_handle,
                     source_texture_handle,
@@ -3883,6 +3911,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     type,
                     offset,
                     active_attrib_count,
+                    attrib_count_supported,
                     sampler_uniform_count,
                     sampler_render_target_count,
                     sampler_video_count,
@@ -3893,12 +3922,19 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     sampler_count_supported,
                     has_position_attrib,
                     has_uv_attrib,
+                    has_uv_right_attrib,
                     position_layout_supported,
                     uv_layout_supported,
+                    uv_right_layout_supported,
                     position_ready,
                     uv_ready,
+                    uv_right_ready,
+                    use_right_eye_uv,
+                    uniform_snapshot.stereo_eye,
+                    uniform_snapshot.stereo_eye_left,
                     position_data.size(),
                     uv_data.size(),
+                    uv_right_data.size(),
                     element_ready,
                     element_data.size(),
                     destination_format.value_or(0),
@@ -3906,12 +3942,13 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     can_replay,
                     !textured_replay_enabled ? "textured_render_target_replay_explicitly_disabled"sv
                         : !source_render_target_vulkan_backed ? "source_render_target_not_vulkan_backed"sv
-                        : active_attrib_count != 2 ? "not_position_uv_mesh"sv
+                        : !attrib_count_supported ? "not_position_uv_or_stereo_uv_mesh"sv
                         : !sampler_count_supported ? "unsupported_sampler_consumer"sv
                         : !has_position_attrib ? "missing_position_attrib"sv
                         : !has_uv_attrib ? "missing_uv_attrib"sv
                         : !position_layout_supported ? "unsupported_position_layout"sv
                         : !uv_layout_supported ? "unsupported_uv_layout"sv
+                        : !stereo_uv_layout_supported ? "unsupported_uv_right_layout"sv
                         : !position_ready ? "missing_position_shadow"sv
                         : !uv_ready ? "missing_uv_shadow"sv
                         : !element_ready ? "missing_index_shadow"sv
@@ -4153,7 +4190,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 .depth_write_enabled = (depth_write_mask == GL_TRUE) && !ignore_panel_replay_depth,
                 .depth_func = static_cast<u32>(depth_func),
             };
-            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, alpha_image, nullptr, pipeline_state);
+            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, replay_uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, alpha_image, nullptr, pipeline_state);
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
                 dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_PROBE_RESULT count={} program={} source_texture={} attempted={} supported={} executed={} reason={} next_step={}",
                     attempt_count,
@@ -4415,6 +4452,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         glGetUniformfv(program_handle, location, &uniform_snapshot.opacity);
                     } else if (uniform_type == GL_FLOAT && (uniform_name == "uOutputIntensity"sv || uniform_name == "outputIntensity"sv)) {
                         glGetUniformfv(program_handle, location, &uniform_snapshot.output_intensity);
+                    } else if (uniform_type == GL_FLOAT && uniform_name == "uStereoEye"sv) {
+                        glGetUniformfv(program_handle, location, &uniform_snapshot.stereo_eye);
+                        uniform_snapshot.has_stereo_eye = true;
+                    } else if (uniform_type == GL_BOOL && uniform_name == "uStereoEyeLeft"sv) {
+                        GLint stereo_eye_left = 1;
+                        glGetUniformiv(program_handle, location, &stereo_eye_left);
+                        uniform_snapshot.stereo_eye_left = stereo_eye_left ? 1.0f : 0.0f;
+                        uniform_snapshot.has_stereo_eye_left = true;
                     } else if ((uniform_type == GL_FLOAT_VEC3 || uniform_type == GL_FLOAT_VEC4) && (uniform_name == "diffuse"sv || uniform_name == "uTintColor"sv)) {
                         Array<float, 4> diffuse { 1.0f, 1.0f, 1.0f, 1.0f };
                         glGetUniformfv(program_handle, location, diffuse.data());
@@ -4458,10 +4503,13 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
 
             bool has_position_attrib = false;
             bool has_uv_attrib = false;
+            bool has_uv_right_attrib = false;
             bool position_layout_supported = false;
             bool uv_layout_supported = false;
+            bool uv_right_layout_supported = false;
             ReadonlyBytes position_data;
             ReadonlyBytes uv_data;
+            ReadonlyBytes uv_right_data;
             auto attribs_to_log = active_attrib_count < 8 ? active_attrib_count : 8;
             for (GLint attrib_index = 0; attrib_index < attribs_to_log; ++attrib_index) {
                 GLint size = 0;
@@ -4476,6 +4524,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     has_position_attrib = true;
                 else if (attribute_name == "uv"sv)
                     has_uv_attrib = true;
+                else if (attribute_name == "uv_right"sv)
+                    has_uv_right_attrib = true;
                 auto location = glGetAttribLocation(program_handle, name);
                 if (location < 0)
                     continue;
@@ -4502,6 +4552,10 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     uv_layout_supported = enabled && array_size == 2 && array_type == GL_FLOAT && stride == static_cast<GLint>(sizeof(float) * 2) && reinterpret_cast<uintptr_t>(pointer) == 0;
                     if (uv_layout_supported)
                         uv_data = webgl_buffer->shadow_data();
+                } else if (attribute_name == "uv_right"sv) {
+                    uv_right_layout_supported = enabled && array_size == 2 && array_type == GL_FLOAT && stride == static_cast<GLint>(sizeof(float) * 2) && reinterpret_cast<uintptr_t>(pointer) == 0;
+                    if (uv_right_layout_supported)
+                        uv_right_data = webgl_buffer->shadow_data();
                 }
             }
 
@@ -4510,10 +4564,19 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             if (m_element_array_buffer_binding && element_shadow_complete)
                 element_data = m_element_array_buffer_binding->shadow_data();
 
+            auto uv_right_ready = !uv_right_data.is_empty();
+            auto stereo_uv_layout_supported = !has_uv_right_attrib || (uv_right_layout_supported && uv_right_ready);
+            auto attrib_count_supported = active_attrib_count == 2
+                || (active_attrib_count == 3 && has_uv_right_attrib && stereo_uv_layout_supported);
+            auto use_right_eye_uv = has_uv_right_attrib
+                && uv_right_ready
+                && ((uniform_snapshot.has_stereo_eye && uniform_snapshot.stereo_eye > 0.5f)
+                    || (uniform_snapshot.has_stereo_eye_left && uniform_snapshot.stereo_eye_left < 0.5f));
+            auto replay_uv_data = use_right_eye_uv ? uv_right_data : uv_data;
             auto replay_possible = mode == GL_TRIANGLES
                 && viewport[2] > 0
                 && viewport[3] > 0
-                && active_attrib_count == 2
+                && attrib_count_supported
                 && sampler_uniform_count == 1
                 && sampler_sources_snapshot_complete == 1
                 && snapshot_sampler_texture
@@ -4522,11 +4585,12 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && has_uv_attrib
                 && position_layout_supported
                 && uv_layout_supported
+                && stereo_uv_layout_supported
                 && element_shadow_complete
                 && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT)
                 && destination_format.has_value();
             if (should_log) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_STATIC_TEXTURED_REPLAY_ATTEMPT count={} program={} texture={} enabled=true possible={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} sampler_sources_snapshot_complete={} snapshot_texture={} has_position={} has_uv={} position_layout_supported={} uv_layout_supported={} position_bytes={} uv_bytes={} element_ready={} element_bytes={} destination_format={} viewport={}x{}+{}+{} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_STATIC_TEXTURED_REPLAY_ATTEMPT count={} program={} texture={} enabled=true possible={} mode={} draw_count={} type={} offset={} active_attribs={} attrib_count_supported={} active_uniforms={} sampler_uniforms={} sampler_sources_snapshot_complete={} snapshot_texture={} has_position={} has_uv={} has_uv_right={} position_layout_supported={} uv_layout_supported={} uv_right_layout_supported={} position_bytes={} uv_bytes={} uv_right_bytes={} use_right_eye_uv={} stereo_eye={} stereo_eye_left={} element_ready={} element_bytes={} destination_format={} viewport={}x{}+{}+{} reason={} next_step={}",
                     attempt_count,
                     program_handle,
                     texture_handle,
@@ -4536,16 +4600,23 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     type,
                     offset,
                     active_attrib_count,
+                    attrib_count_supported,
                     active_uniform_count,
                     sampler_uniform_count,
                     sampler_sources_snapshot_complete,
                     snapshot_sampler_texture_handle,
                     has_position_attrib,
                     has_uv_attrib,
+                    has_uv_right_attrib,
                     position_layout_supported,
                     uv_layout_supported,
+                    uv_right_layout_supported,
                     position_data.size(),
                     uv_data.size(),
+                    uv_right_data.size(),
+                    use_right_eye_uv,
+                    uniform_snapshot.stereo_eye,
+                    uniform_snapshot.stereo_eye_left,
                     element_shadow_complete,
                     element_data.size(),
                     destination_format.value_or(0),
@@ -4555,7 +4626,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     viewport[1],
                     mode != GL_TRIANGLES ? "unsupported_primitive_mode"sv
                         : viewport[2] <= 0 || viewport[3] <= 0 ? "invalid_viewport"sv
-                        : active_attrib_count != 2 ? "not_position_uv_mesh"sv
+                        : !attrib_count_supported ? "not_position_uv_or_stereo_uv_mesh"sv
                         : sampler_uniform_count != 1 ? "not_single_sampler_draw"sv
                         : sampler_sources_snapshot_complete != 1 ? "sampler_not_single_static_snapshot_source"sv
                         : !snapshot_sampler_texture ? "missing_snapshot_sampler_texture"sv
@@ -4564,6 +4635,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : !has_uv_attrib ? "missing_uv_attrib"sv
                         : !position_layout_supported ? "unsupported_position_layout"sv
                         : !uv_layout_supported ? "unsupported_uv_layout"sv
+                        : !stereo_uv_layout_supported ? "unsupported_uv_right_layout"sv
                         : !element_shadow_complete ? "missing_index_shadow"sv
                         : !(type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT) ? "unsupported_index_type"sv
                         : !destination_format.has_value() ? "missing_vulkan_target_format"sv
@@ -4623,7 +4695,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             }
 
             auto* source_image_texture = source_image_or_error.release_value();
-            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, nullptr, nullptr, {});
+            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, replay_uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, nullptr, nullptr, {});
             if (should_log) {
                 dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_STATIC_TEXTURED_REPLAY_PROBE_RESULT count={} program={} texture={} snapshot_texture={} source_size={}x{} attempted={} supported={} executed={} reason={} next_step={}",
                     attempt_count,
