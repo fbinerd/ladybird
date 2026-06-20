@@ -3706,9 +3706,9 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 || uniform_snapshot.has_content_size
                 || (uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom);
             auto ignore_panel_replay_depth = is_panel_like_textured_render_target_consumer
-                && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_PANEL_REPLAY_IGNORE_DEPTH");
+                && mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_PANEL_REPLAY_IGNORE_DEPTH");
             auto ignore_panel_replay_cull = is_panel_like_textured_render_target_consumer
-                && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_PANEL_REPLAY_IGNORE_CULL");
+                && mundo_webgl_env_enabled_by_default("MUNDO_WEBGL_POST_DIRECT_VULKAN_PANEL_REPLAY_IGNORE_CULL");
             GLboolean color_write_mask[4] {};
             GLboolean depth_write_mask = GL_FALSE;
             GLint depth_func = 0;
@@ -3944,15 +3944,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 };
                 if (snapshot->format == GL_RGBA && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= expected_rgba_size) {
                     auto source_pixels = snapshot->pixels.bytes().slice(0, expected_rgba_size);
-                    auto auto_promote_zero_alpha_map = alpha_map_rgba_channel == "auto"sv
-                        && is_panel_like_textured_render_target_consumer
-                        && snapshot->width == 1
-                        && snapshot->height == 1
-                        && source_pixels[0] == 0
-                        && source_pixels[1] == 0
-                        && source_pixels[2] == 0
-                        && source_pixels[3] == 0;
-                    if (alpha_map_rgba_channel == "solid-white"sv || auto_promote_zero_alpha_map) {
+                    if (alpha_map_rgba_channel == "solid-white"sv) {
                         create_solid_rgba_alpha_map(255);
                     } else if (alpha_map_rgba_channel == "solid-black"sv) {
                         create_solid_rgba_alpha_map(0);
@@ -3994,12 +3986,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     }
                 } else if ((snapshot->format == GL_ALPHA || snapshot->format == GL_LUMINANCE) && snapshot->type == GL_UNSIGNED_BYTE && snapshot->pixels.size() >= static_cast<size_t>(snapshot->width) * static_cast<size_t>(snapshot->height)) {
                     auto source_pixels = snapshot->pixels.bytes();
-                    auto auto_promote_zero_alpha_map = alpha_map_rgba_channel == "auto"sv
-                        && is_panel_like_textured_render_target_consumer
-                        && snapshot->width == 1
-                        && snapshot->height == 1
-                        && source_pixels[0] == 0;
-                    if (alpha_map_rgba_channel == "solid-white"sv || auto_promote_zero_alpha_map) {
+                    if (alpha_map_rgba_channel == "solid-white"sv) {
                         create_solid_rgba_alpha_map(255);
                     } else if (alpha_map_rgba_channel == "solid-black"sv) {
                         create_solid_rgba_alpha_map(0);
@@ -4137,13 +4124,16 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && is_panel_like_textured_render_target_consumer
                 && !has_complete_panel_uniforms;
             auto allow_incomplete_alpha_panel_replacement = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_INCOMPLETE_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL");
+            auto allow_gradient_alpha_panel_replacement = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_GRADIENT_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL");
+            auto alpha_panel_route_safe_to_replace = !is_panel_like_textured_render_target_consumer
+                || has_complete_edge_fade_panel_uniforms
+                || (has_complete_gradient_panel_uniforms && allow_gradient_alpha_panel_replacement);
             auto replace_safe_textured_panel_gl_draw = replace_textured_render_target_gl_draw
                 && !static_sampler_texture
                 && (!is_panel_like_textured_render_target_consumer || has_complete_panel_uniforms);
             auto replace_panel_textured_render_target_gl_draw = replace_safe_textured_panel_gl_draw
                 || (replace_alpha_textured_render_target_gl_draw
-                    && (!is_panel_like_textured_render_target_consumer
-                        || (!has_incomplete_alpha_panel_replay && mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE"))
+                    && (alpha_panel_route_safe_to_replace
                         || allow_incomplete_alpha_panel_replacement));
             if (replace_panel_textured_render_target_gl_draw) {
                 static size_t s_textured_replay_replace_count { 0 };
@@ -4183,6 +4173,9 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     if (has_incomplete_alpha_panel_replay) {
                         reason = "incomplete_alpha_panel_vulkan_replay_executed_but_gl_draw_kept_for_panel_parity"sv;
                         next_step = "implement_missing_alpha_panel_uniform_parity_or_explicitly_enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_INCOMPLETE_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL"sv;
+                    } else if (has_complete_gradient_panel_uniforms && !allow_gradient_alpha_panel_replacement) {
+                        reason = "gradient_alpha_panel_vulkan_replay_executed_but_gl_draw_kept_for_panel_parity"sv;
+                        next_step = "enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_GRADIENT_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL_only_after_gradient_alpha_visual_parity"sv;
                     }
                 } else if (replace_alpha_textured_render_target_gl_draw && is_panel_like_textured_render_target_consumer) {
                     reason = "panel_like_textured_vulkan_replay_executed_but_gl_draw_kept_for_ui_panel_parity"sv;
