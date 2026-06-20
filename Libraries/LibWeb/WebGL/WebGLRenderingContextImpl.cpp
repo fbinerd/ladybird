@@ -4003,6 +4003,33 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             if (source_image_or_error.is_error())
                 return false;
             auto* source_image_texture = source_image_or_error.release_value();
+            GC::Ptr<WebGLTexture> target_color_attachment_texture;
+            OpenGLContext::ImportedVideoOpaqueFDTexture* target_image_texture = nullptr;
+            Gfx::VulkanImage* target_image_override = nullptr;
+            auto target_format = destination_format.value();
+            GLuint target_color_attachment_texture_handle = 0;
+            if (m_framebuffer_binding) {
+                target_color_attachment_texture = m_framebuffer_binding->mundo_color_attachment_texture();
+                if (target_color_attachment_texture) {
+                    target_color_attachment_texture_handle = target_color_attachment_texture->handle(this).value_or(0);
+                }
+            }
+            if (!target_color_attachment_texture_handle) {
+                GLint color_attachment_type = GL_NONE;
+                GLint color_attachment_name = 0;
+                glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &color_attachment_type);
+                glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &color_attachment_name);
+                if (color_attachment_type == GL_TEXTURE && color_attachment_name > 0)
+                    target_color_attachment_texture_handle = static_cast<GLuint>(color_attachment_name);
+            }
+            if (target_color_attachment_texture_handle) {
+                auto target_image_or_error = m_context->get_or_create_vulkan_rgba_render_target_image(target_color_attachment_texture_handle, static_cast<u32>(viewport[2]), static_cast<u32>(viewport[3]), attempt_count);
+                if (!target_image_or_error.is_error()) {
+                    target_image_texture = target_image_or_error.release_value();
+                    target_image_override = target_image_texture->image.ptr();
+                    target_format = to_underlying(target_image_override->info.format);
+                }
+            }
             Gfx::VulkanImage* alpha_image = nullptr;
             if (static_sampler_texture && !alpha_map_replay_enabled) {
                 if (attempt_count <= 24 || attempt_count % 120 == 0) {
@@ -4190,12 +4217,16 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 .depth_write_enabled = (depth_write_mask == GL_TRUE) && !ignore_panel_replay_depth,
                 .depth_func = static_cast<u32>(depth_func),
             };
-            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(destination_format.value(), *source_image_texture->image, uniform_snapshot, position_data, replay_uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, alpha_image, nullptr, pipeline_state);
+            auto textured_pipeline_probe = m_context->probe_vulkan_textured_mesh_pipeline(target_format, *source_image_texture->image, uniform_snapshot, position_data, replay_uv_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], attempt_count, alpha_image, target_image_override, pipeline_state);
             if (attempt_count <= 24 || attempt_count % 120 == 0) {
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_PROBE_RESULT count={} program={} source_texture={} attempted={} supported={} executed={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_PROBE_RESULT count={} program={} source_texture={} target_framebuffer_texture={} target_override={} target_size={}x{} attempted={} supported={} executed={} reason={} next_step={}",
                     attempt_count,
                     program_handle,
                     source_texture_handle,
+                    target_color_attachment_texture_handle,
+                    target_image_override != nullptr,
+                    target_image_texture ? target_image_texture->width : 0,
+                    target_image_texture ? target_image_texture->height : 0,
                     textured_pipeline_probe.attempted,
                     textured_pipeline_probe.supported,
                     textured_pipeline_probe.executed,
@@ -4247,11 +4278,17 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
             if (replace_panel_textured_render_target_gl_draw) {
                 static size_t s_textured_replay_replace_count { 0 };
                 auto replace_count = ++s_textured_replay_replace_count;
+                if (target_color_attachment_texture) {
+                    target_color_attachment_texture->mark_mundo_render_target_written(static_cast<u32>(viewport[2]), static_cast<u32>(viewport[3]), program_handle);
+                    target_color_attachment_texture->mark_mundo_render_target_vulkan_backed();
+                }
                 if (replace_count <= 24 || replace_count % 120 == 0) {
-                    dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_REPLACE_GL count={} program={} source_texture={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} panel_uniform_route={} reason={} next_step=verify_panel_visual_parity_without_matching_gl_draw",
+                    dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_REPLACE_GL count={} program={} source_texture={} target_framebuffer_texture={} target_override={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} panel_uniform_values=edge_top:{} edge_bottom:{} edge_params:({}, {}) panel_size:({}, {}) time:{} loading:{} panel_uniform_route={} reason={} next_step=verify_panel_visual_parity_without_matching_gl_draw",
                         replace_count,
                         program_handle,
                         source_texture_handle,
+                        target_color_attachment_texture_handle,
+                        target_image_override != nullptr,
                         static_sampler_texture != nullptr,
                         is_panel_like_textured_render_target_consumer,
                         uniform_snapshot.has_edge_fade_top,
@@ -4261,6 +4298,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom,
                         uniform_snapshot.has_uv_rect,
                         uniform_snapshot.has_content_size,
+                        uniform_snapshot.edge_fade_top,
+                        uniform_snapshot.edge_fade_bottom,
+                        uniform_snapshot.edge_fade_params[0],
+                        uniform_snapshot.edge_fade_params[1],
+                        uniform_snapshot.panel_size[0],
+                        uniform_snapshot.panel_size[1],
+                        uniform_snapshot.time,
+                        uniform_snapshot.loading,
                         has_complete_edge_fade_panel_uniforms ? "edge_fade"sv
                         : has_complete_gradient_panel_uniforms ? "gradient_uv"sv
                                                                : "incomplete"sv,
@@ -4298,7 +4343,7 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     reason = "panel_like_textured_vulkan_replay_executed_but_gl_draw_kept_for_ui_panel_parity"sv;
                     next_step = "enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE_only_after_panel_depth_alpha_and_clipping_parity"sv;
                 }
-                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_VALIDATE_ONLY count={} program={} source_texture={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} panel_uniform_route={} reason={} next_step={}",
+                dbgln("MUNDO_WEBGL_POST_DIRECT_VULKAN_TEXTURED_RT_REPLAY_VALIDATE_ONLY count={} program={} source_texture={} has_alpha_sampler={} panel_like={} panel_uniforms=edge_top:{} edge_bottom:{} edge_params:{} panel_size:{} gradient:{} uv_rect:{} content_size:{} panel_uniform_values=edge_top:{} edge_bottom:{} edge_params:({}, {}) panel_size:({}, {}) time:{} loading:{} panel_uniform_route={} reason={} next_step={}",
                     validate_only_count,
                     program_handle,
                     source_texture_handle,
@@ -4311,6 +4356,14 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                     uniform_snapshot.has_gradient_top && uniform_snapshot.has_gradient_bottom,
                     uniform_snapshot.has_uv_rect,
                     uniform_snapshot.has_content_size,
+                    uniform_snapshot.edge_fade_top,
+                    uniform_snapshot.edge_fade_bottom,
+                    uniform_snapshot.edge_fade_params[0],
+                    uniform_snapshot.edge_fade_params[1],
+                    uniform_snapshot.panel_size[0],
+                    uniform_snapshot.panel_size[1],
+                    uniform_snapshot.time,
+                    uniform_snapshot.loading,
                     has_complete_edge_fade_panel_uniforms ? "edge_fade"sv
                     : has_complete_gradient_panel_uniforms ? "gradient_uv"sv
                                                            : "incomplete"sv,
