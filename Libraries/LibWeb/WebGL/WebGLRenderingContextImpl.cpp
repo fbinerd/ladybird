@@ -1979,19 +1979,67 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
         auto solid_replay_area = replay_viewport_valid ? static_cast<size_t>(viewport[2]) * static_cast<size_t>(viewport[3]) : 0;
         auto solid_replay_area_supported = solid_replay_area <= solid_replay_max_default_area
             || mundo_webgl_env_flag_enabled("MUNDO_WEBGL_RENDER_TARGET_VULKAN_SOLID_REPLAY_ALLOW_LARGE_TARGETS");
+        GLboolean depth_write_mask = GL_FALSE;
+        GLint depth_func = 0;
+        GLint cull_face_mode = 0;
+        GLint front_face = 0;
+        auto depth_test_enabled = glIsEnabled(GL_DEPTH_TEST) == GL_TRUE;
+        auto cull_face_enabled = glIsEnabled(GL_CULL_FACE) == GL_TRUE;
+        auto scissor_test_enabled = glIsEnabled(GL_SCISSOR_TEST) == GL_TRUE;
+        glGetBooleanvRobustANGLE(GL_DEPTH_WRITEMASK, 1, nullptr, &depth_write_mask);
+        glGetIntegervRobustANGLE(GL_DEPTH_FUNC, 1, nullptr, &depth_func);
+        glGetIntegervRobustANGLE(GL_CULL_FACE_MODE, 1, nullptr, &cull_face_mode);
+        glGetIntegervRobustANGLE(GL_FRONT_FACE, 1, nullptr, &front_face);
+        auto depth_func_supported = !depth_test_enabled
+            || depth_func == GL_NEVER
+            || depth_func == GL_LESS
+            || depth_func == GL_EQUAL
+            || depth_func == GL_LEQUAL
+            || depth_func == GL_GREATER
+            || depth_func == GL_NOTEQUAL
+            || depth_func == GL_GEQUAL
+            || depth_func == GL_ALWAYS;
+        auto cull_state_supported = !cull_face_enabled || cull_face_mode != GL_FRONT_AND_BACK;
+        auto clipping_plane_inactive = [](float a, float b, float c, float d) {
+            if (a == 0.0f && b == 0.0f && c == 0.0f && d == 0.0f)
+                return true;
+            // Three.js uses a very large constant as a disabled plane sentinel.
+            // The Vulkan solid replay shader does not consume user clip planes yet,
+            // so only accept planes that are effectively disabled.
+            return __builtin_fabsf(d) > 1.0e12f;
+        };
+        auto clipping_planes_supported = true;
+        if (uniform_snapshot.has_clipping_planes) {
+            for (size_t plane_index = 0; plane_index < 4; ++plane_index) {
+                auto const plane_offset = plane_index * 4;
+                if (!clipping_plane_inactive(
+                        uniform_snapshot.clipping_planes[plane_offset],
+                        uniform_snapshot.clipping_planes[plane_offset + 1],
+                        uniform_snapshot.clipping_planes[plane_offset + 2],
+                        uniform_snapshot.clipping_planes[plane_offset + 3])) {
+                    clipping_planes_supported = false;
+                    break;
+                }
+            }
+        }
+        auto solid_gl_state_supported = depth_func_supported
+            && cull_state_supported
+            && !scissor_test_enabled
+            && clipping_planes_supported;
         auto solid_replay_possible = !strcmp(operation, "drawElements")
             && replay_viewport_valid
             && mode == GL_TRIANGLES
             && active_attrib_count == 1
             && sampler_uniform_count == 0
             && solid_uniforms_supported
+            && solid_gl_state_supported
             && solid_replay_area_supported
             && has_position_attrib
             && position_layout_supported
             && element_shadow_complete
             && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT);
         if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
-            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} has_clipping_planes={} clip0=({},{},{},{}) solid_area={} solid_max_default_area={} solid_area_supported={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
+            dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_ATTEMPT count={} color_texture={} write_count={} program={} enabled={} to_texture_enabled={} possible={} operation={} mode={} draw_count={} type={} offset={} active_attribs={} active_uniforms={} sampler_uniforms={} solid_uniforms_supported={} depth_test={} depth_func={} depth_write={} depth_func_supported={} cull_face={} cull_face_mode={} front_face={} cull_state_supported={} scissor_test={} has_clipping_planes={} clipping_planes_supported={} clip0=({},{},{},{}) solid_area={} solid_max_default_area={} solid_area_supported={} has_position={} position_layout_supported={} position_bytes={} element_ready={} element_bytes={} destination_format={} reason={} next_step={}",
                 solid_attempt_count,
                 texture_handle,
                 render_target_state->write_count,
@@ -2008,7 +2056,17 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 active_uniform_count,
                 sampler_uniform_count,
                 solid_uniforms_supported,
+                depth_test_enabled,
+                depth_func,
+                depth_write_mask == GL_TRUE,
+                depth_func_supported,
+                cull_face_enabled,
+                cull_face_mode,
+                front_face,
+                cull_state_supported,
+                scissor_test_enabled,
                 uniform_snapshot.has_clipping_planes,
+                clipping_planes_supported,
                 uniform_snapshot.clipping_planes[0],
                 uniform_snapshot.clipping_planes[1],
                 uniform_snapshot.clipping_planes[2],
@@ -2028,6 +2086,10 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                     : active_attrib_count != 1 ? "not_single_position_mesh"sv
                     : sampler_uniform_count != 0 ? "sampler_based_draw_not_solid_mesh"sv
                     : !solid_uniforms_supported ? "unsupported_solid_shader_uniform_shape"sv
+                    : !depth_func_supported ? "unsupported_depth_state"sv
+                    : !cull_state_supported ? "unsupported_cull_state"sv
+                    : scissor_test_enabled ? "unsupported_scissor_state"sv
+                    : !clipping_planes_supported ? "unsupported_active_clipping_planes"sv
                     : !solid_replay_area_supported ? "solid_target_too_large_for_default_replay"sv
                     : !has_position_attrib ? "missing_position_attrib"sv
                     : !position_layout_supported ? "unsupported_position_layout"sv
@@ -2064,7 +2126,7 @@ bool WebGLRenderingContextImpl::note_mundo_framebuffer_draw(char const* operatio
                 }
                 auto* target_image_override = imported_render_target_texture->image.ptr();
                 auto target_format = to_underlying(target_image_override->info.format);
-                auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(target_format, uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], solid_attempt_count, false, 0, 0, false, false, 0, target_image_override);
+                auto solid_pipeline_probe = m_context->probe_vulkan_solid_mesh_pipeline(target_format, uniform_snapshot, position_data, element_data, count, type, static_cast<GLintptr>(offset), viewport[0], viewport[1], viewport[2], viewport[3], solid_attempt_count, cull_face_enabled, static_cast<u32>(cull_face_mode), static_cast<u32>(front_face), depth_test_enabled, depth_write_mask == GL_TRUE, static_cast<u32>(depth_func), target_image_override);
                 if (solid_attempt_count <= 24 || solid_attempt_count % 120 == 0) {
                     dbgln("MUNDO_WEBGL_RENDER_TARGET_SOLID_REPLAY_PROBE_RESULT count={} color_texture={} write_count={} program={} to_texture=true attempted={} supported={} executed={} reason={} next_step={}",
                         solid_attempt_count,
