@@ -4224,14 +4224,24 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 && !has_complete_panel_uniforms;
             auto allow_incomplete_alpha_panel_replacement = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_INCOMPLETE_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL");
             auto allow_gradient_alpha_panel_replacement = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_GRADIENT_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL");
+            auto allow_panel_replacement_after_visual_parity = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_GL_DRAWS_VISUAL_PARITY_CONFIRMED");
+            auto allow_alpha_panel_replacement_after_visual_parity = mundo_webgl_env_opt_in_enabled("MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_ALPHA_PANEL_GL_DRAWS_VISUAL_PARITY_CONFIRMED");
             auto alpha_panel_route_safe_to_replace = !is_panel_like_textured_render_target_consumer
                 || has_complete_edge_fade_panel_uniforms
                 || (has_complete_gradient_panel_uniforms && allow_gradient_alpha_panel_replacement);
+            auto panel_has_unproven_visual_parity = is_panel_like_textured_render_target_consumer
+                && !allow_panel_replacement_after_visual_parity;
+            auto alpha_panel_has_unproven_visual_parity = static_sampler_texture
+                && is_panel_like_textured_render_target_consumer
+                && !allow_alpha_panel_replacement_after_visual_parity;
             auto replace_safe_textured_panel_gl_draw = replace_textured_render_target_gl_draw
                 && !static_sampler_texture
-                && (!is_panel_like_textured_render_target_consumer || has_complete_panel_uniforms);
+                && (!panel_has_unproven_visual_parity
+                    && (!is_panel_like_textured_render_target_consumer || has_complete_panel_uniforms));
             auto replace_panel_textured_render_target_gl_draw = replace_safe_textured_panel_gl_draw
                 || (replace_alpha_textured_render_target_gl_draw
+                    && !panel_has_unproven_visual_parity
+                    && !alpha_panel_has_unproven_visual_parity
                     && (alpha_panel_route_safe_to_replace
                         || allow_incomplete_alpha_panel_replacement));
             if (replace_panel_textured_render_target_gl_draw) {
@@ -4255,6 +4265,8 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                         : has_complete_gradient_panel_uniforms ? "gradient_uv"sv
                                                                : "incomplete"sv,
                         replace_safe_textured_panel_gl_draw ? "safe_textured_panel_vulkan_replay_executed"sv
+                        : panel_has_unproven_visual_parity ? "panel_visual_parity_confirmed_override"sv
+                        : alpha_panel_has_unproven_visual_parity ? "alpha_panel_visual_parity_confirmed_override"sv
                         : allow_incomplete_alpha_panel_replacement ? "experimental_incomplete_alpha_panel_vulkan_replay_executed"sv
                                                                : "unsafe_textured_panel_vulkan_replay_executed"sv);
                 }
@@ -4268,14 +4280,20 @@ void WebGLRenderingContextImpl::draw_elements(WebIDL::UnsignedLong mode, WebIDL:
                 auto next_step = "enable_UNSAFE_replace_only_after_textured_panel_visual_parity"sv;
                 if (replace_textured_render_target_gl_draw && static_sampler_texture) {
                     reason = "alpha_textured_vulkan_replay_executed_but_gl_draw_kept_for_alpha_panel_parity"sv;
-                    next_step = "enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_ALPHA_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE_only_after_alpha_mask_visual_parity"sv;
+                    next_step = "fix_alpha_panel_vulkan_visual_parity_then_enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_ALPHA_PANEL_GL_DRAWS_VISUAL_PARITY_CONFIRMED"sv;
                     if (has_incomplete_alpha_panel_replay) {
                         reason = "incomplete_alpha_panel_vulkan_replay_executed_but_gl_draw_kept_for_panel_parity"sv;
                         next_step = "implement_missing_alpha_panel_uniform_parity_or_explicitly_enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_INCOMPLETE_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL"sv;
                     } else if (has_complete_gradient_panel_uniforms && !allow_gradient_alpha_panel_replacement) {
                         reason = "gradient_alpha_panel_vulkan_replay_executed_but_gl_draw_kept_for_panel_parity"sv;
                         next_step = "enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_GRADIENT_ALPHA_PANEL_GL_DRAWS_EXPERIMENTAL_only_after_gradient_alpha_visual_parity"sv;
+                    } else if (alpha_panel_has_unproven_visual_parity) {
+                        reason = "alpha_panel_vulkan_replay_executed_but_gl_draw_kept_for_visual_parity"sv;
+                        next_step = "compare_alpha_panel_vulkan_replay_against_gl_before_replacing_matching_gl_draw"sv;
                     }
+                } else if (replace_textured_render_target_gl_draw && panel_has_unproven_visual_parity) {
+                    reason = "panel_vulkan_replay_executed_but_gl_draw_kept_for_visual_parity"sv;
+                    next_step = "compare_panel_vulkan_replay_against_gl_before_replacing_matching_gl_draw"sv;
                 } else if (replace_alpha_textured_render_target_gl_draw && is_panel_like_textured_render_target_consumer) {
                     reason = "panel_like_textured_vulkan_replay_executed_but_gl_draw_kept_for_ui_panel_parity"sv;
                     next_step = "enable_MUNDO_WEBGL_POST_DIRECT_VULKAN_REPLACE_PANEL_TEXTURED_RENDER_TARGET_GL_DRAWS_UNSAFE_only_after_panel_depth_alpha_and_clipping_parity"sv;
